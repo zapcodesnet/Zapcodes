@@ -94,7 +94,7 @@ io.on('connection', (socket) => {
 });
 
 // MongoDB connection & server start
-const PORT = process.env.PORT || 5000;
+const PORT = process.env.PORT || 10000;
 
 const startServer = async () => {
   try {
@@ -105,12 +105,11 @@ const startServer = async () => {
       console.warn('No MONGODB_URI set — running without database');
     }
 
-
-
-    
+    httpServer.listen(PORT, '0.0.0.0', () => {
+      console.log(`RepairBot API running on port ${PORT}`);
+    });
   } catch (err) {
     console.error('Failed to start server:', err);
-    
   }
 };
 
