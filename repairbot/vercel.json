@@ -1,19 +1,15 @@
 {
-  "buildCommand": "cd web && npm install && npm run build",
-  "outputDirectory": "web/dist",
-  "framework": "vite",
-  "rewrites": [
-    { "source": "/api/(.*)", "destination": "https://repairbot-api.onrender.com/api/$1" },
-    { "source": "/(.*)", "destination": "/index.html" }
-  ],
-  "headers": [
+  "version": 2,
+  "builds": [
     {
-      "source": "/(.*)",
-      "headers": [
-        { "key": "X-Frame-Options", "value": "DENY" },
-        { "key": "X-Content-Type-Options", "value": "nosniff" },
-        { "key": "Referrer-Policy", "value": "strict-origin-when-cross-origin" }
-      ]
+      "src": "repairbot/backend/server.js",
+      "use": "@vercel/node"
+    }
+  ],
+  "routes": [
+    {
+      "src": "/(.*)",
+      "dest": "repairbot/backend/server.js"
     }
   ]
 }
