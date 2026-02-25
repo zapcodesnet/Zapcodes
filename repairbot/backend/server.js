@@ -105,9 +105,7 @@ const startServer = async () => {
       console.warn('No MONGODB_URI set — running without database');
     }
 
-    httpServer.listen(PORT, () => {
-      console.log(`RepairBot API running on port ${PORT}`);
-    });
+
   } catch (err) {
     console.error('Failed to start server:', err);
     process.exit(1);
@@ -115,5 +113,7 @@ const startServer = async () => {
 };
 
 startServer();
+
+
 
 module.exports = app;
