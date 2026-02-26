@@ -1,0 +1,456 @@
+import React, { useState, useEffect } from 'react';
+import { Link } from 'react-router-dom';
+import { useAuth } from '../context/AuthContext';
+import api from '../api';
+
+const colorSchemes = [
+  { id: 'modern', name: 'Modern Purple', color: '#6366f1' },
+  { id: 'green', name: 'ZapCodes Green', color: '#00e5a0' },
+  { id: 'blue', name: 'Ocean Blue', color: '#3b82f6' },
+  { id: 'purple', name: 'Deep Purple', color: '#a855f7' },
+  { id: 'orange', name: 'Sunset Orange', color: '#f97316' },
+  { id: 'red', name: 'Bold Red', color: '#ef4444' },
+  { id: 'clean', name: 'Clean Light', color: '#2563eb' },
+];
+
+const freeTemplates = ['portfolio', 'landing', 'blog'];
+
+export default function Build() {
+  const { user } = useAuth();
+  const [step, setStep] = useState(1);
+  const [templates, setTemplates] = useState({});
+  const [loading, setLoading] = useState(false);
+  const [result, setResult] = useState(null);
+  const [error, setError] = useState('');
+
+  // Form state
+  const [selectedTemplate, setSelectedTemplate] = useState('');
+  const [projectName, setProjectName] = useState('');
+  const [description, setDescription] = useState('');
+  const [colorScheme, setColorScheme] = useState('modern');
+
+  const userPlan = user?.plan || 'free';
+  const buildsUsed = user?.buildsUsed || 0;
+  const buildsLimit = userPlan === 'pro' ? '∞' : userPlan === 'starter' ? 25 : 3;
+
+  useEffect(() => {
+    api.get('/build/templates').then(({ data }) => {
+      setTemplates(data.templates);
+    }).catch(() => {
+      // Fallback templates
+      setTemplates({
+        portfolio: { name: 'Portfolio / Personal Site', icon: '🎨', description: 'A beautiful personal portfolio', tech: 'HTML + CSS + JS' },
+        landing: { name: 'Business Landing Page', icon: '🚀', description: 'Professional landing page', tech: 'HTML + CSS + JS' },
+        blog: { name: 'Blog / Content Site', icon: '📝', description: 'Clean blog with posts', tech: 'HTML + CSS + JS' },
+        ecommerce: { name: 'E-Commerce Store', icon: '🛒', description: 'Online store', tech: 'React + Vite' },
+        dashboard: { name: 'Admin Dashboard', icon: '📊', description: 'Data dashboard', tech: 'React + Vite' },
+        mobile: { name: 'Mobile App', icon: '📱', description: 'iOS & Android app', tech: 'React Native + Expo' },
+        webapp: { name: 'Full-Stack Web App', icon: '⚡', description: 'Frontend + Backend + DB', tech: 'React + Node.js' },
+        saas: { name: 'SaaS Starter', icon: '💎', description: 'Auth + Payments + Dashboard', tech: 'React + Node + Stripe' },
+      });
+    });
+  }, []);
+
+  const handleGenerate = async () => {
+    if (!selectedTemplate || !projectName) return;
+    setLoading(true);
+    try {
+      const { data } = await api.post('/build/generate', {
+        template: selectedTemplate,
+        projectName,
+        description,
+        colorScheme,
+      });
+      setResult(data);
+      setStep(4);
+    } catch (err) {
+      const errMsg = err.response?.data?.error || 'Generation failed. Please try again.';
+      const errDetail = err.response?.data?.message || '';
+      if (err.response?.status === 403) {
+        setStep(1);
+        setError(errDetail || errMsg);
+      } else {
+        alert(errMsg);
+      }
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const downloadProject = () => {
+    if (!result) return;
+    // Create a zip-like download with all files
+    const content = result.files.map(f =>
+      `========== ${f.path} ==========\n${f.content}`
+    ).join('\n\n');
+
+    const blob = new Blob([content], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${result.projectName}-zapcodes.txt`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const downloadFile = (file) => {
+    const blob = new Blob([file.content], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = file.path;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  return (
+    <div style={{ position: 'relative', zIndex: 1 }}>
+      {/* Nav */}
+      <nav style={styles.nav}>
+        <div className="container flex items-center justify-between" style={{ height: 72 }}>
+          <Link to="/" className="flex items-center gap-2" style={{ color: 'var(--text-primary)' }}>
+            <span style={{ fontSize: '1.5rem' }}>⚡</span>
+            <span style={{ fontWeight: 800, fontSize: '1.2rem' }}>ZapCodes</span>
+          </Link>
+          <div className="flex items-center gap-2">
+            {user ? (
+              <Link to="/dashboard" className="btn btn-ghost">Dashboard</Link>
+            ) : (
+              <Link to="/register" className="btn btn-primary">Get Started Free</Link>
+            )}
+          </div>
+        </div>
+      </nav>
+
+      <section style={{ paddingTop: 120, paddingBottom: 80, minHeight: '100vh' }}>
+        <div className="container" style={{ maxWidth: 900 }}>
+
+          {/* Header */}
+          <div style={{ textAlign: 'center', marginBottom: 48 }}>
+            <span style={styles.badge}>🏗️ AI Website & App Builder</span>
+            <h1 style={{ fontSize: '2.5rem', fontWeight: 900, marginTop: 16, marginBottom: 12 }}>
+              Build Your Project
+            </h1>
+            <p style={{ color: 'var(--text-secondary)', fontSize: '1.1rem' }}>
+              Choose a template, customize it, and get deployment-ready code in seconds.
+              <br />You control 100% of your code and privacy.
+            </p>
+          </div>
+
+          {/* Progress bar */}
+          <div style={styles.progressBar}>
+            {[1, 2, 3, 4].map(s => (
+              <div key={s} style={{ ...styles.progressStep, ...(step >= s ? styles.progressActive : {}) }}>
+                <div style={{ ...styles.progressDot, ...(step >= s ? styles.progressDotActive : {}) }}>{s}</div>
+                <span style={{ fontSize: '0.75rem', marginTop: 4 }}>
+                  {s === 1 ? 'Template' : s === 2 ? 'Details' : s === 3 ? 'Style' : 'Download'}
+                </span>
+              </div>
+            ))}
+          </div>
+
+          {/* Step 1: Choose Template */}
+          {step === 1 && (
+            <div>
+              <h2 style={styles.stepTitle}>What do you want to build?</h2>
+              {user && (
+                <p style={{ textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.85rem', marginBottom: 24 }}>
+                  Builds used: <strong style={{ color: 'var(--accent)' }}>{buildsUsed}</strong> / {buildsLimit} this month
+                  {userPlan === 'free' && <span> · <Link to="/pricing" style={{ color: 'var(--accent)' }}>Upgrade for more</Link></span>}
+                </p>
+              )}
+              {error && <div style={{ background: 'rgba(255,68,102,0.1)', border: '1px solid rgba(255,68,102,0.3)', borderRadius: 10, padding: 12, color: 'var(--danger)', fontSize: '0.85rem', marginBottom: 16, textAlign: 'center' }}>{error}</div>}
+              <div style={styles.templateGrid}>
+                {Object.entries(templates).map(([key, tmpl]) => {
+                  const isPremium = !freeTemplates.includes(key);
+                  const isLocked = isPremium && userPlan === 'free';
+                  return (
+                    <button
+                      key={key}
+                      onClick={() => {
+                        if (isLocked) {
+                          setError(`${tmpl.name} requires a Starter or Pro plan. Upgrade to unlock all 8 templates!`);
+                          return;
+                        }
+                        setError('');
+                        setSelectedTemplate(key);
+                        setStep(2);
+                      }}
+                      style={{
+                        ...styles.templateCard,
+                        ...(selectedTemplate === key ? styles.templateSelected : {}),
+                        ...(isLocked ? { opacity: 0.6 } : {}),
+                      }}
+                    >
+                      <span style={{ fontSize: '2.5rem' }}>{tmpl.icon}</span>
+                      <strong style={{ fontSize: '1rem', marginTop: 8 }}>{tmpl.name}</strong>
+                      <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: 4 }}>{tmpl.description}</span>
+                      <div style={{ display: 'flex', gap: 6, marginTop: 10 }}>
+                        <span style={styles.techBadge}>{tmpl.tech}</span>
+                        {isPremium ? (
+                          <span style={{ ...styles.techBadge, background: 'rgba(255, 170, 0, 0.1)', color: '#ffaa00', borderColor: 'rgba(255, 170, 0, 0.2)' }}>
+                            {isLocked ? '🔒 Starter+' : '⭐ Premium'}
+                          </span>
+                        ) : (
+                          <span style={{ ...styles.techBadge, background: 'rgba(0, 229, 160, 0.1)', color: 'var(--accent)', borderColor: 'rgba(0, 229, 160, 0.2)' }}>Free</span>
+                        )}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* Step 2: Project Details */}
+          {step === 2 && (
+            <div style={{ maxWidth: 500, margin: '0 auto' }}>
+              <h2 style={styles.stepTitle}>Tell us about your project</h2>
+              <div style={styles.formGroup}>
+                <label style={styles.label}>Project Name *</label>
+                <input
+                  value={projectName}
+                  onChange={e => setProjectName(e.target.value)}
+                  placeholder="My Awesome Project"
+                  style={styles.input}
+                  autoFocus
+                />
+              </div>
+              <div style={styles.formGroup}>
+                <label style={styles.label}>Description (optional)</label>
+                <textarea
+                  value={description}
+                  onChange={e => setDescription(e.target.value)}
+                  placeholder="A brief description of what your project does..."
+                  style={{ ...styles.input, minHeight: 100, resize: 'vertical' }}
+                  rows={3}
+                />
+              </div>
+              <div style={{ display: 'flex', gap: 12, marginTop: 24 }}>
+                <button onClick={() => setStep(1)} className="btn btn-secondary" style={{ flex: 1 }}>← Back</button>
+                <button onClick={() => projectName && setStep(3)} className="btn btn-primary" style={{ flex: 2 }} disabled={!projectName}>
+                  Next: Choose Style →
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Step 3: Color Scheme */}
+          {step === 3 && (
+            <div style={{ maxWidth: 600, margin: '0 auto' }}>
+              <h2 style={styles.stepTitle}>Choose your style</h2>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 12, marginBottom: 32 }}>
+                {colorSchemes.map(scheme => (
+                  <button
+                    key={scheme.id}
+                    onClick={() => setColorScheme(scheme.id)}
+                    style={{
+                      ...styles.colorCard,
+                      borderColor: colorScheme === scheme.id ? scheme.color : 'var(--border)',
+                      boxShadow: colorScheme === scheme.id ? `0 0 20px ${scheme.color}33` : 'none',
+                    }}
+                  >
+                    <div style={{ width: 40, height: 40, borderRadius: '50%', background: scheme.color, marginBottom: 8 }} />
+                    <span style={{ fontSize: '0.8rem', fontWeight: 600 }}>{scheme.name}</span>
+                  </button>
+                ))}
+              </div>
+
+              {/* Summary */}
+              <div style={styles.summaryCard}>
+                <h3 style={{ marginBottom: 12, fontSize: '1rem' }}>📋 Project Summary</h3>
+                <div style={styles.summaryRow}><span>Template:</span><strong>{templates[selectedTemplate]?.name}</strong></div>
+                <div style={styles.summaryRow}><span>Name:</span><strong>{projectName}</strong></div>
+                <div style={styles.summaryRow}><span>Tech:</span><strong>{templates[selectedTemplate]?.tech}</strong></div>
+                <div style={styles.summaryRow}><span>Style:</span><strong>{colorSchemes.find(c => c.id === colorScheme)?.name}</strong></div>
+              </div>
+
+              <div style={{ display: 'flex', gap: 12, marginTop: 24 }}>
+                <button onClick={() => setStep(2)} className="btn btn-secondary" style={{ flex: 1 }}>← Back</button>
+                <button onClick={handleGenerate} className="btn btn-primary" style={{ flex: 2 }} disabled={loading}>
+                  {loading ? '⚡ Generating...' : '⚡ Generate My Project'}
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Step 4: Results & Download */}
+          {step === 4 && result && (
+            <div>
+              <div style={{ textAlign: 'center', marginBottom: 40 }}>
+                <span style={{ fontSize: '3rem' }}>🎉</span>
+                <h2 style={{ fontSize: '1.8rem', fontWeight: 800, marginTop: 12 }}>Your project is ready!</h2>
+                <p style={{ color: 'var(--text-secondary)' }}>{result.totalFiles} files generated</p>
+              </div>
+
+              {/* File list */}
+              <div style={styles.fileList}>
+                <h3 style={{ marginBottom: 16, fontSize: '1rem' }}>📁 Project Files</h3>
+                {result.files.map((file, i) => (
+                  <div key={i} style={styles.fileItem}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                      <span style={{ fontSize: '1.2rem' }}>📄</span>
+                      <div>
+                        <strong style={{ fontSize: '0.9rem' }}>{file.path}</strong>
+                        <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>{file.content.split('\n').length} lines</div>
+                      </div>
+                    </div>
+                    <button onClick={() => downloadFile(file)} style={styles.downloadBtn}>Download</button>
+                  </div>
+                ))}
+                <button onClick={downloadProject} className="btn btn-primary" style={{ width: '100%', marginTop: 16 }}>
+                  📥 Download All Files
+                </button>
+              </div>
+
+              {/* Deploy Guide */}
+              {result.deployGuide && (
+                <div style={styles.deployGuide}>
+                  <h3 style={{ marginBottom: 20, fontSize: '1.2rem' }}>🚀 {result.deployGuide.title}</h3>
+                  {result.deployGuide.steps.map(step => (
+                    <div key={step.step} style={styles.guideStep}>
+                      <div style={styles.guideNum}>{step.step}</div>
+                      <div>
+                        <strong style={{ fontSize: '0.95rem' }}>{step.title}</strong>
+                        <p style={{ color: 'var(--text-secondary)', fontSize: '0.85rem', marginTop: 4 }}>{step.detail}</p>
+                      </div>
+                    </div>
+                  ))}
+                  {result.deployGuide.tips && (
+                    <div style={{ marginTop: 24, padding: 16, background: 'rgba(0, 229, 160, 0.06)', borderRadius: 10, border: '1px solid rgba(0, 229, 160, 0.15)' }}>
+                      <strong style={{ color: 'var(--accent)', fontSize: '0.85rem' }}>💡 Pro Tips:</strong>
+                      {result.deployGuide.tips.map((tip, i) => (
+                        <p key={i} style={{ color: 'var(--text-secondary)', fontSize: '0.85rem', marginTop: 6 }}>• {tip}</p>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* CTA */}
+              <div style={{ textAlign: 'center', marginTop: 40, padding: 32, background: 'var(--bg-card)', borderRadius: 16, border: '1px solid var(--border)' }}>
+                <p style={{ fontSize: '1.1rem', fontWeight: 700, marginBottom: 8 }}>Need to fix bugs in your code?</p>
+                <p style={{ color: 'var(--text-secondary)', marginBottom: 20 }}>Use ZapCodes Repair to scan and auto-fix issues</p>
+                <Link to="/dashboard" className="btn btn-primary">Go to Repair Dashboard →</Link>
+              </div>
+
+              <button onClick={() => { setStep(1); setResult(null); setProjectName(''); setDescription(''); }}
+                className="btn btn-ghost" style={{ width: '100%', marginTop: 16 }}>
+                ← Build Another Project
+              </button>
+            </div>
+          )}
+
+        </div>
+      </section>
+
+      {/* Footer */}
+      <footer style={styles.footer}>
+        <div className="container flex items-center justify-between" style={{ flexWrap: 'wrap', gap: 16 }}>
+          <div className="flex items-center gap-2">
+            <span style={{ fontSize: '1.2rem' }}>⚡</span>
+            <span style={{ fontWeight: 700, fontSize: '0.9rem' }}>ZapCodes</span>
+          </div>
+          <div className="flex items-center gap-2" style={{ gap: 24 }}>
+            <Link to="/privacy" style={{ color: 'var(--text-muted)', fontSize: '0.85rem', textDecoration: 'none' }}>Privacy Policy</Link>
+            <Link to="/terms" style={{ color: 'var(--text-muted)', fontSize: '0.85rem', textDecoration: 'none' }}>Terms of Service</Link>
+          </div>
+          <span style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>
+            ©2026 ZapCodes. AI-powered code repair. All rights reserved.
+          </span>
+        </div>
+      </footer>
+    </div>
+  );
+}
+
+const styles = {
+  nav: {
+    position: 'fixed', top: 0, left: 0, right: 0, zIndex: 100,
+    background: 'rgba(6, 6, 11, 0.85)', backdropFilter: 'blur(16px)',
+    borderBottom: '1px solid var(--border)',
+  },
+  badge: {
+    display: 'inline-flex', alignItems: 'center', gap: 8,
+    padding: '6px 16px', borderRadius: 100,
+    background: 'var(--bg-elevated)', border: '1px solid var(--border)',
+    fontSize: '0.85rem', fontWeight: 500, color: 'var(--text-secondary)',
+  },
+  progressBar: {
+    display: 'flex', justifyContent: 'center', gap: 40, marginBottom: 48,
+  },
+  progressStep: {
+    display: 'flex', flexDirection: 'column', alignItems: 'center', color: 'var(--text-muted)',
+  },
+  progressActive: { color: 'var(--accent)' },
+  progressDot: {
+    width: 32, height: 32, borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center',
+    background: 'var(--bg-elevated)', border: '2px solid var(--border)', fontWeight: 700, fontSize: '0.8rem',
+  },
+  progressDotActive: {
+    background: 'var(--accent)', color: '#06060b', borderColor: 'var(--accent)',
+  },
+  stepTitle: {
+    fontSize: '1.4rem', fontWeight: 700, textAlign: 'center', marginBottom: 32,
+  },
+  templateGrid: {
+    display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 16,
+  },
+  templateCard: {
+    background: 'var(--bg-card)', border: '2px solid var(--border)', borderRadius: 16, padding: 24,
+    display: 'flex', flexDirection: 'column', alignItems: 'center', textAlign: 'center',
+    cursor: 'pointer', transition: '0.2s', color: 'var(--text-primary)',
+  },
+  templateSelected: {
+    borderColor: 'var(--accent)', boxShadow: '0 0 30px rgba(0, 229, 160, 0.1)',
+  },
+  techBadge: {
+    marginTop: 10, padding: '3px 10px', borderRadius: 100, fontSize: '0.7rem', fontWeight: 600,
+    background: 'var(--bg-elevated)', color: 'var(--text-muted)', border: '1px solid var(--border)',
+  },
+  formGroup: { marginBottom: 20 },
+  label: { display: 'block', fontSize: '0.85rem', fontWeight: 600, marginBottom: 6, color: 'var(--text-secondary)' },
+  input: {
+    width: '100%', padding: '12px 16px', borderRadius: 10,
+    background: 'var(--bg-elevated)', border: '1px solid var(--border)',
+    color: 'var(--text-primary)', fontSize: '0.95rem', fontFamily: 'inherit',
+  },
+  colorCard: {
+    background: 'var(--bg-card)', border: '2px solid var(--border)', borderRadius: 12, padding: 16,
+    display: 'flex', flexDirection: 'column', alignItems: 'center',
+    cursor: 'pointer', transition: '0.2s', color: 'var(--text-primary)',
+  },
+  summaryCard: {
+    background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 12, padding: 20,
+  },
+  summaryRow: {
+    display: 'flex', justifyContent: 'space-between', padding: '6px 0',
+    fontSize: '0.9rem', color: 'var(--text-secondary)',
+  },
+  fileList: {
+    background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 16, padding: 24, marginBottom: 24,
+  },
+  fileItem: {
+    display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+    padding: '12px 0', borderBottom: '1px solid var(--border)',
+  },
+  downloadBtn: {
+    padding: '6px 16px', borderRadius: 8, fontSize: '0.8rem', fontWeight: 600,
+    background: 'var(--bg-elevated)', border: '1px solid var(--border)',
+    color: 'var(--accent)', cursor: 'pointer',
+  },
+  deployGuide: {
+    background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 16, padding: 24, marginBottom: 24,
+  },
+  guideStep: {
+    display: 'flex', gap: 16, marginBottom: 20,
+  },
+  guideNum: {
+    width: 32, height: 32, minWidth: 32, borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center',
+    background: 'var(--accent)', color: '#06060b', fontWeight: 800, fontSize: '0.85rem',
+  },
+  footer: {
+    padding: '32px 0', borderTop: '1px solid var(--border)',
+    position: 'relative', zIndex: 1,
+  },
+};
