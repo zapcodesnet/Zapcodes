@@ -158,13 +158,27 @@ io.on('connection', (socket) => {
 // MongoDB connection & server start
 const PORT = process.env.PORT || 10000;
 
-const startServer = async () => {
-  try {
-    if (process.env.MONGODB_URI) {
-      await mongoose.connect(process.env.MONGODB_URI);
-      console.log('Connected to MongoDB Atlas');
+// ALWAYS start HTTP server first so Render detects the port
+httpServer.listen(PORT, '0.0.0.0', () => {
+  console.log(`ZapCodes API running on port ${PORT}`);
+});
 
-      // Bootstrap super admin
+// Then connect to MongoDB in the background
+const connectDB = async () => {
+  if (!process.env.MONGODB_URI) {
+    console.warn('No MONGODB_URI set — running without database');
+    return;
+  }
+
+  try {
+    await mongoose.connect(process.env.MONGODB_URI, {
+      serverSelectionTimeoutMS: 15000,
+      connectTimeoutMS: 15000,
+    });
+    console.log('Connected to MongoDB Atlas');
+
+    // Bootstrap super admin
+    try {
       const User = require('./models/User');
       const admin = await User.findOne({ email: 'zapcodesnet@gmail.com' });
       if (admin) {
@@ -176,22 +190,30 @@ const startServer = async () => {
         await admin.save();
         console.log('[BOOTSTRAP] Super admin configured: diamond + infinite BL');
       }
-
-      // Ensure super admin middleware
-      const { ensureSuperAdmin } = require('./middleware/admin');
-      await ensureSuperAdmin();
-    } else {
-      console.warn('No MONGODB_URI set — running without database');
+    } catch (bootstrapErr) {
+      console.error('[BOOTSTRAP] Super admin setup failed:', bootstrapErr.message);
     }
 
-    httpServer.listen(PORT, '0.0.0.0', () => {
-      console.log(`ZapCodes API running on port ${PORT}`);
-    });
+    // Ensure super admin middleware
+    try {
+      const { ensureSuperAdmin } = require('./middleware/admin');
+      await ensureSuperAdmin();
+    } catch (adminErr) {
+      console.error('[BOOTSTRAP] ensureSuperAdmin failed:', adminErr.message);
+    }
+
   } catch (err) {
-    console.error('Failed to start server:', err);
+    console.error('MongoDB connection failed:', err.message);
+    console.log('Server is running but database is unavailable. API calls requiring DB will fail.');
+
+    // Retry connection after 10 seconds
+    setTimeout(() => {
+      console.log('Retrying MongoDB connection...');
+      connectDB();
+    }, 10000);
   }
 };
 
-startServer();
+connectDB();
 
 module.exports = app;
