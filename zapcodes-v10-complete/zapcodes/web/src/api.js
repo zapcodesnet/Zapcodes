@@ -34,7 +34,7 @@ export { API_URL };
 let socket = null;
 
 export function connectSocket(userId) {
-  if (socket?.connected) return socket;
+  if (socket && socket.connected) return socket;
   try {
     socket = io(API_URL, {
       transports: ['websocket', 'polling'],
@@ -42,10 +42,10 @@ export function connectSocket(userId) {
       reconnectionAttempts: 5,
       timeout: 10000,
     });
-    socket.on('connect', () => {
+    socket.on('connect', function() {
       if (userId) socket.emit('join-user-room', userId);
     });
-    socket.on('connect_error', () => {});
+    socket.on('connect_error', function() {});
   } catch (e) {
     socket = { on: function(){}, emit: function(){}, connected: false };
   }
