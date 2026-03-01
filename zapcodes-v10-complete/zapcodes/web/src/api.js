@@ -1,4 +1,5 @@
 import axios from 'axios';
+import { io } from 'socket.io-client';
 
 const API_URL = import.meta.env.VITE_API_URL || 'https://api.zapcodes.net';
 
@@ -30,15 +31,12 @@ api.interceptors.response.use(
 export default api;
 export { API_URL };
 
-// Socket.IO (optional real-time)
-import { io } from 'socket.io-client';
-
 let socket = null;
 
 export function connectSocket(userId) {
   if (socket?.connected) return socket;
   try {
-    socket = io(API_URL.replace('/api', '').replace('https://', 'wss://').replace('http://', 'ws://'), {
+    socket = io(API_URL, {
       transports: ['websocket', 'polling'],
       reconnection: true,
       reconnectionAttempts: 5,
@@ -48,15 +46,15 @@ export function connectSocket(userId) {
       if (userId) socket.emit('join-user-room', userId);
     });
     socket.on('connect_error', () => {});
-  } catch {
-    socket = { on: () => {}, emit: () => {}, connected: false };
+  } catch (e) {
+    socket = { on: function(){}, emit: function(){}, connected: false };
   }
   return socket;
 }
 
 export function disconnectSocket() {
   if (socket) {
-    try { socket.disconnect(); } catch {}
+    try { socket.disconnect(); } catch (e) {}
     socket = null;
   }
 }
