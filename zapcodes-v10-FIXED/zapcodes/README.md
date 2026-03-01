@@ -67,7 +67,7 @@ Update `app.json` → `extra.apiUrl` to your backend URL.
 **Backend:** Express, MongoDB/Mongoose, Passport.js, Socket.IO, Stripe, Groq AI
 **Web:** React 18, Vite, React Router, CSS custom properties
 **Mobile:** React Native, Expo SDK 50, React Navigation, AsyncStorage
-
+ 
 ## Design
 
 Dark cyber-terminal aesthetic with accent color `#00e5a0`. Monospace code blocks, severity-colored badges, glassmorphism cards.
