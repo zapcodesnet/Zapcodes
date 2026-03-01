@@ -8,14 +8,12 @@ const api = axios.create({
   headers: { 'Content-Type': 'application/json' },
 });
 
-// Add auth token to requests
 api.interceptors.request.use((config) => {
   const token = localStorage.getItem('token');
   if (token) config.headers.Authorization = `Bearer ${token}`;
   return config;
 });
 
-// Handle auth errors
 api.interceptors.response.use(
   (response) => response,
   (error) => {
@@ -32,7 +30,7 @@ api.interceptors.response.use(
 export default api;
 export { API_URL };
 
-// ══════════ Socket.IO (optional real-time) ══════════
+// Socket.IO (optional real-time)
 import { io } from 'socket.io-client';
 
 let socket = null;
@@ -47,15 +45,10 @@ export function connectSocket(userId) {
       timeout: 10000,
     });
     socket.on('connect', () => {
-      console.log('[Socket] Connected:', socket.id);
       if (userId) socket.emit('join-user-room', userId);
     });
-    socket.on('connect_error', (err) => {
-      console.warn('[Socket] Connection failed (non-critical):', err.message);
-    });
-  } catch (err) {
-    console.warn('[Socket] Init failed (non-critical):', err.message);
-    // Socket is optional — app works fine without it
+    socket.on('connect_error', () => {});
+  } catch {
     socket = { on: () => {}, emit: () => {}, connected: false };
   }
   return socket;
