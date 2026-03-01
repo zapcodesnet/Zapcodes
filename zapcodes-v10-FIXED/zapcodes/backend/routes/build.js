@@ -145,6 +145,22 @@ const result = await callAI(GEN_PROMPT, userPrompt, model);
           if (cssMatch) files.push({ name: 'style.css', content: cssMatch[1].trim() });
           if (jsMatch) files.push({ name: 'script.js', content: jsMatch[1].trim() });
         } else {
+          const stripped = result.replace(/```[a-z]*\n?/g, '').replace(/```/g, '').trim();
+          if (stripped.includes('<') && stripped.includes('>')) {
+            files = [{ name: 'index.html', content: stripped }];
+          }
+        }
+      }
+      // Fallback: if parser found nothing, extract raw code blocks
+      if ((!files || files.length === 0) && result) {
+        const htmlMatch = result.match(/```html\n([\s\S]*?)```/);
+        const cssMatch = result.match(/```css\n([\s\S]*?)```/);
+        const jsMatch = result.match(/```(?:javascript|js)\n([\s\S]*?)```/);
+        if (htmlMatch) {
+          files = [{ name: 'index.html', content: htmlMatch[1].trim() }];
+          if (cssMatch) files.push({ name: 'style.css', content: cssMatch[1].trim() });
+          if (jsMatch) files.push({ name: 'script.js', content: jsMatch[1].trim() });
+        } else {
           // Last resort: treat entire response as HTML
           const stripped = result.replace(/```[a-z]*\n?/g, '').replace(/```/g, '').trim();
           if (stripped.includes('<') && stripped.includes('>')) {
