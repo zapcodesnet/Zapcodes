@@ -1,0 +1,15 @@
+name = "zapcodes-subdomain-router"
+main = "worker.js"
+compatibility_date = "2025-01-01"
+
+# Route: catches all *.zapcodes.net traffic
+# Set this up in the Cloudflare dashboard under Workers > Routes
+# Route pattern: *.zapcodes.net/*
+# 
+# ALSO add exclusion routes (service: none) for:
+#   api.zapcodes.net/*
+#   www.zapcodes.net/*
+#   zapcodes.net/*
+
+[vars]
+BACKEND_API_URL = "https://api.zapcodes.net"
