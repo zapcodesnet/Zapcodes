@@ -46,6 +46,8 @@ app.use(cors({
       origin.includes('localhost') ||
       origin.includes('zapcodes.net') ||
       origin.includes('zapcodes') ||
+      origin.includes('blendlink.net') ||
+      origin.includes('blendlink') ||
       origin === process.env.WEB_URL
     ) {
       return callback(null, true);
@@ -120,7 +122,7 @@ app.use('/api/coins', coinRoutes);
 
 // Health check
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString(), version: '13.0.0' });
+  res.json({ status: 'ok', timestamp: new Date().toISOString(), version: '14.0.0' });
 });
 
 // OAuth config endpoint — tells frontend which providers are available
@@ -174,16 +176,17 @@ const connectDB = async () => {
       serverSelectionTimeoutMS: 15000,
       connectTimeoutMS: 15000,
     });
-    console.log('Connected to MongoDB Atlas');
+    console.log('Connected to MongoDB Atlas (shared BlendLink cluster)');
     try {
       const User = require('./models/User');
       const admin = await User.findOne({ email: 'zapcodesnet@gmail.com' });
       if (admin) {
         admin.role = 'super-admin';
-        admin.plan = 'diamond';
-        admin.blCoins = 999999999999;
-        admin.signupBonusClaimed = true;
-        if (!admin.referralCode) admin.referralCode = 'zapcodes';
+        admin.subscription_tier = 'diamond';
+        admin.bl_coins = 999999999999;
+        admin.signup_bonus_claimed = true;
+        admin.is_admin = true;
+        if (!admin.referral_code) admin.referral_code = 'zapcodes';
         await admin.save();
         console.log('[BOOTSTRAP] Super admin configured: diamond + infinite BL');
       }
