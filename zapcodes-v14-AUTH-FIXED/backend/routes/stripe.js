@@ -4,7 +4,7 @@ const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 const { auth } = require('../middleware/auth');
 const User = require('../models/User');
 
-// ══════════ PLAN CONFIG ══════════
+// ══════════ PLAN CONFIG (prices match BlendLink) ══════════
 const PLANS = {
   bronze:  { monthly: process.env.STRIPE_PRICE_BRONZE_MONTHLY,  yearly: process.env.STRIPE_PRICE_BRONZE_YEARLY,  amount: 499 },
   silver:  { monthly: process.env.STRIPE_PRICE_SILVER_MONTHLY,  yearly: process.env.STRIPE_PRICE_SILVER_YEARLY,  amount: 1499 },
@@ -25,7 +25,7 @@ router.post('/create-checkout', auth, async (req, res) => {
       const customer = await stripe.customers.create({
         email: req.user.email,
         name: req.user.name,
-        metadata: { userId: req.user._id.toString() },
+        metadata: { userId: req.user._id.toString(), user_id: req.user.user_id },
       });
       customerId = customer.id;
       req.user.stripeCustomerId = customerId;
@@ -56,8 +56,8 @@ router.post('/create-checkout', auth, async (req, res) => {
       mode: 'subscription',
       success_url: `${process.env.WEB_URL || 'https://zapcodes.net'}/dashboard?upgrade=success&plan=${plan}`,
       cancel_url: `${process.env.WEB_URL || 'https://zapcodes.net'}/pricing?upgrade=cancelled`,
-      metadata: { userId: req.user._id.toString(), plan, interval },
-      subscription_data: { metadata: { userId: req.user._id.toString(), plan, interval } },
+      metadata: { userId: req.user._id.toString(), user_id: req.user.user_id, plan, interval },
+      subscription_data: { metadata: { userId: req.user._id.toString(), user_id: req.user.user_id, plan, interval } },
       allow_promotion_codes: true,
     });
 
@@ -97,11 +97,11 @@ router.post('/webhook', express.raw({ type: 'application/json' }), async (req, r
             console.log(`[Stripe] Top-up: ${user.email} +${coins} BL`);
           }
         } else {
-          // Subscription upgrade
+          // Subscription upgrade — CHANGED: "plan" → "subscription_tier"
           const plan = session.metadata?.plan;
           const interval = session.metadata?.interval || 'monthly';
           if (plan && PLANS[plan]) {
-            user.plan = plan;
+            user.subscription_tier = plan;
             user.stripeSubscriptionId = session.subscription;
             user.paymentProvider = 'stripe';
             user.subscriptionStart = new Date();
@@ -117,8 +117,8 @@ router.post('/webhook', express.raw({ type: 'application/json' }), async (req, r
         const subscription = event.data.object;
         const user = await User.findOne({ stripeSubscriptionId: subscription.id });
         if (user) {
-          console.log(`[Stripe] Cancel: ${user.email} ${user.plan} → free`);
-          user.plan = 'free';
+          console.log(`[Stripe] Cancel: ${user.email} ${user.subscription_tier} → free`);
+          user.subscription_tier = 'free';
           user.stripeSubscriptionId = null;
           user.billingInterval = null;
           await user.save();
