@@ -19,7 +19,8 @@ router.get('/stats', auth, async (req, res) => {
         totalRepos: repos.length, totalIssues, fixedIssues, criticalBugs,
         scansUsed: req.user.scansUsed, scansLimit: req.user.scansLimit,
         buildsUsed: req.user.buildsUsed, buildsLimit: req.user.buildsLimit,
-        plan: req.user.plan,
+        plan: req.user.subscription_tier,
+        subscription_tier: req.user.subscription_tier,
       },
     });
   } catch (err) {
@@ -53,8 +54,9 @@ router.get('/ai-preference', auth, async (req, res) => {
     res.json({
       preferredAI: user.preferredAI || 'groq',
       effectiveAI,
-      plan: user.plan,
-      canUseClaude: ['silver', 'gold', 'diamond'].includes(user.plan),
+      plan: user.subscription_tier,
+      subscription_tier: user.subscription_tier,
+      canUseClaude: ['silver', 'gold', 'diamond'].includes(user.subscription_tier),
     });
   } catch (err) {
     res.status(500).json({ error: 'Failed to get AI preference' });
@@ -71,11 +73,11 @@ router.put('/ai-preference', auth, async (req, res) => {
 
     const user = await User.findById(req.userId);
 
-    // Claude requires Starter or Pro plan
-    if (preferredAI === 'claude' && user.plan === 'free') {
+    // Claude requires Silver or higher plan
+    if (preferredAI === 'claude' && user.subscription_tier === 'free') {
       return res.status(403).json({
-        error: 'Claude Opus 4.6 requires a Starter ($9/mo) or Pro ($29/mo) subscription.',
-        currentPlan: user.plan,
+        error: 'Claude requires a Silver ($14.99/mo) or higher subscription.',
+        currentPlan: user.subscription_tier,
       });
     }
 
@@ -246,14 +248,14 @@ router.post('/chats/:projectId/message', auth, async (req, res) => {
     if (!content) return res.status(400).json({ error: 'Message required' });
 
     const user = await User.findById(req.userId);
-    const plan = user.plan || 'free';
+    const tier = user.subscription_tier || 'free';
     const limits = { free: 1, bronze: 5, silver: 7, gold: 15, diamond: Infinity };
-    const limit = limits[plan] || 3;
+    const limit = limits[tier] || 3;
 
     if (user.buildsUsed >= limit) {
       return res.status(403).json({
         error: 'Build limit reached',
-        message: `Your ${plan} plan allows ${limit} builds/month. Upgrade for more.`,
+        message: `Your ${tier} plan allows ${limit} builds/month. Upgrade for more.`,
         buildsUsed: user.buildsUsed, buildsLimit: limit,
       });
     }
