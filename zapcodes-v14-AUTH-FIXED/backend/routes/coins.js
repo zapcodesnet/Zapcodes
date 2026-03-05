@@ -20,10 +20,10 @@ router.post('/claim', auth, async (req, res) => {
 
     // Signup bonus (one-time 50K)
     let bonus = 0;
-    if (!user.signupBonusClaimed) {
+    if (!user.signup_bonus_claimed) {
       bonus = 50000;
       user.creditCoins(bonus, 'signup_bonus', 'Welcome to ZapCodes! 🎉');
-      user.signupBonusClaimed = true;
+      user.signup_bonus_claimed = true;
     }
 
     // Check 24h cooldown
@@ -33,21 +33,22 @@ router.post('/claim', auth, async (req, res) => {
         error: 'Daily claim not ready',
         nextClaimIn: countdown,
         canClaim: false,
-        balance: user.blCoins,
+        balance: user.bl_coins,
       });
     }
 
     // Credit daily claim
     const claimed = config.dailyClaim;
-    user.creditCoins(claimed, 'claim', `Daily ${user.plan} claim: ${claimed.toLocaleString()} BL`);
-    user.lastDailyClaim = new Date();
+    user.creditCoins(claimed, 'claim', `Daily ${user.subscription_tier} claim: ${claimed.toLocaleString()} BL`);
+    user.last_daily_claim = new Date();
     await user.save();
 
     res.json({
-      balance: user.blCoins,
+      balance: user.bl_coins,
       claimed,
       bonus,
-      plan: user.plan,
+      plan: user.subscription_tier,
+      subscription_tier: user.subscription_tier,
       nextClaimIn: 24 * 60 * 60,
       canClaim: false,
     });
@@ -67,8 +68,8 @@ router.get('/balance', auth, async (req, res) => {
     const today = new Date().toISOString().split('T')[0];
 
     // Auto-reset daily usage
-    if (!user.dailyUsage || user.dailyUsage.date !== today) {
-      user.dailyUsage = { date: today, generations: 0, codeFixes: 0, githubPushes: 0 };
+    if (!user.daily_usage || user.daily_usage.date !== today) {
+      user.daily_usage = { date: today, generations: 0, codeFixes: 0, githubPushes: 0 };
     }
 
     // Sanitize Infinity values — JSON.stringify turns Infinity into null,
@@ -79,13 +80,14 @@ router.get('/balance', auth, async (req, res) => {
     }
 
     res.json({
-      balance: user.blCoins,
-      plan: user.plan,
+      balance: user.bl_coins,
+      plan: user.subscription_tier,
+      subscription_tier: user.subscription_tier,
       tierConfig: safeConfig,
-      dailyUsage: user.dailyUsage,
+      dailyUsage: user.daily_usage,
       nextClaimIn: user.getClaimCountdown(),
       canClaim: user.canClaimDaily(),
-      signupBonusClaimed: user.signupBonusClaimed,
+      signupBonusClaimed: user.signup_bonus_claimed,
     });
   } catch (err) {
     res.status(500).json({ error: 'Failed to get balance' });
@@ -97,7 +99,7 @@ router.get('/balance', auth, async (req, res) => {
 // ═══════════════════════════════════════════════
 router.get('/transactions', auth, async (req, res) => {
   try {
-    const txns = (req.user.blTransactions || []).slice(-50).reverse();
+    const txns = (req.user.bl_transactions || []).slice(-50).reverse();
     res.json({ transactions: txns });
   } catch (err) {
     res.status(500).json({ error: 'Failed to get transactions' });
@@ -148,7 +150,7 @@ router.post('/topup', auth, async (req, res) => {
         },
         quantity: 1,
       }],
-      metadata: { type: 'topup', userId: user._id.toString(), package: pkgId, coins: pkg.coins.toString() },
+      metadata: { type: 'topup', userId: user._id.toString(), user_id: user.user_id, package: pkgId, coins: pkg.coins.toString() },
       success_url: `${process.env.WEB_URL || 'https://zapcodes.net'}/dashboard?topup=success`,
       cancel_url: `${process.env.WEB_URL || 'https://zapcodes.net'}/pricing?topup=cancelled`,
     });
