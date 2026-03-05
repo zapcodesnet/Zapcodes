@@ -34,11 +34,11 @@ router.get('/dashboard', async (req, res) => {
     ]);
 
     const [freeUsers, bronzeUsers, silverUsers, goldUsers, diamondUsers] = await Promise.all([
-      User.countDocuments({ plan: 'free' }),
-      User.countDocuments({ plan: 'bronze' }),
-      User.countDocuments({ plan: 'silver' }),
-      User.countDocuments({ plan: 'gold' }),
-      User.countDocuments({ plan: 'diamond' }),
+      User.countDocuments({ subscription_tier: 'free' }),
+      User.countDocuments({ subscription_tier: 'bronze' }),
+      User.countDocuments({ subscription_tier: 'silver' }),
+      User.countDocuments({ subscription_tier: 'gold' }),
+      User.countDocuments({ subscription_tier: 'diamond' }),
     ]);
 
     const totalRepos = await Repo.countDocuments();
@@ -82,14 +82,12 @@ router.post('/2fa/setup', async (req, res) => {
   try {
     if (!req.user.isAdmin()) return res.status(403).json({ error: 'Admin only' });
 
-    // Generate a secret
     const secret = crypto.randomBytes(20).toString('hex');
     const base32Secret = Buffer.from(secret).toString('base64').replace(/=/g, '').slice(0, 16);
 
     req.user.twoFactorSecret = base32Secret;
     await req.user.save();
 
-    // Generate otpauth URL for Google Authenticator
     const otpauthUrl = `otpauth://totp/ZapCodes:${req.user.email}?secret=${base32Secret}&issuer=ZapCodes&algorithm=SHA1&digits=6&period=30`;
 
     await logAdminAction({
@@ -112,7 +110,6 @@ router.post('/2fa/verify', async (req, res) => {
     const user = await User.findById(req.user._id).select('+twoFactorSecret');
     if (!user?.twoFactorSecret) return res.status(400).json({ error: '2FA not set up' });
 
-    // Simple TOTP verification (30-second window)
     const verified = verifyTOTP(user.twoFactorSecret, code);
     if (!verified) {
       await logAdminAction({
@@ -128,7 +125,6 @@ router.post('/2fa/verify', async (req, res) => {
       await user.save();
     }
 
-    // Generate 2FA session token (5 min TTL)
     const twoFAToken = jwt.sign(
       { userId: user._id.toString(), type: '2fa', lastActivity: Date.now() },
       process.env.JWT_SECRET + '-2fa',
@@ -150,7 +146,6 @@ router.post('/2fa/verify', async (req, res) => {
 // Simple TOTP implementation
 function verifyTOTP(secret, code) {
   const time = Math.floor(Date.now() / 30000);
-  // Check current and previous window
   for (let i = -1; i <= 1; i++) {
     const generated = generateTOTP(secret, time + i);
     if (generated === code.toString().padStart(6, '0')) return true;
@@ -185,7 +180,7 @@ router.get('/users', requirePermission('moderateUsers'), async (req, res) => {
       ];
     }
     if (status) query.status = status;
-    if (plan) query.plan = plan;
+    if (plan) query.subscription_tier = plan;
     if (role) query.role = role;
 
     const total = await User.countDocuments(query);
@@ -222,11 +217,9 @@ router.post('/users/:id/ban', requirePermission('moderateUsers'), async (req, re
     const target = await User.findById(req.params.id);
     if (!target) return res.status(404).json({ error: 'User not found' });
 
-    // Cannot ban super admin
     if (target.email === SUPER_ADMIN_EMAIL) {
       return res.status(403).json({ error: 'Cannot ban the primary admin' });
     }
-    // Co-admins can't ban other admins
     if (target.isAdmin() && !req.user.isSuperAdmin()) {
       return res.status(403).json({ error: 'Only super admin can ban other admins' });
     }
@@ -243,7 +236,6 @@ router.post('/users/:id/ban', requirePermission('moderateUsers'), async (req, re
       ip: req.ip, userAgent: req.headers['user-agent'], severity: 'warning',
     });
 
-    // Force disconnect via Socket.IO
     const io = req.app.get('io');
     if (io) io.to(`user-${target._id}`).emit('force-logout', { reason: 'Your account has been banned' });
 
@@ -319,10 +311,8 @@ router.delete('/users/:id', requirePermission('deleteUsers'), async (req, res) =
 
     const email = target.email;
 
-    // Cascade delete: repos, logs referencing this user
     await Repo.deleteMany({ user: target._id });
 
-    // Force logout
     const io = req.app.get('io');
     if (io) io.to(`user-${target._id}`).emit('force-logout', { reason: 'Account permanently deleted' });
 
@@ -370,11 +360,9 @@ router.post('/users/:id/role', requirePermission('manageRoles'), async (req, res
     const target = await User.findById(req.params.id);
     if (!target) return res.status(404).json({ error: 'User not found' });
 
-    // Only super admin can promote to co-admin
     if (role === 'co-admin' && !req.user.isSuperAdmin()) {
       return res.status(403).json({ error: 'Only super admin can create co-admins' });
     }
-    // Can't change super admin's role
     if (target.email === SUPER_ADMIN_EMAIL) {
       return res.status(403).json({ error: 'Cannot change primary admin role' });
     }
@@ -412,23 +400,23 @@ router.post('/users/:id/subscription', requirePermission('adjustPricing'), async
   try {
     const {
       plan, customPrice, billingInterval, freeForever,
-      subscriptionDays, // e.g., 7, 30, 365, null=indefinite
+      subscriptionDays,
       discountPercent, discountExpiry, discountReason,
-      customFeatures, // array of feature strings
-      reason, // audit reason
+      customFeatures,
+      reason,
     } = req.body;
 
     const target = await User.findById(req.params.id);
     if (!target) return res.status(404).json({ error: 'User not found' });
 
     const before = {
-      plan: target.plan, customPrice: target.customPrice, freeForever: target.freeForever,
+      subscription_tier: target.subscription_tier, customPrice: target.customPrice, freeForever: target.freeForever,
       billingInterval: target.billingInterval, subscriptionEnd: target.subscriptionEnd,
       discount: target.discount, customFeatures: target.customFeatures,
     };
 
     // Update plan
-    if (plan) target.plan = plan;
+    if (plan) target.subscription_tier = plan;
 
     // Custom pricing
     if (customPrice !== undefined) target.customPrice = customPrice;
@@ -439,7 +427,7 @@ router.post('/users/:id/subscription', requirePermission('adjustPricing'), async
       target.freeForever = freeForever;
       if (freeForever) {
         target.customPrice = 0;
-        target.subscriptionEnd = null; // no expiry
+        target.subscriptionEnd = null;
       }
     }
 
@@ -465,7 +453,7 @@ router.post('/users/:id/subscription', requirePermission('adjustPricing'), async
 
     // Update limits based on plan
     const limits = { free: { gens: 1 }, bronze: { gens: 5 }, silver: { gens: 7 }, gold: { gens: 15 }, diamond: { gens: Infinity } };
-    const l = limits[target.plan] || limits.free;
+    const l = limits[target.subscription_tier] || limits.free;
     target.scansLimit = l.scans;
     target.buildsLimit = l.builds;
 
@@ -474,14 +462,14 @@ router.post('/users/:id/subscription', requirePermission('adjustPricing'), async
     // Real-time notification to user
     const io = req.app.get('io');
     if (io) io.to(`user-${target._id}`).emit('subscription-updated', {
-      plan: target.plan, customPrice: target.customPrice, freeForever: target.freeForever,
+      subscription_tier: target.subscription_tier, customPrice: target.customPrice, freeForever: target.freeForever,
     });
 
     await logAdminAction({
       actor: req.user, action: 'price_override', targetUser: target._id, targetEmail: target.email,
-      description: `Subscription changed for ${target.email}: ${reason || `plan=${target.plan}, price=${target.customPrice}, freeForever=${target.freeForever}`}`,
+      description: `Subscription changed for ${target.email}: ${reason || `tier=${target.subscription_tier}, price=${target.customPrice}, freeForever=${target.freeForever}`}`,
       beforeState: before,
-      afterState: { plan: target.plan, customPrice: target.customPrice, freeForever: target.freeForever, discount: target.discount, subscriptionEnd: target.subscriptionEnd, customFeatures: target.customFeatures },
+      afterState: { subscription_tier: target.subscription_tier, customPrice: target.customPrice, freeForever: target.freeForever, discount: target.discount, subscriptionEnd: target.subscriptionEnd, customFeatures: target.customFeatures },
       ip: req.ip, userAgent: req.headers['user-agent'],
     });
 
@@ -572,7 +560,6 @@ router.post('/ai/command', requirePermission('manageAI'), require2FA, async (req
     const { command } = req.body;
     if (!command) return res.status(400).json({ error: 'Command required' });
 
-    // Log the command
     await logAdminAction({
       actor: req.user, action: 'ai_command',
       description: `AI command: ${command.slice(0, 200)}`,
@@ -580,10 +567,8 @@ router.post('/ai/command', requirePermission('manageAI'), require2FA, async (req
       ip: req.ip, userAgent: req.headers['user-agent'],
     });
 
-    // Process with AI (Groq or local fallback)
     const response = await processAICommand(command, req.user, req.app);
 
-    // Log the response
     await logAdminAction({
       actor: req.user, action: 'ai_response',
       description: `AI response for: ${command.slice(0, 100)}`,
@@ -591,7 +576,6 @@ router.post('/ai/command', requirePermission('manageAI'), require2FA, async (req
       ip: req.ip, userAgent: req.headers['user-agent'],
     });
 
-    // Refresh 2FA token (reset 5-min timer)
     const newTwoFAToken = jwt.sign(
       { userId: req.user._id.toString(), type: '2fa', lastActivity: Date.now() },
       process.env.JWT_SECRET + '-2fa',
@@ -608,7 +592,6 @@ router.post('/ai/command', requirePermission('manageAI'), require2FA, async (req
 async function processAICommand(command, admin, app) {
   const cmd = command.toLowerCase();
 
-  // Parse common commands
   if (cmd.includes('ban user') || cmd.includes('ban email')) {
     const emailMatch = command.match(/[\w.-]+@[\w.-]+/);
     if (emailMatch) {
@@ -651,15 +634,15 @@ async function processAICommand(command, admin, app) {
   if (cmd.includes('user count') || cmd.includes('how many users') || cmd.includes('total users')) {
     const total = await User.countDocuments();
     const active = await User.countDocuments({ status: 'active' });
-    const paying = await User.countDocuments({ plan: { $ne: 'free' } });
+    const paying = await User.countDocuments({ subscription_tier: { $ne: 'free' } });
     return { message: `📊 User Stats:\n• Total: ${total}\n• Active: ${active}\n• Paying: ${paying}\n• Free: ${total - paying}`, action: 'stats' };
   }
 
   if (cmd.includes('revenue') || cmd.includes('income') || cmd.includes('money')) {
-    const bronze = await User.countDocuments({ plan: 'bronze' });
-    const silver = await User.countDocuments({ plan: 'silver' });
-    const gold = await User.countDocuments({ plan: 'gold' });
-    const diamond = await User.countDocuments({ plan: 'diamond' });
+    const bronze = await User.countDocuments({ subscription_tier: 'bronze' });
+    const silver = await User.countDocuments({ subscription_tier: 'silver' });
+    const gold = await User.countDocuments({ subscription_tier: 'gold' });
+    const diamond = await User.countDocuments({ subscription_tier: 'diamond' });
     const monthly = (bronze * 4.99) + (silver * 14.99) + (gold * 29.99) + (diamond * 99.99);
     return { message: `💰 Revenue:\n• Bronze: ${bronze} × $4.99 = $${(bronze * 4.99).toFixed(2)}\n• Silver: ${silver} × $14.99 = $${(silver * 14.99).toFixed(2)}\n• Gold: ${gold} × $29.99 = $${(gold * 29.99).toFixed(2)}\n• Diamond: ${diamond} × $99.99 = $${(diamond * 99.99).toFixed(2)}\n• Monthly: $${monthly.toFixed(2)}\n• Annual: $${(monthly * 12).toFixed(2)}`, action: 'revenue' };
   }
@@ -678,21 +661,20 @@ async function processAICommand(command, admin, app) {
       const target = await User.findOne({ email: emailMatch[0].toLowerCase() });
       if (!target) return { message: `User ${emailMatch[0]} not found`, action: 'none' };
 
-      const oldPlan = target.plan;
-      target.plan = planMatch[1].toLowerCase();
+      const oldPlan = target.subscription_tier;
+      target.subscription_tier = planMatch[1].toLowerCase();
       await target.save();
 
       await logAdminAction({
         actor: admin, action: 'ai_action', targetUser: target._id, targetEmail: target.email,
-        description: `ZapCodes AI changed plan for ${target.email}: ${oldPlan} → ${target.plan}`,
-        beforeState: { plan: oldPlan }, afterState: { plan: target.plan }, severity: 'info',
+        description: `ZapCodes AI changed plan for ${target.email}: ${oldPlan} → ${target.subscription_tier}`,
+        beforeState: { subscription_tier: oldPlan }, afterState: { subscription_tier: target.subscription_tier }, severity: 'info',
       });
 
-      return { message: `✅ ZapCodes AI executed: Changed ${target.email} from ${oldPlan} to ${target.plan} plan.`, action: 'plan_changed', target: target.email };
+      return { message: `✅ ZapCodes AI executed: Changed ${target.email} from ${oldPlan} to ${target.subscription_tier} plan.`, action: 'plan_changed', target: target.email };
     }
   }
 
-  // Default: AI analysis response
   return {
     message: `🤖 I understood your command: "${command}"\n\nAvailable ZapCodes AI commands:\n• "ban user email@example.com" — Ban a user\n• "unban user email@example.com" — Restore a user\n• "set plan email@example.com to gold" — Change user plan\n• "user count" — Get user statistics\n• "revenue" — Get revenue report\n• "security flags" — Check active security flags\n\nFor complex tasks, be specific about what action to take and which user to target.`,
     action: 'help',
@@ -713,9 +695,9 @@ router.get('/analytics', requirePermission('viewAnalytics'), async (req, res) =>
         { $sort: { _id: 1 } },
       ]),
       User.aggregate([
-        { $group: { _id: '$plan', count: { $sum: 1 } } },
+        { $group: { _id: '$subscription_tier', count: { $sum: 1 } } },
       ]),
-      User.find().sort({ blCoins: -1 }).limit(10).select('name email plan plan blCoins referralCount'),
+      User.find().sort({ bl_coins: -1 }).limit(10).select('name email subscription_tier bl_coins referral_count'),
     ]);
 
     res.json({ dailySignups, planDistribution, topUsers });
@@ -735,10 +717,8 @@ router.get('/me', (req, res) => {
   });
 });
 
-module.exports = router;
-
 // =============================================
-// BL COIN MANAGEMENT (NEW)
+// BL COIN MANAGEMENT
 // =============================================
 router.put('/users/:id/bl', requireSuperAdmin, async (req, res) => {
   try {
@@ -750,13 +730,13 @@ router.put('/users/:id/bl', requireSuperAdmin, async (req, res) => {
     if (amount > 0) {
       user.creditCoins(amount, 'admin_adjustment', `Admin: ${reason}`);
     } else {
-      user.blCoins = Math.max(0, user.blCoins + amount);
-      user.blTransactions.push({ type: 'admin_adjustment', amount, balance: user.blCoins, description: `Admin: ${reason}` });
+      user.bl_coins = Math.max(0, user.bl_coins + amount);
+      user.bl_transactions.push({ type: 'admin_adjustment', amount, balance: user.bl_coins, description: `Admin: ${reason}` });
     }
     await user.save();
     
     await logAdminAction({ actor: req.user, action: 'bl_adjustment', targetUser: user, description: `BL adjustment: ${amount > 0 ? '+' : ''}${amount} — ${reason}`, ip: req.ip, userAgent: req.headers['user-agent'] });
-    res.json({ success: true, newBalance: user.blCoins });
+    res.json({ success: true, newBalance: user.bl_coins });
   } catch (err) {
     res.status(500).json({ error: 'BL adjustment failed' });
   }
@@ -769,8 +749,8 @@ router.put('/users/:id/tier', requireSuperAdmin, async (req, res) => {
     const user = await User.findById(req.params.id);
     if (!user) return res.status(404).json({ error: 'User not found' });
     
-    const oldPlan = user.plan;
-    user.plan = plan;
+    const oldPlan = user.subscription_tier;
+    user.subscription_tier = plan;
     await user.save();
     
     await logAdminAction({ actor: req.user, action: 'tier_change', targetUser: user, description: `Tier: ${oldPlan} → ${plan}${reason ? ` — ${reason}` : ''}`, ip: req.ip, userAgent: req.headers['user-agent'] });
@@ -781,15 +761,15 @@ router.put('/users/:id/tier', requireSuperAdmin, async (req, res) => {
 });
 
 // =============================================
-// DEPLOYED SITES MANAGEMENT (NEW)
+// DEPLOYED SITES MANAGEMENT
 // =============================================
 router.get('/sites', requireAdmin, async (req, res) => {
   try {
-    const usersWithSites = await User.find({ 'deployedSites.0': { $exists: true } }).select('name email plan deployedSites');
+    const usersWithSites = await User.find({ 'deployed_sites.0': { $exists: true } }).select('name email subscription_tier deployed_sites');
     const allSites = [];
     for (const u of usersWithSites) {
-      for (const site of u.deployedSites) {
-        allSites.push({ subdomain: site.subdomain, title: site.title, url: `https://${site.subdomain}.zapcodes.net`, owner: { name: u.name, email: u.email, plan: u.plan }, createdAt: site.createdAt, lastUpdated: site.lastUpdated, hasBadge: site.hasBadge, isPWA: site.isPWA });
+      for (const site of u.deployed_sites) {
+        allSites.push({ subdomain: site.subdomain, title: site.title, url: `https://${site.subdomain}.zapcodes.net`, owner: { name: u.name, email: u.email, plan: u.subscription_tier }, createdAt: site.createdAt, lastUpdated: site.lastUpdated, hasBadge: site.hasBadge, isPWA: site.isPWA });
       }
     }
     res.json({ sites: allSites, total: allSites.length });
@@ -800,9 +780,9 @@ router.get('/sites', requireAdmin, async (req, res) => {
 
 router.delete('/sites/:subdomain', requireSuperAdmin, async (req, res) => {
   try {
-    const user = await User.findOne({ 'deployedSites.subdomain': req.params.subdomain });
+    const user = await User.findOne({ 'deployed_sites.subdomain': req.params.subdomain });
     if (!user) return res.status(404).json({ error: 'Site not found' });
-    user.deployedSites = user.deployedSites.filter(s => s.subdomain !== req.params.subdomain);
+    user.deployed_sites = user.deployed_sites.filter(s => s.subdomain !== req.params.subdomain);
     await user.save();
     await logAdminAction({ actor: req.user, action: 'site_takedown', targetUser: user, description: `Removed site: ${req.params.subdomain}.zapcodes.net`, ip: req.ip, userAgent: req.headers['user-agent'], severity: 'warning' });
     res.json({ success: true });
@@ -812,12 +792,12 @@ router.delete('/sites/:subdomain', requireSuperAdmin, async (req, res) => {
 });
 
 // =============================================
-// REFERRAL MANAGEMENT (NEW)
+// REFERRAL MANAGEMENT
 // =============================================
 router.get('/referrals', requireAdmin, async (req, res) => {
   try {
-    const topReferrers = await User.find({ referralCount: { $gt: 0 } }).sort({ referralCount: -1 }).limit(50).select('name email plan referralCode referralCount referralBonusesPaid blCoins');
-    const totalReferrals = await User.aggregate([{ $group: { _id: null, total: { $sum: '$referralCount' }, totalBonuses: { $sum: '$referralBonusesPaid' } } }]);
+    const topReferrers = await User.find({ referral_count: { $gt: 0 } }).sort({ referral_count: -1 }).limit(50).select('name email subscription_tier referral_code referral_count referral_bonuses_paid bl_coins');
+    const totalReferrals = await User.aggregate([{ $group: { _id: null, total: { $sum: '$referral_count' }, totalBonuses: { $sum: '$referral_bonuses_paid' } } }]);
     res.json({ topReferrers, stats: totalReferrals[0] || { total: 0, totalBonuses: 0 } });
   } catch (err) {
     res.status(500).json({ error: 'Failed to fetch referrals' });
@@ -825,15 +805,15 @@ router.get('/referrals', requireAdmin, async (req, res) => {
 });
 
 // =============================================
-// BL COIN STATS (NEW)  
+// BL COIN STATS
 // =============================================
 router.get('/bl-stats', requireAdmin, async (req, res) => {
   try {
     const stats = await User.aggregate([
-      { $group: { _id: null, totalBL: { $sum: '$blCoins' }, avgBL: { $avg: '$blCoins' }, maxBL: { $max: '$blCoins' }, usersWithCoins: { $sum: { $cond: [{ $gt: ['$blCoins', 0] }, 1, 0] } } } },
+      { $group: { _id: null, totalBL: { $sum: '$bl_coins' }, avgBL: { $avg: '$bl_coins' }, maxBL: { $max: '$bl_coins' }, usersWithCoins: { $sum: { $cond: [{ $gt: ['$bl_coins', 0] }, 1, 0] } } } },
     ]);
     const deployedSitesCount = await User.aggregate([
-      { $project: { count: { $size: { $ifNull: ['$deployedSites', []] } } } },
+      { $project: { count: { $size: { $ifNull: ['$deployed_sites', []] } } } },
       { $group: { _id: null, total: { $sum: '$count' } } },
     ]);
     res.json({ blStats: stats[0] || {}, deployedSites: deployedSitesCount[0]?.total || 0 });
