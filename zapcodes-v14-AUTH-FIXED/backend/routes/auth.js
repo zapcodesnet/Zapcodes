@@ -11,7 +11,7 @@ const router = express.Router();
 
 const generateToken = (user) => {
   return jwt.sign(
-    { userId: user._id, email: user.email, plan: user.plan },
+    { userId: user._id, user_id: user.user_id, email: user.email, subscription_tier: user.subscription_tier },
     process.env.JWT_SECRET || 'dev-secret-change-me',
     { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
   );
@@ -41,19 +41,20 @@ router.post('/register', async (req, res) => {
       name,
       provider: 'local',
       emailVerified: !isSuperAdmin,
-      referralCode: userReferralCode,
+      referral_code: userReferralCode,
     });
 
     // Handle referral bonus
     if (refCode) {
-      const referrer = await User.findOne({ referralCode: refCode });
+      const referrer = await User.findOne({ referral_code: refCode });
       if (referrer && referrer._id.toString() !== user._id.toString()) {
-        user.referredBy = referrer._id;
+        user.referred_by = referrer.user_id || referrer._id.toString();
         user.creditCoins(50000, 'referral_bonus', `Referred by ${referrer.name}`);
         await user.save();
         referrer.creditCoins(50000, 'referral_bonus', `Referred ${user.name}`);
-        referrer.referralCount += 1;
-        referrer.referralBonusesPaid = (referrer.referralBonusesPaid || 0) + 1;
+        referrer.referral_count += 1;
+        referrer.referral_bonuses_paid = (referrer.referral_bonuses_paid || 0) + 1;
+        referrer.direct_referrals = (referrer.direct_referrals || 0) + 1;
         await referrer.save();
         console.log(`[Referral] ${referrer.email} → ${user.email} (50K BL each)`);
       }
@@ -178,9 +179,9 @@ router.post('/verify-admin-login', async (req, res) => {
 router.post('/login', async (req, res) => {
   try {
     const { email, password } = req.body;
-    const user = await User.findOne({ email: email.toLowerCase() }).select('+password');
+    const user = await User.findOne({ email: email.toLowerCase() }).select('+password +password_hash');
 
-    if (!user || !user.password) {
+    if (!user || (!user.password && !user.password_hash)) {
       trackFailedLogin(req.ip, email, req.headers['user-agent']);
       return res.status(401).json({ error: 'Invalid credentials' });
     }
