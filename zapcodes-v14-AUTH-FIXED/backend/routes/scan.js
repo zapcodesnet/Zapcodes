@@ -15,20 +15,20 @@ router.post('/', auth, async (req, res) => {
     const user = req.user;
 
     // Check scan limits
-    if (user.plan === 'free' && user.scansUsed >= user.scansLimit) {
+    if (user.subscription_tier === 'free' && user.scansUsed >= user.scansLimit) {
       return res.status(403).json({
         error: 'Scan limit reached',
-        message: 'Upgrade to Starter or Pro for more scans',
+        message: 'Upgrade to Bronze or higher for more scans',
         scansUsed: user.scansUsed,
         scansLimit: user.scansLimit,
       });
     }
 
     // Check engine access
-    if (engine === 'opus' && !['gold', 'diamond'].includes(user.plan)) {
+    if (engine === 'opus' && !['gold', 'diamond'].includes(user.subscription_tier)) {
       return res.status(403).json({
-        error: 'Claude Pro requires Pro plan',
-        message: 'Upgrade to Pro ($29/mo) for Claude Pro engine',
+        error: 'Claude Opus requires Gold or Diamond plan',
+        message: 'Upgrade to Gold ($29.99/mo) or Diamond ($99.99/mo) for Claude Opus',
       });
     }
 
