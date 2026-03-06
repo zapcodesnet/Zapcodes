@@ -196,6 +196,19 @@ userSchema.methods.toSafeObject = function () {
   delete obj.password_hash;
   delete obj.githubToken;
   delete obj.twoFactorSecret;
+  // Backward-compatible aliases for frontend (uses old camelCase names)
+  obj.plan = obj.subscription_tier;
+  obj.blCoins = obj.bl_coins;
+  obj.referralCode = obj.referral_code;
+  obj.referredBy = obj.referred_by;
+  obj.signupBonusClaimed = obj.signup_bonus_claimed;
+  obj.lastDailyClaim = obj.last_daily_claim;
+  obj.blTransactions = obj.bl_transactions;
+  obj.dailyUsage = obj.daily_usage;
+  obj.deployedSites = obj.deployed_sites;
+  obj.savedProjects = obj.saved_projects;
+  obj.referralCount = obj.referral_count;
+  obj.referralBonusesPaid = obj.referral_bonuses_paid;
   return obj;
 };
 
