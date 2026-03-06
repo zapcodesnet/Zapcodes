@@ -11,7 +11,7 @@ const router = express.Router();
 
 const generateToken = (user) => {
   return jwt.sign(
-    { userId: user._id, user_id: user.user_id, email: user.email, subscription_tier: user.subscription_tier },
+    { userId: user._id, user_id: user.user_id, email: user.email, plan: user.subscription_tier, subscription_tier: user.subscription_tier },
     process.env.JWT_SECRET || 'dev-secret-change-me',
     { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
   );
