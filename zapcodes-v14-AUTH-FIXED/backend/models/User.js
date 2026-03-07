@@ -267,13 +267,17 @@ userSchema.methods.creditCoins = function (amount, type, description) {
 
 // CHANGED: "lastDailyClaim" → "last_daily_claim"
 userSchema.methods.canClaimDaily = function () {
-  if (!this.last_daily_claim) return true;
-  return (Date.now() - this.last_daily_claim.getTime()) >= 24 * 60 * 60 * 1000;
+  const lastClaim = this.last_daily_claim || this.daily_claim_last;
+  if (!lastClaim) return true;
+  const claimTime = lastClaim instanceof Date ? lastClaim.getTime() : new Date(lastClaim).getTime();
+  return (Date.now() - claimTime) >= 24 * 60 * 60 * 1000;
 };
 
 userSchema.methods.getClaimCountdown = function () {
-  if (!this.last_daily_claim) return 0;
-  const next = this.last_daily_claim.getTime() + 24 * 60 * 60 * 1000;
+  const lastClaim = this.last_daily_claim || this.daily_claim_last;
+  if (!lastClaim) return 0;
+  const claimTime = lastClaim instanceof Date ? lastClaim.getTime() : new Date(lastClaim).getTime();
+  const next = claimTime + 24 * 60 * 60 * 1000;
   return Math.max(0, Math.ceil((next - Date.now()) / 1000));
 };
 
