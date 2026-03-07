@@ -41,6 +41,7 @@ router.post('/claim', auth, async (req, res) => {
     const claimed = config.dailyClaim;
     user.creditCoins(claimed, 'claim', `Daily ${user.subscription_tier} claim: ${claimed.toLocaleString()} BL`);
     user.last_daily_claim = new Date();
+    user.daily_claim_last = new Date().toISOString();
     await user.save();
 
     res.json({
