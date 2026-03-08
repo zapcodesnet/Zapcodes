@@ -186,7 +186,7 @@ async function callClaude(systemPrompt, userPrompt, options = {}) {
       if (useThinking) {
         body.thinking = {
           type: 'enabled',
-          budget_tokens: 10000,  // Allow up to 10K tokens for thinking
+          budget_tokens: 5000,  // Allow up to 10K tokens for thinking
         };
       }
 
