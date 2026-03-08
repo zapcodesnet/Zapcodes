@@ -194,7 +194,7 @@ router.get('/available-models', auth, (req, res) => {
   let models = [];
   if (tier === 'diamond') {
     models = [
-      { id: 'opus', name: 'Claude Opus 4.6', desc: 'Most advanced — best quality (may take 2-4 min)', cost: BL_COSTS.generation.opus },
+      { id: 'opus', name: 'Claude Sonnet 4.6', desc: 'Most advanced — best quality (may take 2-4 min)', cost: BL_COSTS.generation.opus },
       { id: 'haiku', name: 'Claude Haiku 4.5', desc: 'Fast and capable', cost: BL_COSTS.generation.haiku },
       { id: 'groq', name: 'Groq AI', desc: 'Efficient and quick', cost: BL_COSTS.generation.groq },
     ];
@@ -296,7 +296,7 @@ router.post('/generate-with-progress', auth, async (req, res) => {
     }
 
     // FIX: More informative model connection message with estimated time
-    const modelLabel = model === 'opus' ? 'Claude Opus 4.6 (~2-4 min)' : model === 'haiku' ? 'Claude Haiku 4.5 (~1-2 min)' : 'Groq AI (~30s)';
+    const modelLabel = model === 'opus' ? 'Claude Sonnet 4.6 (~2-4 min)' : model === 'haiku' ? 'Claude Haiku 4.5 (~1-2 min)' : 'Groq AI (~30s)';
     sendProgress('connecting', `${PROGRESS_STEPS.connecting} (${modelLabel})`);
 
     // FIX: More frequent keepalive — every 10s instead of 15s
@@ -364,7 +364,7 @@ router.post('/generate-with-progress', auth, async (req, res) => {
       await user.save();
       // FIX: More helpful error message telling user what happened
       const errorMsg = model !== 'groq'
-        ? `AI generation produced no files using ${model === 'opus' ? 'Claude Opus 4.6' : 'Claude Haiku 4.5'}. This may be due to temporary API issues. Coins refunded. Try again or switch to a different model.`
+        ? `AI generation produced no files using ${model === 'opus' ? 'Claude Sonnet 4.6' : 'Claude Haiku 4.5'}. This may be due to temporary API issues. Coins refunded. Try again or switch to a different model.`
         : 'AI generation produced no files. Coins refunded. Try a different prompt.';
       sendProgress('error', errorMsg);
       safeSend(res, { type: 'error', error: 'Generation failed. Coins refunded.', model, suggestion: 'Try a different model or simplify your prompt.' });
@@ -374,7 +374,7 @@ router.post('/generate-with-progress', auth, async (req, res) => {
     sendProgress('preview', PROGRESS_STEPS.preview);
     const preview = generatePreviewHTML(files);
 
-    sendProgress('done', `${PROGRESS_STEPS.done} ${files.length} file(s) generated using ${model === 'opus' ? 'Claude Opus 4.6' : model === 'haiku' ? 'Claude Haiku 4.5' : 'Groq AI'}.`);
+    sendProgress('done', `${PROGRESS_STEPS.done} ${files.length} file(s) generated using ${model === 'opus' ? 'Claude Sonnet 4.6' : model === 'haiku' ? 'Claude Haiku 4.5' : 'Groq AI'}.`);
 
     safeSend(res, {
       type: 'complete',
