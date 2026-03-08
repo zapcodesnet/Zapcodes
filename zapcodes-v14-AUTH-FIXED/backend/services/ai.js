@@ -22,7 +22,7 @@ const MODELS = {
   },
   opus: {
     model: 'claude-sonnet-4-6',
-    maxOutput: 128000,   // FIX: was 64000 — Opus 4.6 supports up to 128K output
+    maxOutput: 64000,
     contextLimit: 200000,
   },
 };
@@ -132,9 +132,9 @@ async function callClaude(systemPrompt, userPrompt, options = {}) {
   }
 
   const modelId = options.model || CLAUDE_MODEL;
-  const isOpus = modelId.includes('opus');
+  const isOpus = modelId.includes('sonnet');
   const isHaiku = modelId.includes('haiku');
-  const label = isOpus ? 'Opus 4.6' : 'Haiku 4.5';
+  const label = isOpus ? 'Sonnet 4.6' : 'Haiku 4.5';
   const onProgress = options.onProgress;
   const signal = options.signal;
   const useThinking = options.useThinking && isOpus;
@@ -358,7 +358,7 @@ async function streamAI(systemPrompt, userPrompt, model, res) {
   if (!apiKey) return streamAI(systemPrompt, userPrompt, 'groq', res);
 
   const modelId = model === 'haiku' ? MODELS.haiku.model : MODELS.opus.model;
-  const isOpus = modelId.includes('opus');
+  const isOpus = modelId.includes('sonnet');
   const maxTokens = model === 'haiku' ? MODELS.haiku.maxOutput : MODELS.opus.maxOutput;
 
   try {
