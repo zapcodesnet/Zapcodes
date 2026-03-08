@@ -2,17 +2,12 @@ const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
 const { v4: uuidv4 } = require('uuid');
 
-// ══════════════════════════════════════════════════════════════════
-// UNIFIED USER MODEL — Field names match BlendLink's database
-// Both blendlink.net and zapcodes.net share the same users collection
-// ══════════════════════════════════════════════════════════════════
-
 const userSchema = new mongoose.Schema({
   // ══════════ Core Identity (matches BlendLink) ══════════
   user_id: { type: String, unique: true, default: () => `user_${uuidv4().replace(/-/g, '').slice(0, 12)}` },
   email: { type: String, required: true, unique: true, lowercase: true, trim: true },
-  password: { type: String, select: false },           // Zapcodes auth uses this
-  password_hash: { type: String, select: false },       // BlendLink auth uses this
+  password: { type: String, select: false },
+  password_hash: { type: String, select: false },
   name: { type: String, required: true, trim: true },
   username: { type: String, default: '' },
   avatar: { type: String, default: '' },
@@ -27,8 +22,6 @@ const userSchema = new mongoose.Schema({
   githubTokenSetAt: { type: Date },
 
   // ══════════ Role System ══════════
-  // BlendLink uses: is_admin (boolean)
-  // Zapcodes uses: role (string) — keep BOTH so both platforms work
   role: { type: String, enum: ['user', 'moderator', 'co-admin', 'super-admin'], default: 'user' },
   is_admin: { type: Boolean, default: false },
   permissions: {
@@ -48,7 +41,6 @@ const userSchema = new mongoose.Schema({
   twoFactorEnabled: { type: Boolean, default: false },
 
   // ══════════ UNIFIED Subscription (matches BlendLink) ══════════
-  // CHANGED: "plan" → "subscription_tier" to match BlendLink
   subscription_tier: { type: String, enum: ['free', 'bronze', 'silver', 'gold', 'diamond'], default: 'free' },
   customPrice: { type: Number, default: null },
   billingInterval: { type: String, enum: ['monthly', 'yearly', 'one-time', null], default: null },
@@ -63,12 +55,11 @@ const userSchema = new mongoose.Schema({
   customFeatures: [{ type: String }],
   stripeCustomerId: { type: String },
   stripeSubscriptionId: { type: String },
-  stripe_customer_id: { type: String },      // BlendLink uses this name
+  stripe_customer_id: { type: String },
   xenditCustomerId: { type: String },
   paymentProvider: { type: String, enum: ['stripe', 'xendit', null], default: null },
 
   // ══════════ UNIFIED BL Coin Economy (matches BlendLink) ══════════
-  // CHANGED: "blCoins" → "bl_coins" to match BlendLink
   bl_coins: { type: Number, default: 0 },
   signup_bonus_claimed: { type: Boolean, default: false },
   last_daily_claim: { type: Date, default: null },
@@ -107,11 +98,21 @@ const userSchema = new mongoose.Schema({
     githubPushes: { type: Number, default: 0 },
   },
 
+  // ══════════ Monthly Usage Tracking (NEW) ══════════
+  monthly_usage: {
+    month: { type: String },
+    gemini_pro_gens: { type: Number, default: 0 },
+    gemini_flash_gens: { type: Number, default: 0 },
+    haiku_gens: { type: Number, default: 0 },
+    sonnet_gens: { type: Number, default: 0 },
+    groq_gens: { type: Number, default: 0 },
+    code_fixes: { type: Number, default: 0 },
+    github_pushes: { type: Number, default: 0 },
+  },
+
   // ══════════ UNIFIED Referral System (matches BlendLink) ══════════
-  // CHANGED: "referralCode" → "referral_code" to match BlendLink
-  // CHANGED: "referredBy" → "referred_by" to match BlendLink
   referral_code: { type: String, unique: true, sparse: true },
-  referred_by: { type: String },  // stores user_id string (BlendLink style)
+  referred_by: { type: String },
   referral_count: { type: Number, default: 0 },
   referral_bonuses_paid: { type: Number, default: 0 },
   direct_referrals: { type: Number, default: 0 },
@@ -144,7 +145,7 @@ const userSchema = new mongoose.Schema({
     updatedAt: { type: Date, default: Date.now },
   }],
 
-  // Legacy usage (kept for migration)
+  // Legacy usage
   scansUsed: { type: Number, default: 0 },
   scansLimit: { type: Number, default: 5 },
   buildsUsed: { type: Number, default: 0 },
@@ -152,7 +153,7 @@ const userSchema = new mongoose.Schema({
   fixesApplied: { type: Number, default: 0 },
 
   // AI Preferences
-  preferredAI: { type: String, enum: ['groq', 'haiku', 'opus'], default: 'groq' },
+  preferredAI: { type: String, enum: ['groq', 'gemini-flash', 'gemini-pro', 'haiku', 'sonnet'], default: 'gemini-flash' },
   deployPlatform: { type: String, enum: ['cloudflare', 'vercel', 'render', 'netlify', 'railway', 'other', null], default: null },
 
   // Status
@@ -172,19 +173,17 @@ const userSchema = new mongoose.Schema({
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now },
 }, { timestamps: true, strict: false });
-// NOTE: strict:false allows BlendLink's extra fields to exist without errors
 
-// Password hashing — writes BOTH "password" and "password_hash" for cross-platform compatibility
+// Password hashing — writes BOTH fields for cross-platform compatibility
 userSchema.pre('save', async function (next) {
   if (!this.isModified('password') || !this.password) return next();
   const hashed = await bcrypt.hash(this.password, 12);
   this.password = hashed;
-  this.password_hash = hashed;  // BlendLink reads this field
+  this.password_hash = hashed;
   next();
 });
 
 userSchema.methods.comparePassword = async function (candidatePassword) {
-  // Try both field names for cross-platform login
   const hash = this.password || this.password_hash;
   if (!hash) return false;
   return bcrypt.compare(candidatePassword, hash);
@@ -196,7 +195,7 @@ userSchema.methods.toSafeObject = function () {
   delete obj.password_hash;
   delete obj.githubToken;
   delete obj.twoFactorSecret;
-  // Backward-compatible aliases for frontend (uses old camelCase names)
+  // Backward-compatible aliases for frontend
   obj.plan = obj.subscription_tier;
   obj.blCoins = obj.bl_coins;
   obj.referralCode = obj.referral_code;
@@ -205,6 +204,7 @@ userSchema.methods.toSafeObject = function () {
   obj.lastDailyClaim = obj.last_daily_claim;
   obj.blTransactions = obj.bl_transactions;
   obj.dailyUsage = obj.daily_usage;
+  obj.monthlyUsage = obj.monthly_usage;
   obj.deployedSites = obj.deployed_sites;
   obj.savedProjects = obj.saved_projects;
   obj.referralCount = obj.referral_count;
@@ -220,37 +220,109 @@ userSchema.methods.hasPermission = function (perm) {
   return this.permissions?.[perm] === true;
 };
 
-// ══════════ TIER CONFIG — Uses subscription_tier field ══════════
+// ══════════ TIER CONFIG — NEW: Monthly limits + model chains ══════════
 userSchema.methods.getTierConfig = function () {
   const tiers = {
-    free:    { dailyClaim: 2000,   dailyGenCap: 1,        dailyFixCap: 0,        dailyPushCap: 0,        maxSites: 1,        maxChars: 2000,     maxFileSize: 0,            aiModels: ['groq'],                   canPWA: false, canRemoveBadge: false, canProDev: false },
-    bronze:  { dailyClaim: 20000,  dailyGenCap: 5,        dailyFixCap: 3,        dailyPushCap: 3,        maxSites: 3,        maxChars: 3000,     maxFileSize: 200 * 1024,   aiModels: ['groq'],                   canPWA: false, canRemoveBadge: false, canProDev: false },
-    silver:  { dailyClaim: 80000,  dailyGenCap: 7,        dailyFixCap: 10,       dailyPushCap: 10,       maxSites: 5,        maxChars: 4000,     maxFileSize: 500 * 1024,   aiModels: ['haiku', 'groq'],          canPWA: false, canRemoveBadge: false, canProDev: false },
-    gold:    { dailyClaim: 250000, dailyGenCap: 15,       dailyFixCap: 50,       dailyPushCap: 50,       maxSites: 15,       maxChars: 5000,     maxFileSize: 1024 * 1024,  aiModels: ['haiku', 'groq'],          canPWA: true,  canRemoveBadge: true,  canProDev: true },
-    diamond: { dailyClaim: 500000, dailyGenCap: Infinity, dailyFixCap: Infinity, dailyPushCap: Infinity, maxSites: Infinity, maxChars: Infinity, maxFileSize: Infinity,     aiModels: ['opus', 'haiku', 'groq'],  canPWA: true,  canRemoveBadge: true,  canProDev: true },
+    free: {
+      dailyClaim: 2000, maxChars: 2000, maxSites: 1, maxFileSize: 0,
+      canPWA: false, canRemoveBadge: false, canProDev: false,
+      monthlyFixCap: 0, monthlyPushCap: 0,
+      modelChain: ['gemini-flash', 'groq'],
+      monthlyLimits: { 'gemini-flash': 1, groq: 30 },
+    },
+    bronze: {
+      dailyClaim: 20000, maxChars: 3000, maxSites: 3, maxFileSize: 200 * 1024,
+      canPWA: false, canRemoveBadge: false, canProDev: false,
+      monthlyFixCap: 90, monthlyPushCap: 90,
+      modelChain: ['gemini-flash', 'groq'],
+      monthlyLimits: { 'gemini-flash': 30, groq: 90 },
+    },
+    silver: {
+      dailyClaim: 80000, maxChars: 4000, maxSites: 5, maxFileSize: 500 * 1024,
+      canPWA: false, canRemoveBadge: true, canProDev: false,
+      monthlyFixCap: 300, monthlyPushCap: 300,
+      modelChain: ['gemini-flash', 'groq'],
+      monthlyLimits: { 'gemini-flash': 210, groq: 630 },
+    },
+    gold: {
+      dailyClaim: 250000, maxChars: 5000, maxSites: 15, maxFileSize: 1024 * 1024,
+      canPWA: true, canRemoveBadge: true, canProDev: true,
+      monthlyFixCap: 1500, monthlyPushCap: 1500,
+      modelChain: ['gemini-pro', 'gemini-flash', 'groq'],
+      monthlyLimits: { 'gemini-pro': 450, 'gemini-flash': 450, groq: 1350 },
+    },
+    diamond: {
+      dailyClaim: 500000, maxChars: Infinity, maxSites: Infinity, maxFileSize: Infinity,
+      canPWA: true, canRemoveBadge: true, canProDev: true,
+      monthlyFixCap: Infinity, monthlyPushCap: Infinity,
+      modelChain: ['gemini-pro', 'gemini-flash', 'haiku', 'groq'],
+      monthlyLimits: { 'gemini-pro': Infinity, 'gemini-flash': Infinity, haiku: Infinity, groq: Infinity },
+    },
   };
-  // CHANGED: reads "subscription_tier" instead of "plan"
   return tiers[this.subscription_tier] || tiers.free;
 };
 
-// Daily usage check + auto-reset
+// ══════════ MONTHLY USAGE — auto-resets each month ══════════
+userSchema.methods.getMonthlyUsage = function () {
+  const currentMonth = new Date().toISOString().slice(0, 7);
+  if (!this.monthly_usage || this.monthly_usage.month !== currentMonth) {
+    this.monthly_usage = {
+      month: currentMonth,
+      gemini_pro_gens: 0,
+      gemini_flash_gens: 0,
+      haiku_gens: 0,
+      sonnet_gens: 0,
+      groq_gens: 0,
+      code_fixes: 0,
+      github_pushes: 0,
+    };
+  }
+  return this.monthly_usage;
+};
+
+userSchema.methods.incrementMonthlyUsage = function (model, actionType) {
+  const mu = this.getMonthlyUsage();
+  if (actionType === 'generation' || actionType === 'gen') {
+    const field = `${model.replace(/-/g, '_')}_gens`;
+    if (mu[field] !== undefined) mu[field] += 1;
+  } else if (actionType === 'code_fix') {
+    mu.code_fixes += 1;
+  } else if (actionType === 'push') {
+    mu.github_pushes += 1;
+  }
+  this.monthly_usage = mu;
+};
+
+userSchema.methods.decrementMonthlyUsage = function (model, actionType) {
+  const mu = this.getMonthlyUsage();
+  if (actionType === 'generation' || actionType === 'gen') {
+    const field = `${model.replace(/-/g, '_')}_gens`;
+    if (mu[field] !== undefined) mu[field] = Math.max(0, mu[field] - 1);
+  } else if (actionType === 'code_fix') {
+    mu.code_fixes = Math.max(0, mu.code_fixes - 1);
+  } else if (actionType === 'push') {
+    mu.github_pushes = Math.max(0, mu.github_pushes - 1);
+  }
+  this.monthly_usage = mu;
+};
+
+// Daily usage check (kept for backward compatibility)
 userSchema.methods.canPerformAction = function (actionType) {
   if (this.role === 'super-admin') return true;
   const config = this.getTierConfig();
   const today = new Date().toISOString().split('T')[0];
-  // CHANGED: "dailyUsage" → "daily_usage"
   if (!this.daily_usage || this.daily_usage.date !== today) {
     this.daily_usage = { date: today, generations: 0, codeFixes: 0, githubPushes: 0 };
   }
   switch (actionType) {
-    case 'generation': return this.daily_usage.generations < config.dailyGenCap;
-    case 'codeFix':    return this.daily_usage.codeFixes < config.dailyFixCap;
-    case 'githubPush': return this.daily_usage.githubPushes < config.dailyPushCap;
+    case 'generation': return true; // Now handled by monthly limits
+    case 'codeFix': return true;    // Now handled by monthly limits
+    case 'githubPush': return true;  // Now handled by monthly limits
     default: return false;
   }
 };
 
-// BL Coin operations — CHANGED: "blCoins" → "bl_coins", "blTransactions" → "bl_transactions"
+// BL Coin operations
 userSchema.methods.spendCoins = function (amount, type, description, aiModel) {
   if (this.role === 'super-admin') return;
   if (this.bl_coins < amount) throw new Error('Insufficient BL coins');
@@ -265,7 +337,6 @@ userSchema.methods.creditCoins = function (amount, type, description) {
   if (this.bl_transactions.length > 100) this.bl_transactions = this.bl_transactions.slice(-100);
 };
 
-// CHANGED: "lastDailyClaim" → "last_daily_claim"
 userSchema.methods.canClaimDaily = function () {
   const lastClaim = this.last_daily_claim || this.daily_claim_last;
   if (!lastClaim) return true;
@@ -281,11 +352,10 @@ userSchema.methods.getClaimCountdown = function () {
   return Math.max(0, Math.ceil((next - Date.now()) / 1000));
 };
 
-// Get effective AI model for tier
 userSchema.methods.getEffectiveAI = function (requestedModel) {
   const config = this.getTierConfig();
-  if (requestedModel && config.aiModels.includes(requestedModel)) return requestedModel;
-  return config.aiModels[0];
+  if (requestedModel && config.modelChain.includes(requestedModel)) return requestedModel;
+  return config.modelChain[0];
 };
 
 module.exports = mongoose.model('User', userSchema);
