@@ -21,7 +21,7 @@ const TEMPLATES = [
 const MODEL_TIMEOUTS = {
   groq: 180000,   // 3 minutes
   haiku: 360000,  // 6 minutes (generation + verifyAndFix)
-  opus: 600000,   // 10 minutes (generation + thinking + verifyAndFix)
+  opus: 300000,   // 5 minutes (Sonnet 4.6, single pass)
 };
 
 const UNLIMITED = 999999999;
