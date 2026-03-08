@@ -338,7 +338,7 @@ router.post('/generate-with-progress', auth, async (req, res) => {
       files = result ? parseFilesFromResponse(result) : [];
 
       // Self-correction pass for Claude models
-      if (model !== 'groq' && files.length > 0 && !aborted) {
+      if (model === 'haiku' && files.length > 0 && !aborted) {
         sendProgress('optimizing', 'Verifying code completeness and fixing any issues...');
         files = await verifyAndFix(files, model, aiOpts);
       }
@@ -475,7 +475,7 @@ router.post('/generate', auth, async (req, res) => {
       const result = await callAI(GEN_PROMPT, userPrompt, model);
       files = result ? parseFilesFromResponse(result) : [];
 
-      if (model !== 'groq' && files.length > 0) {
+      if (model === 'haiku' && files.length > 0) {
         files = await verifyAndFix(files, model);
       }
     }
