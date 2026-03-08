@@ -4,7 +4,7 @@ import { AuthContext } from '../context/AuthContext';
 import api, { API_URL } from '../api';
 
 const TIER_COLORS = { free: '#888', bronze: '#cd7f32', silver: '#c0c0c0', gold: '#ffd700', diamond: '#b9f2ff' };
-const MODEL_LABELS = { groq: 'Groq AI', haiku: 'Claude Haiku 4.5', opus: 'Claude Opus 4.6' };
+const MODEL_LABELS = { groq: 'Groq AI', haiku: 'Claude Haiku 4.5', opus: 'Claude Sonnet 4.6' };
 const BL_COSTS = { groq: 5000, haiku: 10000, opus: 50000 };
 const TEMPLATES = [
   { id: 'custom', name: 'Custom (AI Chat)', icon: '💬' },
