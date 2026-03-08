@@ -29,7 +29,7 @@ const MODELS = {
 
 const CLAUDE_MODEL = MODELS.opus.model;
 const CLAUDE_MAX_OUTPUT = 64000;
-const CLAUDE_LARGE_OUTPUT = 128000;
+const CLAUDE_LARGE_OUTPUT = 64000;
 const GROQ_MAX_OUTPUT = MODELS.groq.maxOutput;
 const GROQ_MODELS = MODELS.groq.models;
 
@@ -97,7 +97,7 @@ async function callAI(systemPrompt, userPrompt, model = 'groq', maxTokens, opts 
       return callClaude(systemPrompt, userPrompt, {
         model: MODELS.opus.model,
         maxTokens: maxTokens || MODELS.opus.maxOutput,
-        useThinking: true,   // Opus: use adaptive thinking
+        useThinking: false,   // Sonnet: no thinking needed, maximize speed
         requestedModel: 'opus',
         onProgress: opts.onProgress,
         signal: opts.signal,
@@ -525,7 +525,7 @@ FILES:\n${phase.fileList}`;
   }
 
   // Self-correction pass for Claude models
-  if (engine !== 'groq' && allFiles.length > 0) {
+  if (engine === 'haiku' && allFiles.length > 0) {
     return verifyAndFix(allFiles, engine, opts);
   }
 
