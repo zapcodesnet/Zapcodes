@@ -21,7 +21,7 @@ const MODELS = {
     contextLimit: 180000,
   },
   opus: {
-    model: 'claude-opus-4-6',
+    model: 'claude-sonnet-4-6',
     maxOutput: 128000,   // FIX: was 64000 — Opus 4.6 supports up to 128K output
     contextLimit: 200000,
   },
