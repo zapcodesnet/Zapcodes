@@ -169,6 +169,20 @@ function generatePreviewHTML(files) {
 
 const BADGE_SCRIPT = `<div id="zc-badge" style="position:fixed;bottom:10px;right:10px;z-index:99999;background:linear-gradient(135deg,#6366f1,#8b5cf6);color:#fff;padding:6px 14px;border-radius:20px;font-family:-apple-system,sans-serif;font-size:12px;font-weight:600;box-shadow:0 2px 10px rgba(99,102,241,.3);cursor:pointer;text-decoration:none;display:flex;align-items:center;gap:4px" onclick="window.open('https://zapcodes.net?ref=badge','_blank')">⚡ Made with ZapCodes</div>`;
 
+// FIX: Safe SSE write helper — logs errors instead of swallowing them silently
+function safeSend(res, data) {
+  try {
+    if (!res.writableEnded && !res.destroyed) {
+      res.write(`data: ${JSON.stringify(data)}\n\n`);
+      return true;
+    }
+    return false;
+  } catch (err) {
+    console.error(`[SSE] Write failed (connection likely closed): ${err.message}`);
+    return false;
+  }
+}
+
 // ══════════ GET /api/build/costs ══════════
 router.get('/costs', (req, res) => {
   res.json({ costs: BL_COSTS });
@@ -180,7 +194,7 @@ router.get('/available-models', auth, (req, res) => {
   let models = [];
   if (tier === 'diamond') {
     models = [
-      { id: 'opus', name: 'Claude Opus 4.6', desc: 'Most advanced — best quality', cost: BL_COSTS.generation.opus },
+      { id: 'opus', name: 'Claude Opus 4.6', desc: 'Most advanced — best quality (may take 2-4 min)', cost: BL_COSTS.generation.opus },
       { id: 'haiku', name: 'Claude Haiku 4.5', desc: 'Fast and capable', cost: BL_COSTS.generation.haiku },
       { id: 'groq', name: 'Groq AI', desc: 'Efficient and quick', cost: BL_COSTS.generation.groq },
     ];
@@ -201,26 +215,39 @@ router.get('/available-models', auth, (req, res) => {
 router.post('/generate-with-progress', auth, async (req, res) => {
   const sessionId = `gen-${req.user._id}-${Date.now()}`;
   let keepaliveInterval = null;
+  let connectionAlive = true;
+
   try {
     const user = req.user;
     const { prompt, template, projectName, description, colorScheme, features, model: requestedModel } = req.body;
 
     // SSE headers
+    // FIX: Added X-Accel-Buffering and proper timeout headers for Render/nginx proxies
     res.writeHead(200, {
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache',
       'Connection': 'keep-alive',
       'X-Accel-Buffering': 'no',
+      'Access-Control-Allow-Origin': '*',
     });
 
     const sendProgress = (step, message, extra = {}) => {
-      try { res.write(`data: ${JSON.stringify({ type: 'progress', step, message, ...extra })}\n\n`); } catch {}
+      if (!connectionAlive) return;
+      safeSend(res, { type: 'progress', step, message, ...extra });
     };
 
     // Track session for interrupt
     let aborted = false;
     activeSessions.set(sessionId, { abort: () => { aborted = true; } });
-    res.on('close', () => { aborted = true; if (keepaliveInterval) clearInterval(keepaliveInterval); activeSessions.delete(sessionId); });
+
+    // FIX: Track connection state properly
+    res.on('close', () => {
+      aborted = true;
+      connectionAlive = false;
+      if (keepaliveInterval) clearInterval(keepaliveInterval);
+      activeSessions.delete(sessionId);
+      console.log(`[SSE] Connection closed for session ${sessionId}`);
+    });
 
     sendProgress('validating', PROGRESS_STEPS.validating);
 
@@ -228,7 +255,7 @@ router.post('/generate-with-progress', auth, async (req, res) => {
     if (!user.canPerformAction('generation')) {
       const config = user.getTierConfig();
       sendProgress('error', `Daily generation limit reached (${user.daily_usage?.generations || 0}/${config.dailyGenCap}). Upgrade for more.`);
-      res.write(`data: ${JSON.stringify({ type: 'error', error: 'Daily generation limit reached', upgrade: true })}\n\n`);
+      safeSend(res, { type: 'error', error: 'Daily generation limit reached', upgrade: true });
       return res.end();
     }
 
@@ -237,21 +264,23 @@ router.post('/generate-with-progress', auth, async (req, res) => {
     const inputText = prompt || description || '';
     if (config.maxChars !== Infinity && inputText.length > config.maxChars) {
       sendProgress('error', `Message too long. Your plan allows ${config.maxChars} characters.`);
-      res.write(`data: ${JSON.stringify({ type: 'error', error: 'Message too long' })}\n\n`);
+      safeSend(res, { type: 'error', error: 'Message too long' });
       return res.end();
     }
 
     const cost = BL_COSTS.generation[model];
     if (user.role !== 'super-admin' && user.bl_coins < cost) {
       sendProgress('error', `Insufficient BL coins. Need ${cost.toLocaleString()}, have ${user.bl_coins.toLocaleString()}.`);
-      res.write(`data: ${JSON.stringify({ type: 'error', error: 'Insufficient BL coins', required: cost, balance: user.bl_coins })}\n\n`);
+      safeSend(res, { type: 'error', error: 'Insufficient BL coins', required: cost, balance: user.bl_coins });
       return res.end();
     }
 
     // Deduct coins
     user.spendCoins(cost, 'generation', `Website generation (${model})`, model);
     const today = new Date().toISOString().split('T')[0];
-    if (!user.daily_usage || user.daily_usage.date !== today) user.daily_usage = { date: today, generations: 0, codeFixes: 0, githubPushes: 0 };
+    if (!user.daily_usage || user.daily_usage.date !== today) {
+      user.daily_usage = { date: today, generations: 0, codeFixes: 0, githubPushes: 0 };
+    }
     user.daily_usage.generations += 1;
     await user.save();
 
@@ -262,21 +291,39 @@ router.post('/generate-with-progress', auth, async (req, res) => {
       user.daily_usage.generations = Math.max(0, user.daily_usage.generations - 1);
       await user.save();
       sendProgress('stopped', 'Generation stopped as per your request.');
-      res.write(`data: ${JSON.stringify({ type: 'stopped' })}\n\n`);
+      safeSend(res, { type: 'stopped' });
       return res.end();
     }
 
-    sendProgress('connecting', `${PROGRESS_STEPS.connecting} (${model === 'opus' ? 'Claude Opus 4.6' : model === 'haiku' ? 'Claude Haiku 4.5' : 'Groq AI'})`);
+    // FIX: More informative model connection message with estimated time
+    const modelLabel = model === 'opus' ? 'Claude Opus 4.6 (~2-4 min)' : model === 'haiku' ? 'Claude Haiku 4.5 (~1-2 min)' : 'Groq AI (~30s)';
+    sendProgress('connecting', `${PROGRESS_STEPS.connecting} (${modelLabel})`);
 
-    // SSE keepalive
+    // FIX: More frequent keepalive — every 10s instead of 15s
+    // Render's proxy timeout is 30s, so 10s keepalive ensures we stay under that
     keepaliveInterval = setInterval(() => {
-      try { res.write(`: keepalive\n\n`); } catch {}
-    }, 15000);
+      if (!connectionAlive) {
+        clearInterval(keepaliveInterval);
+        return;
+      }
+      try {
+        if (!res.writableEnded && !res.destroyed) {
+          res.write(`: keepalive\n\n`);
+        } else {
+          clearInterval(keepaliveInterval);
+          connectionAlive = false;
+        }
+      } catch (err) {
+        console.error(`[SSE] Keepalive failed: ${err.message}`);
+        clearInterval(keepaliveInterval);
+        connectionAlive = false;
+      }
+    }, 10000);
 
     // Generate with progress callbacks
     const aiOpts = {
       onProgress: (msg) => {
-        if (!aborted) sendProgress('generating', msg);
+        if (!aborted && connectionAlive) sendProgress('generating', msg);
       },
     };
 
@@ -297,32 +344,39 @@ router.post('/generate-with-progress', auth, async (req, res) => {
       }
     }
 
-    if (aborted) {
-      clearInterval(keepaliveInterval);
+    if (aborted || !connectionAlive) {
+      if (keepaliveInterval) clearInterval(keepaliveInterval);
       user.creditCoins(cost, 'generation', `Refund: generation stopped by user`);
       user.daily_usage.generations = Math.max(0, user.daily_usage.generations - 1);
       await user.save();
-      sendProgress('stopped', 'Generation stopped as per your request.');
-      res.write(`data: ${JSON.stringify({ type: 'stopped' })}\n\n`);
-      return res.end();
+      if (connectionAlive) {
+        sendProgress('stopped', 'Generation stopped as per your request.');
+        safeSend(res, { type: 'stopped' });
+        res.end();
+      }
+      return;
     }
 
     if (!files || files.length === 0) {
-      clearInterval(keepaliveInterval);
+      if (keepaliveInterval) clearInterval(keepaliveInterval);
       user.creditCoins(cost, 'generation', `Refund: generation failed (${model})`);
       user.daily_usage.generations = Math.max(0, user.daily_usage.generations - 1);
       await user.save();
-      sendProgress('error', 'AI generation produced no files. Coins refunded. Try a different prompt or model.');
-      res.write(`data: ${JSON.stringify({ type: 'error', error: 'Generation failed. Coins refunded.' })}\n\n`);
+      // FIX: More helpful error message telling user what happened
+      const errorMsg = model !== 'groq'
+        ? `AI generation produced no files using ${model === 'opus' ? 'Claude Opus 4.6' : 'Claude Haiku 4.5'}. This may be due to temporary API issues. Coins refunded. Try again or switch to a different model.`
+        : 'AI generation produced no files. Coins refunded. Try a different prompt.';
+      sendProgress('error', errorMsg);
+      safeSend(res, { type: 'error', error: 'Generation failed. Coins refunded.', model, suggestion: 'Try a different model or simplify your prompt.' });
       return res.end();
     }
 
     sendProgress('preview', PROGRESS_STEPS.preview);
     const preview = generatePreviewHTML(files);
 
-    sendProgress('done', `${PROGRESS_STEPS.done} ${files.length} file(s) generated.`);
+    sendProgress('done', `${PROGRESS_STEPS.done} ${files.length} file(s) generated using ${model === 'opus' ? 'Claude Opus 4.6' : model === 'haiku' ? 'Claude Haiku 4.5' : 'Groq AI'}.`);
 
-    res.write(`data: ${JSON.stringify({
+    safeSend(res, {
       type: 'complete',
       files,
       preview,
@@ -331,21 +385,35 @@ router.post('/generate-with-progress', auth, async (req, res) => {
       balanceRemaining: user.bl_coins,
       dailyUsage: user.daily_usage,
       fileCount: files.length,
-    })}\n\n`);
-    clearInterval(keepaliveInterval);
+    });
+
+    if (keepaliveInterval) clearInterval(keepaliveInterval);
     res.end();
     activeSessions.delete(sessionId);
   } catch (err) {
     if (keepaliveInterval) clearInterval(keepaliveInterval);
-    console.error('[Build] Generate-with-progress error:', err);
-    try {
-      if (err.message === 'Generation cancelled') {
-        res.write(`data: ${JSON.stringify({ type: 'stopped', message: 'Generation stopped.' })}\n\n`);
-      } else {
-        res.write(`data: ${JSON.stringify({ type: 'error', error: err.message || 'Generation failed' })}\n\n`);
+    console.error('[Build] Generate-with-progress error:', err.message);
+    // FIX: Log full error stack in non-production for debugging
+    if (process.env.NODE_ENV !== 'production') console.error(err.stack);
+
+    if (connectionAlive) {
+      try {
+        if (err.message === 'Generation cancelled') {
+          safeSend(res, { type: 'stopped', message: 'Generation stopped.' });
+        } else {
+          // FIX: Include actionable error details
+          safeSend(res, {
+            type: 'error',
+            error: err.message || 'Generation failed',
+            details: err.response?.data?.error?.message || undefined,
+            suggestion: 'If this keeps happening, try using Groq AI or contact support.',
+          });
+        }
+        res.end();
+      } catch (writeErr) {
+        console.error(`[SSE] Failed to send error response: ${writeErr.message}`);
       }
-      res.end();
-    } catch {}
+    }
     activeSessions.delete(sessionId);
   }
 });
@@ -393,7 +461,9 @@ router.post('/generate', auth, async (req, res) => {
 
     user.spendCoins(cost, 'generation', `Website generation (${model})`, model);
     const today = new Date().toISOString().split('T')[0];
-    if (!user.daily_usage || user.daily_usage.date !== today) user.daily_usage = { date: today, generations: 0, codeFixes: 0, githubPushes: 0 };
+    if (!user.daily_usage || user.daily_usage.date !== today) {
+      user.daily_usage = { date: today, generations: 0, codeFixes: 0, githubPushes: 0 };
+    }
     user.daily_usage.generations += 1;
     await user.save();
 
@@ -414,13 +484,13 @@ router.post('/generate', auth, async (req, res) => {
       user.creditCoins(cost, 'generation', `Refund: generation failed (${model})`);
       user.daily_usage.generations = Math.max(0, user.daily_usage.generations - 1);
       await user.save();
-      return res.status(500).json({ error: 'AI generation failed. Coins refunded.' });
+      return res.status(500).json({ error: 'AI generation failed. Coins refunded.', model, suggestion: 'Try a different model or prompt.' });
     }
 
     const preview = generatePreviewHTML(files);
     res.json({ files, preview, model, blSpent: cost, balanceRemaining: user.bl_coins, dailyUsage: user.daily_usage, fileCount: files.length });
   } catch (err) {
-    console.error('[Build] Generate error:', err);
+    console.error('[Build] Generate error:', err.message);
     res.status(500).json({ error: err.message || 'Generation failed' });
   }
 });
@@ -463,7 +533,16 @@ router.post('/save-project', auth, async (req, res) => {
     const proj = projectId
       ? user.saved_projects.find(p => p.projectId === projectId)
       : user.saved_projects[user.saved_projects.length - 1];
-    res.json({ project: { projectId: proj.projectId, name: proj.name, version: proj.version, fileCount: proj.files.length, updatedAt: proj.updatedAt }, message: 'Project saved!' });
+    res.json({
+      project: {
+        projectId: proj.projectId,
+        name: proj.name,
+        version: proj.version,
+        fileCount: proj.files.length,
+        updatedAt: proj.updatedAt,
+      },
+      message: 'Project saved!',
+    });
   } catch (err) {
     console.error('[Build] Save project error:', err);
     res.status(500).json({ error: 'Failed to save project' });
@@ -501,7 +580,9 @@ router.delete('/project/:projectId', auth, async (req, res) => {
     user.saved_projects.splice(idx, 1);
     await user.save();
     res.json({ success: true });
-  } catch (err) { res.status(500).json({ error: 'Delete failed' }); }
+  } catch (err) {
+    res.status(500).json({ error: 'Delete failed' });
+  }
 });
 
 // ══════════ POST /api/build/deploy ══════════
@@ -515,14 +596,48 @@ router.post('/deploy', auth, async (req, res) => {
     if (RESERVED.includes(sub)) return res.status(400).json({ error: 'This subdomain is reserved' });
     const existingSite = user.deployed_sites.find(s => s.subdomain === sub);
     if (!existingSite && user.deployed_sites.length >= config.maxSites) return res.status(403).json({ error: `Site limit reached (${config.maxSites}). Upgrade for more.`, upgrade: true });
-    if (!existingSite) { const taken = await User.findOne({ 'deployed_sites.subdomain': sub, _id: { $ne: user._id } }); if (taken) return res.status(409).json({ error: 'Subdomain already taken' }); }
+    if (!existingSite) {
+      const taken = await User.findOne({ 'deployed_sites.subdomain': sub, _id: { $ne: user._id } });
+      if (taken) return res.status(409).json({ error: 'Subdomain already taken' });
+    }
     let deployFiles = files;
     const shouldInjectBadge = !config.canRemoveBadge;
-    if (shouldInjectBadge && deployFiles) { deployFiles = deployFiles.map(f => { if (f.name === 'index.html' || f.name.endsWith('.html')) { return { ...f, content: f.content.replace('</body>', `${BADGE_SCRIPT}</body>`) }; } return f; }); }
-    if (existingSite) { existingSite.title = title || existingSite.title; existingSite.files = deployFiles; existingSite.lastUpdated = new Date(); existingSite.hasBadge = shouldInjectBadge; existingSite.fileSize = JSON.stringify(files).length; } else { user.deployed_sites.push({ subdomain: sub, title: title || sub, files: deployFiles, hasBadge: shouldInjectBadge, fileSize: JSON.stringify(files).length }); }
+    if (shouldInjectBadge && deployFiles) {
+      deployFiles = deployFiles.map(f => {
+        if (f.name === 'index.html' || f.name.endsWith('.html')) {
+          return { ...f, content: f.content.replace('</body>', `${BADGE_SCRIPT}</body>`) };
+        }
+        return f;
+      });
+    }
+    if (existingSite) {
+      existingSite.title = title || existingSite.title;
+      existingSite.files = deployFiles;
+      existingSite.lastUpdated = new Date();
+      existingSite.hasBadge = shouldInjectBadge;
+      existingSite.fileSize = JSON.stringify(files).length;
+    } else {
+      user.deployed_sites.push({
+        subdomain: sub,
+        title: title || sub,
+        files: deployFiles,
+        hasBadge: shouldInjectBadge,
+        fileSize: JSON.stringify(files).length,
+      });
+    }
     await user.save();
-    res.json({ url: `https://${sub}.zapcodes.net`, subdomain: sub, deployed: true, hasBadge: shouldInjectBadge, sites: user.deployed_sites.length, maxSites: config.maxSites });
-  } catch (err) { console.error('[Build] Deploy error:', err); res.status(500).json({ error: 'Deploy failed' }); }
+    res.json({
+      url: `https://${sub}.zapcodes.net`,
+      subdomain: sub,
+      deployed: true,
+      hasBadge: shouldInjectBadge,
+      sites: user.deployed_sites.length,
+      maxSites: config.maxSites,
+    });
+  } catch (err) {
+    console.error('[Build] Deploy error:', err);
+    res.status(500).json({ error: 'Deploy failed' });
+  }
 });
 
 // ══════════ POST /api/build/code-fix ══════════
@@ -536,17 +651,27 @@ router.post('/code-fix', auth, async (req, res) => {
     if (user.role !== 'super-admin' && user.bl_coins < cost) return res.status(402).json({ error: 'Insufficient BL coins', required: cost, balance: user.bl_coins });
     user.spendCoins(cost, 'code_fix', `Code fix (${model})`, model);
     const today = new Date().toISOString().split('T')[0];
-    if (!user.daily_usage || user.daily_usage.date !== today) user.daily_usage = { date: today, generations: 0, codeFixes: 0, githubPushes: 0 };
+    if (!user.daily_usage || user.daily_usage.date !== today) {
+      user.daily_usage = { date: today, generations: 0, codeFixes: 0, githubPushes: 0 };
+    }
     user.daily_usage.codeFixes += 1;
     await user.save();
     const fileContent = (files || []).map(f => `--- ${f.name} ---\n${f.content}`).join('\n\n');
     const userPrompt = `Fix these files:\n\n${fileContent}\n\nIssue: ${description || 'Fix all bugs and errors'}`;
     const result = await callAI(FIX_PROMPT, userPrompt, model);
     const fixedFiles = result ? parseFilesFromResponse(result) : [];
-    if (!fixedFiles.length) { user.creditCoins(cost, 'code_fix', 'Refund: code fix failed'); user.daily_usage.codeFixes = Math.max(0, user.daily_usage.codeFixes - 1); await user.save(); return res.status(500).json({ error: 'Code fix failed. Coins refunded.' }); }
+    if (!fixedFiles.length) {
+      user.creditCoins(cost, 'code_fix', 'Refund: code fix failed');
+      user.daily_usage.codeFixes = Math.max(0, user.daily_usage.codeFixes - 1);
+      await user.save();
+      return res.status(500).json({ error: 'Code fix failed. Coins refunded.' });
+    }
     const preview = generatePreviewHTML(fixedFiles);
     res.json({ files: fixedFiles, preview, model, blSpent: cost, balanceRemaining: user.bl_coins });
-  } catch (err) { console.error('[Build] Fix error:', err); res.status(500).json({ error: 'Code fix failed' }); }
+  } catch (err) {
+    console.error('[Build] Fix error:', err);
+    res.status(500).json({ error: 'Code fix failed' });
+  }
 });
 
 // ══════════ GitHub push, PWA, badge removal, clone, sites ══════════
@@ -560,37 +685,82 @@ router.post('/github-push', auth, async (req, res) => {
     if (!token) return res.status(400).json({ error: 'Connect GitHub first in Settings' });
     user.spendCoins(BL_COSTS.githubPush, 'github_push', 'GitHub push');
     const today = new Date().toISOString().split('T')[0];
-    if (!user.daily_usage || user.daily_usage.date !== today) user.daily_usage = { date: today, generations: 0, codeFixes: 0, githubPushes: 0 };
+    if (!user.daily_usage || user.daily_usage.date !== today) {
+      user.daily_usage = { date: today, generations: 0, codeFixes: 0, githubPushes: 0 };
+    }
     user.daily_usage.githubPushes += 1;
     await user.save();
     const ghUser = await axios.get('https://api.github.com/user', { headers: { Authorization: `Bearer ${token}` } });
     const owner = ghUser.data.login;
     let repo;
-    try { const r = await axios.get(`https://api.github.com/repos/${owner}/${repoName}`, { headers: { Authorization: `Bearer ${token}` } }); repo = r.data; } catch { const r = await axios.post('https://api.github.com/user/repos', { name: repoName, private: false, auto_init: true, description: 'Built with ZapCodes AI' }, { headers: { Authorization: `Bearer ${token}` } }); repo = r.data; }
-    for (const file of (files || [])) { const content = Buffer.from(file.content).toString('base64'); const path = file.name.startsWith('/') ? file.name.slice(1) : file.name; let sha; try { const existing = await axios.get(`https://api.github.com/repos/${owner}/${repoName}/contents/${path}`, { headers: { Authorization: `Bearer ${token}` } }); sha = existing.data.sha; } catch {} await axios.put(`https://api.github.com/repos/${owner}/${repoName}/contents/${path}`, { message: message || 'Deploy via ZapCodes', content, sha }, { headers: { Authorization: `Bearer ${token}` } }); }
+    try {
+      const r = await axios.get(`https://api.github.com/repos/${owner}/${repoName}`, { headers: { Authorization: `Bearer ${token}` } });
+      repo = r.data;
+    } catch {
+      const r = await axios.post('https://api.github.com/user/repos', {
+        name: repoName,
+        private: false,
+        auto_init: true,
+        description: 'Built with ZapCodes AI',
+      }, { headers: { Authorization: `Bearer ${token}` } });
+      repo = r.data;
+    }
+    for (const file of (files || [])) {
+      const content = Buffer.from(file.content).toString('base64');
+      const path = file.name.startsWith('/') ? file.name.slice(1) : file.name;
+      let sha;
+      try {
+        const existing = await axios.get(`https://api.github.com/repos/${owner}/${repoName}/contents/${path}`, { headers: { Authorization: `Bearer ${token}` } });
+        sha = existing.data.sha;
+      } catch {}
+      await axios.put(`https://api.github.com/repos/${owner}/${repoName}/contents/${path}`, {
+        message: message || 'Deploy via ZapCodes',
+        content,
+        sha,
+      }, { headers: { Authorization: `Bearer ${token}` } });
+    }
     res.json({ success: true, repoUrl: repo.html_url, blSpent: BL_COSTS.githubPush, balanceRemaining: user.bl_coins });
-  } catch (err) { console.error('[Build] GitHub push error:', err); res.status(500).json({ error: 'GitHub push failed' }); }
+  } catch (err) {
+    console.error('[Build] GitHub push error:', err);
+    res.status(500).json({ error: 'GitHub push failed' });
+  }
 });
 
 router.post('/pwa', auth, async (req, res) => {
   try {
-    const user = req.user; const config = user.getTierConfig();
+    const user = req.user;
+    const config = user.getTierConfig();
     if (!config.canPWA) return res.status(403).json({ error: 'PWA requires Gold or Diamond plan', upgrade: true });
     if (user.role !== 'super-admin' && user.bl_coins < BL_COSTS.pwaBuild) return res.status(402).json({ error: 'Insufficient BL coins' });
     const { subdomain, appName, themeColor } = req.body;
     const site = user.deployed_sites.find(s => s.subdomain === subdomain);
     if (!site) return res.status(404).json({ error: 'Site not found' });
     user.spendCoins(BL_COSTS.pwaBuild, 'pwa_build', `PWA build for ${subdomain}`);
-    site.isPWA = true; await user.save();
-    const manifest = { name: appName || site.title || subdomain, short_name: (appName || subdomain).slice(0, 12), start_url: '/', display: 'standalone', background_color: '#000000', theme_color: themeColor || '#6366f1', icons: [{ src: '/icon-192.png', sizes: '192x192', type: 'image/png' }, { src: '/icon-512.png', sizes: '512x512', type: 'image/png' }] };
+    site.isPWA = true;
+    await user.save();
+    const manifest = {
+      name: appName || site.title || subdomain,
+      short_name: (appName || subdomain).slice(0, 12),
+      start_url: '/',
+      display: 'standalone',
+      background_color: '#000000',
+      theme_color: themeColor || '#6366f1',
+      icons: [
+        { src: '/icon-192.png', sizes: '192x192', type: 'image/png' },
+        { src: '/icon-512.png', sizes: '512x512', type: 'image/png' },
+      ],
+    };
     const sw = `const CACHE='zapcodes-${subdomain}-v1';const ASSETS=['/','/index.html'];self.addEventListener('install',e=>e.waitUntil(caches.open(CACHE).then(c=>c.addAll(ASSETS))));self.addEventListener('fetch',e=>e.respondWith(caches.match(e.request).then(r=>r||fetch(e.request))));`;
     res.json({ manifest, serviceWorker: sw, blSpent: BL_COSTS.pwaBuild, balanceRemaining: user.bl_coins });
-  } catch (err) { res.status(500).json({ error: 'PWA build failed' }); }
+  } catch (err) {
+    res.status(500).json({ error: 'PWA build failed' });
+  }
 });
 
 router.post('/remove-badge', auth, async (req, res) => {
   try {
-    const user = req.user; const config = user.getTierConfig();
+    const user = req.user;
+    const config = user.getTierConfig();
     if (!config.canRemoveBadge) return res.status(403).json({ error: 'Badge removal requires Gold or Diamond', upgrade: true });
     if (user.role !== 'super-admin' && user.bl_coins < BL_COSTS.badgeRemoval) return res.status(402).json({ error: 'Insufficient BL coins' });
     const { subdomain } = req.body;
@@ -598,22 +768,38 @@ router.post('/remove-badge', auth, async (req, res) => {
     if (!site) return res.status(404).json({ error: 'Site not found' });
     if (!site.hasBadge) return res.json({ message: 'Badge already removed' });
     user.spendCoins(BL_COSTS.badgeRemoval, 'badge_removal', `Badge removal for ${subdomain}`);
-    site.hasBadge = false; await user.save();
+    site.hasBadge = false;
+    await user.save();
     res.json({ success: true, subdomain, hasBadge: false, blSpent: BL_COSTS.badgeRemoval, balanceRemaining: user.bl_coins });
-  } catch (err) { res.status(500).json({ error: 'Badge removal failed' }); }
+  } catch (err) {
+    res.status(500).json({ error: 'Badge removal failed' });
+  }
 });
 
 router.post('/clone-analyze', auth, async (req, res) => {
   try {
     const { url, code } = req.body;
     let content = code || '';
-    if (url) { try { const r = await axios.get(url, { timeout: 15000, headers: { 'User-Agent': 'ZapCodes-Analyzer/1.0' } }); content = r.data; } catch (err) { return res.status(400).json({ error: `Could not fetch URL: ${err.message}` }); } }
+    if (url) {
+      try {
+        const r = await axios.get(url, { timeout: 15000, headers: { 'User-Agent': 'ZapCodes-Analyzer/1.0' } });
+        content = r.data;
+      } catch (err) {
+        return res.status(400).json({ error: `Could not fetch URL: ${err.message}` });
+      }
+    }
     if (!content) return res.status(400).json({ error: 'Provide a URL or code to analyze' });
     const analysis = await callAI(CLONE_PROMPT, content.slice(0, 30000), 'groq');
     let parsed;
-    try { parsed = JSON.parse(analysis); } catch { parsed = { title: 'Website', type: 'other', sections: [], colors: {}, layout: analysis }; }
+    try {
+      parsed = JSON.parse(analysis);
+    } catch {
+      parsed = { title: 'Website', type: 'other', sections: [], colors: {}, layout: analysis };
+    }
     res.json({ analysis: parsed });
-  } catch (err) { res.status(500).json({ error: 'Analysis failed' }); }
+  } catch (err) {
+    res.status(500).json({ error: 'Analysis failed' });
+  }
 });
 
 router.post('/clone-rebuild', auth, async (req, res) => {
@@ -622,7 +808,6 @@ router.post('/clone-rebuild', auth, async (req, res) => {
     const prompt = `Rebuild this website based on the analysis:\n\n${JSON.stringify(analysis)}\n\nUser modifications:\n${modifications || 'Keep faithful to original'}`;
     const user = req.user;
     const model = getEffectiveModel(user, req.body.model);
-    const config = user.getTierConfig();
     const cost = BL_COSTS.generation[model];
 
     if (!user.canPerformAction('generation')) return res.status(403).json({ error: 'Daily generation limit reached', upgrade: true });
@@ -630,7 +815,9 @@ router.post('/clone-rebuild', auth, async (req, res) => {
 
     user.spendCoins(cost, 'generation', `Clone rebuild (${model})`, model);
     const today = new Date().toISOString().split('T')[0];
-    if (!user.daily_usage || user.daily_usage.date !== today) user.daily_usage = { date: today, generations: 0, codeFixes: 0, githubPushes: 0 };
+    if (!user.daily_usage || user.daily_usage.date !== today) {
+      user.daily_usage = { date: today, generations: 0, codeFixes: 0, githubPushes: 0 };
+    }
     user.daily_usage.generations += 1;
     await user.save();
 
@@ -646,10 +833,18 @@ router.post('/clone-rebuild', auth, async (req, res) => {
     }
     const preview = generatePreviewHTML(files);
     res.json({ files, preview, model, blSpent: cost, balanceRemaining: user.bl_coins, dailyUsage: user.daily_usage, fileCount: files.length });
-  } catch (err) { res.status(500).json({ error: 'Clone rebuild failed' }); }
+  } catch (err) {
+    res.status(500).json({ error: 'Clone rebuild failed' });
+  }
 });
 
-router.get('/sites', auth, async (req, res) => { try { res.json({ sites: req.user.deployed_sites || [] }); } catch (err) { res.status(500).json({ error: 'Failed' }); } });
+router.get('/sites', auth, async (req, res) => {
+  try {
+    res.json({ sites: req.user.deployed_sites || [] });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed' });
+  }
+});
 
 router.delete('/site/:subdomain', auth, async (req, res) => {
   try {
@@ -659,7 +854,9 @@ router.delete('/site/:subdomain', auth, async (req, res) => {
     user.deployed_sites.splice(idx, 1);
     await user.save();
     res.json({ success: true, remaining: user.deployed_sites.length });
-  } catch (err) { res.status(500).json({ error: 'Failed' }); }
+  } catch (err) {
+    res.status(500).json({ error: 'Failed' });
+  }
 });
 
 router.get('/templates', (req, res) => {
