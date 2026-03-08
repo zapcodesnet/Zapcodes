@@ -71,7 +71,7 @@ Update `app.json` → `extra.apiUrl` to your backend URL.
 ## Design
 
 Dark cyber-terminal aesthetic with accent color `#00e5a0`. Monospace code blocks, severity-colored badges, glassmorphism cards.
-
+ 
  
  
  
