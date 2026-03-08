@@ -22,7 +22,7 @@ const MODELS = {
   },
   opus: {
     model: 'claude-sonnet-4-6',
-    maxOutput: 64000,
+    maxOutput: 16384,
     contextLimit: 200000,
   },
 };
