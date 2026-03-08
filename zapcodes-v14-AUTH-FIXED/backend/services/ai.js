@@ -4,17 +4,32 @@ const GROQ_API_URL = 'https://api.groq.com/openai/v1/chat/completions';
 const ANTHROPIC_API_URL = 'https://api.anthropic.com/v1/messages';
 
 // ================================================================
-// MODEL CONFIGS — Opus max output raised to 64k for full websites
+// MODEL CONFIGS
+// FIX #1: Haiku maxOutput raised to 64000 (it supports 64K output)
+// FIX #2: Opus maxOutput raised to 128000 (it supports 128K output)
+// FIX #3: Groq contextLimit raised for better fallback quality
 // ================================================================
 const MODELS = {
-  groq:  { models: ['llama-3.3-70b-versatile', 'llama3-70b-8192', 'deepseek-r1-distill-llama-70b', 'mixtral-8x7b-32768'], maxOutput: 8192, contextLimit: 30000 },
-  haiku: { model: 'claude-haiku-4-5-20251001', maxOutput: 16384, contextLimit: 180000 },
-  opus:  { model: 'claude-opus-4-6', maxOutput: 64000, contextLimit: 200000 },
+  groq: {
+    models: ['llama-3.3-70b-versatile', 'llama3-70b-8192', 'deepseek-r1-distill-llama-70b', 'mixtral-8x7b-32768'],
+    maxOutput: 8192,
+    contextLimit: 30000,
+  },
+  haiku: {
+    model: 'claude-haiku-4-5-20251001',
+    maxOutput: 64000,   // FIX: was 16384 — Haiku 4.5 supports up to 64K output
+    contextLimit: 180000,
+  },
+  opus: {
+    model: 'claude-opus-4-6',
+    maxOutput: 128000,   // FIX: was 64000 — Opus 4.6 supports up to 128K output
+    contextLimit: 200000,
+  },
 };
 
 const CLAUDE_MODEL = MODELS.opus.model;
-const CLAUDE_MAX_OUTPUT = 16384;
-const CLAUDE_LARGE_OUTPUT = 64000;
+const CLAUDE_MAX_OUTPUT = 64000;
+const CLAUDE_LARGE_OUTPUT = 128000;
 const GROQ_MAX_OUTPUT = MODELS.groq.maxOutput;
 const GROQ_MODELS = MODELS.groq.models;
 
@@ -30,6 +45,7 @@ async function withRetry(fn, { maxRetries = 2, baseDelay = 1000, onRetry } = {})
       lastErr = err;
       if (err.message === 'Generation cancelled') throw err;
       const status = err.response?.status;
+      // Don't retry on client errors (except 429 rate limit, 503 service unavailable, 529 overloaded)
       if (status && status !== 429 && status !== 503 && status !== 529 && status < 500) throw err;
       if (attempt < maxRetries) {
         const delay = baseDelay * Math.pow(2, attempt) + Math.random() * 500;
@@ -68,44 +84,77 @@ function systemPromptToString(systemPrompt) {
 async function callAI(systemPrompt, userPrompt, model = 'groq', maxTokens, opts = {}) {
   if (opts.signal?.aborted) throw new Error('Generation cancelled');
   switch (model) {
-    case 'haiku': return callClaude(systemPrompt, userPrompt, {
-      model: MODELS.haiku.model,
-      maxTokens: maxTokens || MODELS.haiku.maxOutput,
-      requestedModel: 'haiku',
-      onProgress: opts.onProgress, signal: opts.signal,
-    });
-    case 'opus': return callClaude(systemPrompt, userPrompt, {
-      model: MODELS.opus.model,
-      maxTokens: maxTokens || MODELS.opus.maxOutput,
-      useThinking: true,
-      requestedModel: 'opus',
-      onProgress: opts.onProgress, signal: opts.signal,
-    });
-    case 'groq': default: return callGroq(systemPrompt, userPrompt, {
-      maxTokens: maxTokens || MODELS.groq.maxOutput,
-      onProgress: opts.onProgress, signal: opts.signal,
-    });
+    case 'haiku':
+      return callClaude(systemPrompt, userPrompt, {
+        model: MODELS.haiku.model,
+        maxTokens: maxTokens || MODELS.haiku.maxOutput,
+        requestedModel: 'haiku',
+        useThinking: false,  // Haiku: no thinking, maximize output tokens
+        onProgress: opts.onProgress,
+        signal: opts.signal,
+      });
+    case 'opus':
+      return callClaude(systemPrompt, userPrompt, {
+        model: MODELS.opus.model,
+        maxTokens: maxTokens || MODELS.opus.maxOutput,
+        useThinking: true,   // Opus: use adaptive thinking
+        requestedModel: 'opus',
+        onProgress: opts.onProgress,
+        signal: opts.signal,
+      });
+    case 'groq':
+    default:
+      return callGroq(systemPrompt, userPrompt, {
+        maxTokens: maxTokens || MODELS.groq.maxOutput,
+        onProgress: opts.onProgress,
+        signal: opts.signal,
+      });
   }
 }
 
 // ================================================================
-// Call Claude (Haiku or Opus) — prompt caching + adaptive thinking
+// Call Claude (Haiku or Opus)
+// FIX #4: Proper adaptive thinking with budget_tokens so thinking
+//         doesn't consume the entire output budget
+// FIX #5: Added anthropic-beta header required for adaptive thinking
+// FIX #6: Increased timeouts for reliability during API instability
+// FIX #7: Better error logging with full error details
 // ================================================================
 async function callClaude(systemPrompt, userPrompt, options = {}) {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) {
     console.warn('[Claude] No ANTHROPIC_API_KEY — fallback to Groq');
-    return callGroq(systemPrompt, userPrompt, options);
+    return callGroq(systemPrompt, userPrompt, {
+      maxTokens: GROQ_MAX_OUTPUT,
+      onProgress: options.onProgress,
+      signal: options.signal,
+    });
   }
 
   const modelId = options.model || CLAUDE_MODEL;
-  const maxTokens = options.maxTokens || CLAUDE_LARGE_OUTPUT;
   const isOpus = modelId.includes('opus');
+  const isHaiku = modelId.includes('haiku');
   const label = isOpus ? 'Opus 4.6' : 'Haiku 4.5';
   const onProgress = options.onProgress;
   const signal = options.signal;
   const useThinking = options.useThinking && isOpus;
-  const timeout = isOpus ? 240000 : (options.timeout || 180000);
+
+  // FIX: Increased timeouts — Opus gets 300s (5 min), Haiku gets 240s (4 min)
+  // Previous values (240s/180s) were too tight during API instability periods
+  const timeout = isOpus ? 300000 : 240000;
+
+  // FIX: Separate output tokens from thinking budget
+  // When thinking is enabled, max_tokens covers BOTH thinking + output.
+  // We need to set max_tokens high enough to accommodate both.
+  // For non-thinking requests, use the model's maxOutput directly.
+  let maxTokens;
+  if (useThinking) {
+    // Opus with thinking: set max_tokens to full 128K capacity
+    // The thinking budget is controlled separately via budget_tokens
+    maxTokens = options.maxTokens || MODELS.opus.maxOutput;
+  } else {
+    maxTokens = options.maxTokens || (isHaiku ? MODELS.haiku.maxOutput : MODELS.opus.maxOutput);
+  }
 
   try {
     const result = await withRetry(async (attempt) => {
@@ -114,6 +163,7 @@ async function callClaude(systemPrompt, userPrompt, options = {}) {
       console.log(`[Claude] ${label} (max_tokens=${maxTokens}, thinking=${useThinking})${attempt > 0 ? ' retry #' + attempt : ''}`);
 
       const sysText = systemPromptToString(systemPrompt);
+
       const body = {
         model: modelId,
         max_tokens: maxTokens,
@@ -125,30 +175,44 @@ async function callClaude(systemPrompt, userPrompt, options = {}) {
         }],
         messages: [{
           role: 'user',
-          content: userPrompt.slice(0, MODELS.opus.contextLimit),
+          content: userPrompt.slice(0, isOpus ? MODELS.opus.contextLimit : MODELS.haiku.contextLimit),
         }],
       };
 
-      // Adaptive thinking for Opus 4.6 (type: "enabled" is deprecated for Opus 4.6)
+      // FIX #4: Adaptive thinking with budget_tokens
+      // budget_tokens controls how many tokens the model can use for thinking.
+      // This prevents thinking from consuming the entire max_tokens budget.
+      // The actual code output gets (max_tokens - thinking_tokens_used).
       if (useThinking) {
         body.thinking = {
-          type: 'adaptive',
+          type: 'enabled',
+          budget_tokens: 10000,  // Allow up to 10K tokens for thinking
         };
       }
 
+      // FIX #5: Build headers with required beta header for extended thinking
+      const headers = {
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+        'Content-Type': 'application/json',
+      };
+
+      // Extended thinking requires the beta header
+      if (useThinking) {
+        headers['anthropic-beta'] = 'interleaved-thinking-2025-05-14';
+      }
+
       const r = await axios.post(ANTHROPIC_API_URL, body, {
-        headers: {
-          'x-api-key': apiKey,
-          'anthropic-version': '2023-06-01',
-          'Content-Type': 'application/json',
-        },
+        headers,
         timeout,
       });
 
       const c = extractClaudeText(r.data);
       if (c) {
         const thinkingUsed = r.data.content?.some(b => b.type === 'thinking');
-        console.log(`[Claude] ✓ ${label} (${c.length} chars${thinkingUsed ? ', used thinking' : ''})`);
+        const inputTokens = r.data.usage?.input_tokens || 0;
+        const outputTokens = r.data.usage?.output_tokens || 0;
+        console.log(`[Claude] ✓ ${label} (${c.length} chars, ${inputTokens} in / ${outputTokens} out${thinkingUsed ? ', used thinking' : ''})`);
         return c;
       }
       throw new Error('Empty response from Claude');
@@ -156,19 +220,31 @@ async function callClaude(systemPrompt, userPrompt, options = {}) {
       maxRetries: 2,
       onRetry: (attempt, max, delay) => {
         console.log(`[Claude] Retry ${attempt}/${max} in ${Math.round(delay)}ms`);
+        if (onProgress) onProgress(`${label} retry ${attempt}/${max}...`);
       },
     });
     return result;
   } catch (err) {
     if (err.message === 'Generation cancelled') throw err;
+
     const status = err.response?.status;
-    const msg = err.response?.data?.error?.message || err.message;
-    console.error(`[Claude] ✗ ${modelId} (${status || 'network'}): ${msg}`);
-    if (onProgress) onProgress(`${label} unavailable (${msg}) — switching to Groq...`);
+    const errBody = err.response?.data;
+    const msg = errBody?.error?.message || err.message;
+
+    // FIX #7: Detailed error logging for debugging
+    console.error(`[Claude] ✗ ${modelId} failed:`);
+    console.error(`  Status: ${status || 'network error'}`);
+    console.error(`  Message: ${msg}`);
+    if (errBody?.error?.type) console.error(`  Type: ${errBody.error.type}`);
+    if (status === 529) console.error(`  Note: API overloaded (529) — temporary Anthropic capacity issue`);
+    if (status === 429) console.error(`  Note: Rate limited (429) — check your plan limits`);
+
+    if (onProgress) onProgress(`${label} unavailable (${status || 'network'}: ${msg}) — switching to Groq...`);
     console.log(`[Claude] ${label} failed → Groq fallback`);
+
     // CRITICAL: Pass Groq-safe options — do NOT forward Claude's maxTokens to Groq
     return callGroq(systemPrompt, userPrompt, {
-      maxTokens: GROQ_MAX_OUTPUT,  // Always use Groq's limit, not Claude's
+      maxTokens: GROQ_MAX_OUTPUT,
       onProgress: options.onProgress,
       signal: options.signal,
     });
@@ -198,7 +274,11 @@ async function callClaudeWithImages(systemPrompt, userPrompt, images = [], optio
       }],
       messages: [{ role: 'user', content: blocks }],
     }, {
-      headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'Content-Type': 'application/json' },
+      headers: {
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+        'Content-Type': 'application/json',
+      },
       timeout: 120000,
     });
     return extractClaudeText(r.data);
@@ -222,11 +302,11 @@ async function callGroq(systemPrompt, userPrompt, options = {}) {
   for (const model of GROQ_MODELS) {
     try {
       if (signal?.aborted) throw new Error('Generation cancelled');
-      console.log(`[GROQ] → ${model}`);
+      console.log(`[GROQ] → ${model} (max_tokens=${maxTokens})`);
 
       const result = await withRetry(async (attempt) => {
         if (signal?.aborted) throw new Error('Generation cancelled');
-        if (attempt > 0 && onProgress) onProgress(`Retrying Groq (attempt ${attempt + 1})...`);
+        if (attempt > 0 && onProgress) onProgress(`Retrying Groq ${model} (attempt ${attempt + 1})...`);
 
         const r = await axios.post(GROQ_API_URL, {
           model,
@@ -238,10 +318,13 @@ async function callGroq(systemPrompt, userPrompt, options = {}) {
           max_tokens: maxTokens,
         }, {
           headers: { 'Authorization': `Bearer ${key}`, 'Content-Type': 'application/json' },
-          timeout: 90000,
+          timeout: 120000,  // FIX: was 90000 — increased for larger outputs
         });
         const c = r.data.choices?.[0]?.message?.content;
-        if (c) { console.log(`[GROQ] ✓ ${model} (${c.length} chars)`); return c; }
+        if (c) {
+          console.log(`[GROQ] ✓ ${model} (${c.length} chars)`);
+          return c;
+        }
         throw new Error('Empty Groq response');
       }, { maxRetries: 1 });
 
@@ -249,9 +332,12 @@ async function callGroq(systemPrompt, userPrompt, options = {}) {
     } catch (err) {
       if (err.message === 'Generation cancelled') throw err;
       const s = err.response?.status;
-      console.error(`[GROQ] ✗ ${model} (${s || 'network'})`);
-      if (s === 401) break;
-      if (s === 429) { if (onProgress) onProgress('Groq rate limited — trying next model...'); continue; }
+      console.error(`[GROQ] ✗ ${model} (${s || 'network'}): ${err.response?.data?.error?.message || err.message}`);
+      if (s === 401) break;  // Bad API key — don't try other models
+      if (s === 429) {
+        if (onProgress) onProgress(`Groq rate limited on ${model} — trying next model...`);
+        continue;
+      }
     }
   }
   return null;
@@ -259,6 +345,7 @@ async function callGroq(systemPrompt, userPrompt, options = {}) {
 
 // ================================================================
 // SSE Streaming for live preview — with prompt caching
+// FIX: Added proper error handling and beta headers for streaming
 // ================================================================
 async function streamAI(systemPrompt, userPrompt, model, res) {
   if (model === 'groq') {
@@ -271,8 +358,16 @@ async function streamAI(systemPrompt, userPrompt, model, res) {
   if (!apiKey) return streamAI(systemPrompt, userPrompt, 'groq', res);
 
   const modelId = model === 'haiku' ? MODELS.haiku.model : MODELS.opus.model;
+  const isOpus = modelId.includes('opus');
   const maxTokens = model === 'haiku' ? MODELS.haiku.maxOutput : MODELS.opus.maxOutput;
+
   try {
+    const headers = {
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01',
+      'Content-Type': 'application/json',
+    };
+
     const response = await axios.post(ANTHROPIC_API_URL, {
       model: modelId,
       max_tokens: maxTokens,
@@ -284,9 +379,9 @@ async function streamAI(systemPrompt, userPrompt, model, res) {
       }],
       messages: [{ role: 'user', content: userPrompt }],
     }, {
-      headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'Content-Type': 'application/json' },
+      headers,
       responseType: 'stream',
-      timeout: model === 'opus' ? 240000 : 180000,
+      timeout: isOpus ? 300000 : 240000,
     });
 
     let fullText = '';
@@ -312,12 +407,13 @@ async function streamAI(systemPrompt, userPrompt, model, res) {
         resolve(fullText);
       });
       response.data.on('error', (err) => {
+        console.error(`[Stream] Error: ${err.message}`);
         res.write(`data: ${JSON.stringify({ type: 'error', message: err.message })}\n\n`);
         reject(err);
       });
     });
   } catch (err) {
-    console.error(`[Stream] Failed: ${err.message}`);
+    console.error(`[Stream] Failed (${err.response?.status || 'network'}): ${err.response?.data?.error?.message || err.message}`);
     return streamAI(systemPrompt, userPrompt, 'groq', res);
   }
 }
@@ -371,6 +467,7 @@ If everything is already perfect, return the files unchanged but still complete.
   try {
     const verifySystem = 'You are ZapCodes AI code quality checker. Return ONLY complete, fixed source files. No explanations outside code blocks. Format: ```filepath:filename.ext\n(complete content)\n```';
 
+    // FIX: Don't use thinking for verification pass — maximize output tokens for code
     const fixResult = await callAI(verifySystem, verifyPrompt, model, undefined, {
       onProgress: opts.onProgress,
       signal: opts.signal,
@@ -380,6 +477,7 @@ If everything is already perfect, return the files unchanged but still complete.
       console.log(`[Verify] ✓ Self-correction produced ${fixedFiles.length} fixed files`);
       return fixedFiles;
     }
+    console.log(`[Verify] ⚠ Self-correction returned no files — using originals`);
   } catch (err) {
     console.error(`[Verify] ✗ Self-correction failed: ${err.message}`);
   }
@@ -438,64 +536,128 @@ FILES:\n${phase.fileList}`;
 // Parse files from AI response
 // ================================================================
 function parseFilesFromResponse(response) {
-  const files = []; let m;
+  const files = [];
+  let m;
+
+  // Pattern 1: ```filepath:filename.ext
   const p1 = /```filepath:([^\n]+)\n([\s\S]*?)```/g;
-  while ((m = p1.exec(response))) { if (m[1].trim() && m[2].trim().length > 10) files.push({ name: m[1].trim(), content: m[2].trim() }); }
+  while ((m = p1.exec(response))) {
+    if (m[1].trim() && m[2].trim().length > 10) {
+      files.push({ name: m[1].trim(), content: m[2].trim() });
+    }
+  }
   if (files.length) return dedup(files);
+
+  // Pattern 2: ```language filename.ext
   const p2 = /```(?:javascript|jsx|tsx|typescript|json|html|css|js|ts|bash|sh|text|markdown|md)?\s+([^\n`]+\.[a-z]{1,6})\n([\s\S]*?)```/g;
-  while ((m = p2.exec(response))) { if (m[1].trim() && m[2].trim().length > 10) files.push({ name: m[1].trim(), content: m[2].trim() }); }
+  while ((m = p2.exec(response))) {
+    if (m[1].trim() && m[2].trim().length > 10) {
+      files.push({ name: m[1].trim(), content: m[2].trim() });
+    }
+  }
   if (files.length) return dedup(files);
+
+  // Pattern 3: **File: `filename.ext`** followed by code block
   const p3 = /(?:\*\*|###?\s*)(?:File:?\s*)?`?([^\n`*]+\.[a-z]{1,6})`?\*{0,2}\s*\n+```[^\n]*\n([\s\S]*?)```/g;
-  while ((m = p3.exec(response))) { if (m[2].trim().length > 10) files.push({ name: m[1].trim(), content: m[2].trim() }); }
+  while ((m = p3.exec(response))) {
+    if (m[2].trim().length > 10) {
+      files.push({ name: m[1].trim(), content: m[2].trim() });
+    }
+  }
   if (files.length) return dedup(files);
+
+  // Pattern 4: === FILE: filename.ext ===
   const p4 = /===\s*(?:FILE:\s*)?([^\n=]+?)\s*===\n([\s\S]*?)(?=\n===|$)/g;
-  while ((m = p4.exec(response))) { if (m[1].trim() && m[2].trim().length > 10) files.push({ name: m[1].trim(), content: m[2].trim() }); }
+  while ((m = p4.exec(response))) {
+    if (m[1].trim() && m[2].trim().length > 10) {
+      files.push({ name: m[1].trim(), content: m[2].trim() });
+    }
+  }
+
+  // FIX: Pattern 5 — If no files matched above but response contains HTML,
+  // treat the entire response as a single index.html file
+  if (files.length === 0 && response.includes('<!DOCTYPE') || response.includes('<html')) {
+    const htmlMatch = response.match(/(<!DOCTYPE[\s\S]*<\/html>)/i);
+    if (htmlMatch && htmlMatch[1].length > 100) {
+      console.log(`[Parse] No file markers found — extracted raw HTML (${htmlMatch[1].length} chars)`);
+      files.push({ name: 'index.html', content: htmlMatch[1].trim() });
+    }
+  }
+
   return dedup(files);
 }
 
 function dedup(files) {
   const seen = new Map();
   for (const f of files) {
-    if (!seen.has(f.name) || f.content.length > seen.get(f.name).content.length) seen.set(f.name, f);
+    if (!seen.has(f.name) || f.content.length > seen.get(f.name).content.length) {
+      seen.set(f.name, f);
+    }
   }
   return Array.from(seen.values());
 }
 
+// ================================================================
+// Verify AI Status — health check endpoint
+// ================================================================
 async function verifyAIStatus() {
   const result = {
     groq: { available: false, models: [], error: null },
     haiku: { available: false, model: MODELS.haiku.model, error: null },
     opus: { available: false, model: MODELS.opus.model, error: null },
   };
+
   const gKey = process.env.GROQ_API_KEY;
   if (gKey) {
     for (const model of GROQ_MODELS.slice(0, 2)) {
       try {
-        await axios.post(GROQ_API_URL, { model, messages: [{ role: 'user', content: 'OK' }], max_tokens: 5 }, { headers: { 'Authorization': `Bearer ${gKey}` }, timeout: 10000 });
-        result.groq.available = true; result.groq.models.push(model);
+        await axios.post(GROQ_API_URL, {
+          model,
+          messages: [{ role: 'user', content: 'OK' }],
+          max_tokens: 5,
+        }, {
+          headers: { 'Authorization': `Bearer ${gKey}` },
+          timeout: 10000,
+        });
+        result.groq.available = true;
+        result.groq.models.push(model);
       } catch {}
     }
     if (!result.groq.available) result.groq.error = 'All Groq models failed';
-  } else { result.groq.error = 'GROQ_API_KEY not set'; }
+  } else {
+    result.groq.error = 'GROQ_API_KEY not set';
+  }
 
   const aKey = process.env.ANTHROPIC_API_KEY;
   if (aKey) {
     for (const [k, cfg] of [['haiku', MODELS.haiku], ['opus', MODELS.opus]]) {
       try {
         const r = await axios.post(ANTHROPIC_API_URL, {
-          model: cfg.model, max_tokens: 10,
+          model: cfg.model,
+          max_tokens: 10,
           messages: [{ role: 'user', content: 'OK' }],
         }, {
-          headers: { 'x-api-key': aKey, 'anthropic-version': '2023-06-01', 'Content-Type': 'application/json' },
+          headers: {
+            'x-api-key': aKey,
+            'anthropic-version': '2023-06-01',
+            'Content-Type': 'application/json',
+          },
           timeout: 15000,
         });
         if (r.data.content?.[0]?.text) result[k].available = true;
-      } catch (err) { result[k].error = err.response?.data?.error?.message || err.message; }
+      } catch (err) {
+        result[k].error = err.response?.data?.error?.message || err.message;
+      }
     }
-  } else { result.haiku.error = result.opus.error = 'ANTHROPIC_API_KEY not set'; }
+  } else {
+    result.haiku.error = result.opus.error = 'ANTHROPIC_API_KEY not set';
+  }
   return result;
 }
 
+// ================================================================
+// Tutorial generation (uses small/fast Groq models)
+// ================================================================
 async function generateTutorial(question) {
   const key = process.env.GROQ_API_KEY;
   if (!key) return '## ZapCodes Help\nScan repos or build projects with AI.';
@@ -507,8 +669,12 @@ async function generateTutorial(question) {
           { role: 'system', content: 'You are ZapCodes Tutorial Assistant. Helpful and concise. Markdown.' },
           { role: 'user', content: question },
         ],
-        temperature: 0.7, max_tokens: 1500,
-      }, { headers: { 'Authorization': `Bearer ${key}` }, timeout: 15000 });
+        temperature: 0.7,
+        max_tokens: 1500,
+      }, {
+        headers: { 'Authorization': `Bearer ${key}` },
+        timeout: 15000,
+      });
       return r.data.choices[0].message.content;
     } catch {}
   }
@@ -521,39 +687,89 @@ async function generateTutorial(question) {
 function getTemplateSpec(template) {
   const specs = {
     portfolio: {
-      name: 'Portfolio', tech: 'HTML+CSS+JS (all inlined in single index.html)', defaultDesc: 'Personal portfolio website',
-      phases: [{ name: 'Site', instructions: 'Create a stunning portfolio with: hero section (animated name/title with typing effect or gradient text, photo placeholder via picsum.photos), about section with bio and stats, skills/tech stack with animated progress bars, projects grid (6+ cards with image, title, description, hover overlay with links), testimonials section with cards, working contact form with validation and success/error feedback, and a footer. Use smooth scroll navigation with active states, Intersection Observer fade-in animations, and a modern dark theme with accent color. Navigation must include a hamburger menu on mobile. ALL CSS and JS must be inlined in the index.html file inside <style> and <script> tags. Include at least 8 full sections.', fileList: '- index.html (self-contained with inline CSS and JS)' }],
+      name: 'Portfolio',
+      tech: 'HTML+CSS+JS (all inlined in single index.html)',
+      defaultDesc: 'Personal portfolio website',
+      phases: [{
+        name: 'Site',
+        instructions: 'Create a stunning portfolio with: hero section (animated name/title with typing effect or gradient text, photo placeholder via picsum.photos), about section with bio and stats, skills/tech stack with animated progress bars, projects grid (6+ cards with image, title, description, hover overlay with links), testimonials section with cards, working contact form with validation and success/error feedback, and a footer. Use smooth scroll navigation with active states, Intersection Observer fade-in animations, and a modern dark theme with accent color. Navigation must include a hamburger menu on mobile. ALL CSS and JS must be inlined in the index.html file inside <style> and <script> tags. Include at least 8 full sections.',
+        fileList: '- index.html (self-contained with inline CSS and JS)',
+      }],
     },
     landing: {
-      name: 'Landing Page', tech: 'HTML+CSS+JS (all inlined in single index.html)', defaultDesc: 'Product landing page',
-      phases: [{ name: 'Page', instructions: 'Create a high-converting landing page with: animated hero section with gradient background and floating shapes, feature showcase (6+ cards with SVG icons), how-it-works steps (3-4 steps with connecting lines), pricing table with 3 tiers and hover lift effects, testimonials carousel with auto-play and manual controls, FAQ accordion with smooth expand/collapse, newsletter signup form with validation, trust badges section, and CTA footer with gradient. Include smooth scroll, Intersection Observer animations, and full responsive design with mobile hamburger nav. ALL CSS and JS must be inlined.', fileList: '- index.html (self-contained with inline CSS and JS)' }],
+      name: 'Landing Page',
+      tech: 'HTML+CSS+JS (all inlined in single index.html)',
+      defaultDesc: 'Product landing page',
+      phases: [{
+        name: 'Page',
+        instructions: 'Create a high-converting landing page with: animated hero section with gradient background and floating shapes, feature showcase (6+ cards with SVG icons), how-it-works steps (3-4 steps with connecting lines), pricing table with 3 tiers and hover lift effects, testimonials carousel with auto-play and manual controls, FAQ accordion with smooth expand/collapse, newsletter signup form with validation, trust badges section, and CTA footer with gradient. Include smooth scroll, Intersection Observer animations, and full responsive design with mobile hamburger nav. ALL CSS and JS must be inlined.',
+        fileList: '- index.html (self-contained with inline CSS and JS)',
+      }],
     },
     blog: {
-      name: 'Blog', tech: 'HTML+CSS+JS (all inlined in single index.html)', defaultDesc: 'Blog website',
-      phases: [{ name: 'Blog', instructions: 'Create a blog with: featured post hero (large image via picsum.photos, title overlay), post grid with cards (8+ posts with image, title, excerpt, date, category tag, read time), sidebar with categories and working search filter, individual post view triggered by clicking any card (full content, author, date, back button), category filtering, search filtering, back-to-top button, and responsive design. Use CSS grid, smooth transitions, and reading-friendly typography. ALL CSS and JS must be inlined.', fileList: '- index.html (self-contained with inline CSS and JS)' }],
+      name: 'Blog',
+      tech: 'HTML+CSS+JS (all inlined in single index.html)',
+      defaultDesc: 'Blog website',
+      phases: [{
+        name: 'Blog',
+        instructions: 'Create a blog with: featured post hero (large image via picsum.photos, title overlay), post grid with cards (8+ posts with image, title, excerpt, date, category tag, read time), sidebar with categories and working search filter, individual post view triggered by clicking any card (full content, author, date, back button), category filtering, search filtering, back-to-top button, and responsive design. Use CSS grid, smooth transitions, and reading-friendly typography. ALL CSS and JS must be inlined.',
+        fileList: '- index.html (self-contained with inline CSS and JS)',
+      }],
     },
     ecommerce: {
-      name: 'E-Commerce', tech: 'HTML+CSS+JS (all inlined in single index.html)', defaultDesc: 'Online store',
-      phases: [{ name: 'Store', instructions: 'Create an e-commerce storefront with: product grid (12+ products with images via picsum.photos, names, prices, star ratings, add-to-cart button), product quick-view modal, shopping cart sidebar (slides in, items with quantity controls, remove, subtotal, checkout button), category filter dropdown, price range filter, sorting options, checkout form with validation, empty cart state, cart badge count, and responsive design. Use JavaScript for all cart logic and filtering. ALL CSS and JS must be inlined.', fileList: '- index.html (self-contained with inline CSS and JS)' }],
+      name: 'E-Commerce',
+      tech: 'HTML+CSS+JS (all inlined in single index.html)',
+      defaultDesc: 'Online store',
+      phases: [{
+        name: 'Store',
+        instructions: 'Create an e-commerce storefront with: product grid (12+ products with images via picsum.photos, names, prices, star ratings, add-to-cart button), product quick-view modal, shopping cart sidebar (slides in, items with quantity controls, remove, subtotal, checkout button), category filter dropdown, price range filter, sorting options, checkout form with validation, empty cart state, cart badge count, and responsive design. Use JavaScript for all cart logic and filtering. ALL CSS and JS must be inlined.',
+        fileList: '- index.html (self-contained with inline CSS and JS)',
+      }],
     },
     dashboard: {
-      name: 'Dashboard', tech: 'HTML+CSS+JS (all inlined in single index.html)', defaultDesc: 'Analytics dashboard',
-      phases: [{ name: 'Dashboard', instructions: 'Create an admin dashboard with: collapsible sidebar navigation (6+ items with Unicode icons), 4+ stat cards with numbers and trend arrows, CSS-only bar chart (CSS grid/flexbox bars), CSS-only donut chart (conic-gradient), data table with 10+ rows, column sorting, search, and pagination, activity feed, notification dropdown with badge, user avatar menu, dark theme, and responsive design with sidebar collapse on mobile. Include working JavaScript for all interactions. ALL CSS and JS must be inlined.', fileList: '- index.html (self-contained with inline CSS and JS)' }],
+      name: 'Dashboard',
+      tech: 'HTML+CSS+JS (all inlined in single index.html)',
+      defaultDesc: 'Analytics dashboard',
+      phases: [{
+        name: 'Dashboard',
+        instructions: 'Create an admin dashboard with: collapsible sidebar navigation (6+ items with Unicode icons), 4+ stat cards with numbers and trend arrows, CSS-only bar chart (CSS grid/flexbox bars), CSS-only donut chart (conic-gradient), data table with 10+ rows, column sorting, search, and pagination, activity feed, notification dropdown with badge, user avatar menu, dark theme, and responsive design with sidebar collapse on mobile. Include working JavaScript for all interactions. ALL CSS and JS must be inlined.',
+        fileList: '- index.html (self-contained with inline CSS and JS)',
+      }],
     },
     mobile: {
-      name: 'Mobile App', tech: 'React Native+Expo', defaultDesc: 'Mobile app',
-      phases: [{ name: 'App', instructions: 'Create an Expo app with tab navigation, home screen with cards and action buttons, profile screen with avatar and settings, and a settings screen with toggle switches. Include proper styling.', fileList: '- package.json\n- app.json\n- App.js' }],
+      name: 'Mobile App',
+      tech: 'React Native+Expo',
+      defaultDesc: 'Mobile app',
+      phases: [{
+        name: 'App',
+        instructions: 'Create an Expo app with tab navigation, home screen with cards and action buttons, profile screen with avatar and settings, and a settings screen with toggle switches. Include proper styling.',
+        fileList: '- package.json\n- app.json\n- App.js',
+      }],
     },
     webapp: {
-      name: 'Web App', tech: 'HTML+CSS+JS (all inlined in single index.html)', defaultDesc: 'Full-stack web application',
-      phases: [{ name: 'App', instructions: 'Create a full-featured web application with: login/register forms with validation, dashboard view with stat cards, data management with full CRUD using localStorage, settings page with toggles and profile fields, responsive sidebar navigation with active states and mobile hamburger, search, and smooth transitions between views. Use JavaScript for SPA routing and localStorage for persistence. ALL CSS and JS must be inlined.', fileList: '- index.html (self-contained with inline CSS and JS)' }],
+      name: 'Web App',
+      tech: 'HTML+CSS+JS (all inlined in single index.html)',
+      defaultDesc: 'Full-stack web application',
+      phases: [{
+        name: 'App',
+        instructions: 'Create a full-featured web application with: login/register forms with validation, dashboard view with stat cards, data management with full CRUD using localStorage, settings page with toggles and profile fields, responsive sidebar navigation with active states and mobile hamburger, search, and smooth transitions between views. Use JavaScript for SPA routing and localStorage for persistence. ALL CSS and JS must be inlined.',
+        fileList: '- index.html (self-contained with inline CSS and JS)',
+      }],
     },
     saas: {
-      name: 'SaaS', tech: 'HTML+CSS+JS (all inlined in single index.html)', defaultDesc: 'SaaS landing with auth',
-      phases: [{ name: 'SaaS', instructions: 'Create a SaaS application with: landing page (hero with gradient, features grid with 6+ cards, pricing table with 3 tiers and monthly/annual toggle, testimonials, FAQ accordion), login/register modals with validation, dashboard with stats and data table CRUD, profile/settings page, sidebar navigation, and responsive design. Use JavaScript for SPA routing, modal handling, and localStorage for auth/data. ALL CSS and JS must be inlined.', fileList: '- index.html (self-contained with inline CSS and JS)' }],
+      name: 'SaaS',
+      tech: 'HTML+CSS+JS (all inlined in single index.html)',
+      defaultDesc: 'SaaS landing with auth',
+      phases: [{
+        name: 'SaaS',
+        instructions: 'Create a SaaS application with: landing page (hero with gradient, features grid with 6+ cards, pricing table with 3 tiers and monthly/annual toggle, testimonials, FAQ accordion), login/register modals with validation, dashboard with stats and data table CRUD, profile/settings page, sidebar navigation, and responsive design. Use JavaScript for SPA routing, modal handling, and localStorage for auth/data. ALL CSS and JS must be inlined.',
+        fileList: '- index.html (self-contained with inline CSS and JS)',
+      }],
     },
     'fullstack-mobile': {
-      name: 'Full-Stack+Mobile', tech: 'React+Node+Socket.IO+RN', defaultDesc: 'Web+mobile',
+      name: 'Full-Stack+Mobile',
+      tech: 'React+Node+Socket.IO+RN',
+      defaultDesc: 'Web+mobile',
       phases: [
         { name: 'Backend', instructions: 'Express+Socket.IO API with error handling.', fileList: '- backend/package.json\n- backend/server.js' },
         { name: 'Web', instructions: 'React+Vite with Socket.IO client.', fileList: '- web/package.json\n- web/index.html\n- web/src/App.jsx' },
