@@ -141,7 +141,7 @@ async function callClaude(systemPrompt, userPrompt, options = {}) {
 
   // FIX: Increased timeouts — Opus gets 300s (5 min), Haiku gets 240s (4 min)
   // Previous values (240s/180s) were too tight during API instability periods
-  const timeout = isOpus ? 300000 : 240000;
+  const timeout = isOpus ? 120000 : 120000;
 
   // FIX: Separate output tokens from thinking budget
   // When thinking is enabled, max_tokens covers BOTH thinking + output.
