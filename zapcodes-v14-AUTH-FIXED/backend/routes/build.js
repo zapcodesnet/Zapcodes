@@ -296,7 +296,7 @@ router.post('/generate-with-progress', auth, async (req, res) => {
     }
 
     // FIX: More informative model connection message with estimated time
-    const modelLabel = model === 'opus' ? 'Claude Sonnet 4.6 (~2-4 min)' : model === 'haiku' ? 'Claude Haiku 4.5 (~1-2 min)' : 'Groq AI (~30s)';
+    const modelLabel = model === 'opus' ? 'Claude Sonnet 4.6 (~1-2 min)' : model === 'haiku' ? 'Claude Haiku 4.5 (~1-2 min)' : 'Groq AI (~30s)';
     sendProgress('connecting', `${PROGRESS_STEPS.connecting} (${modelLabel})`);
 
     // FIX: More frequent keepalive — every 10s instead of 15s
@@ -823,7 +823,7 @@ router.post('/clone-rebuild', auth, async (req, res) => {
 
     const result = await callAI(GEN_PROMPT, prompt, model);
     let files = result ? parseFilesFromResponse(result) : [];
-    if (model !== 'groq' && files.length > 0) files = await verifyAndFix(files, model);
+    if (model === 'haiku' && files.length > 0) files = await verifyAndFix(files, model);
 
     if (!files || files.length === 0) {
       user.creditCoins(cost, 'generation', `Refund: clone rebuild failed (${model})`);
