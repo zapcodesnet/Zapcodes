@@ -15,7 +15,7 @@ const TEMPLATES = [
   { id: 'webapp', name: 'Web App', icon: '⚡' },
   { id: 'saas', name: 'SaaS', icon: '💎' },
 ];
-const MODEL_TIMEOUTS = { 'gemini-pro': 180000, 'gemini-flash': 180000, haiku: 360000, sonnet: 300000, groq: 180000 };
+const MODEL_TIMEOUTS = { 'gemini-pro': 300000, 'gemini-flash': 180000, haiku: 360000, sonnet: 300000, groq: 180000 };
 const UNLIMITED = 999999999;
 function isUnlimited(n) { return n >= UNLIMITED || n === Infinity; }
 function formatBL(n) {
