@@ -10,7 +10,7 @@ const GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1beta/models'
 const MODELS = {
   groq: { models: ['llama-3.3-70b-versatile', 'llama3-70b-8192', 'deepseek-r1-distill-llama-70b', 'mixtral-8x7b-32768'], maxOutput: 8192, contextLimit: 30000 },
   'gemini-flash': { model: 'gemini-2.5-flash', maxOutput: 65536, contextLimit: 1000000 },
-  'gemini-pro': { model: 'gemini-3.1-pro-preview', maxOutput: 65536, contextLimit: 1000000 },
+  'gemini-pro': { model: 'gemini-3.1-pro-preview', maxOutput: 16384, contextLimit: 1000000 },
   haiku: { model: 'claude-haiku-4-5-20251001', maxOutput: 16384, contextLimit: 180000 },
   sonnet: { model: 'claude-sonnet-4-6', maxOutput: 16384, contextLimit: 200000 },
 };
@@ -81,7 +81,7 @@ async function callGemini(systemPrompt, userPrompt, options = {}) {
         contents: [{ role: 'user', parts: [{ text: userPrompt.slice(0, 900000) }] }],
         systemInstruction: { parts: [{ text: systemPromptToString(systemPrompt) }] },
         generationConfig: { maxOutputTokens: maxTokens, temperature: 0.2 },
-      }, { headers: { 'Content-Type': 'application/json' }, timeout: 120000 });
+      }, { headers: { 'Content-Type': 'application/json' }, timeout: 180000 });
       const candidate = r.data?.candidates?.[0];
       if (!candidate) throw new Error('No candidates in Gemini response');
       if (candidate.finishReason === 'SAFETY') throw new Error('Content blocked by safety filter');
