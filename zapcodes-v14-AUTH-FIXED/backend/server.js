@@ -20,6 +20,11 @@ const buildRoutes = require('./routes/build');
 const adminRoutes = require('./routes/admin');
 const coinRoutes = require('./routes/coins');
 
+// NEW: Zapcodes v15 routes — pricing tiers, BL coins, usage stats
+const blCoinsRoutes = require('./routes/blCoins');
+const pricingRoutes = require('./routes/pricing');
+const usageRoutes = require('./routes/usage');
+
 const app = express();
 const httpServer = createServer(app);
 
@@ -119,6 +124,11 @@ app.use('/api/files', fileRoutes);
 app.use('/api/build', buildRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/coins', coinRoutes);
+
+// NEW: Zapcodes v15 routes
+app.use('/api/bl-coins', blCoinsRoutes);
+app.use('/api/pricing', pricingRoutes);
+app.use('/api/usage', usageRoutes);
 
 // Health check
 app.get('/api/health', (req, res) => {
