@@ -6,6 +6,8 @@
 //   GET  /api/bl-coins/status       — Get current balance and claim timer
 //   GET  /api/bl-coins/packs        — Get top-up pack options (public)
 //   POST /api/bl-coins/purchase     — Start Stripe checkout for BL top-up
+//
+// IMPORTANT: Uses user.last_daily_claim (matching User model field name)
 
 const express = require('express');
 const router = express.Router();
@@ -18,12 +20,26 @@ router.post('/daily-claim', async (req, res) => {
     const user = req.user;
     if (!user) return res.status(401).json({ error: 'Not authenticated' });
 
+    // Super admin always succeeds
+    if (user.role === 'super-admin') {
+      user.last_daily_claim = new Date();
+      await user.save();
+      return res.json({
+        success: true,
+        claimed: 999999,
+        new_balance: user.bl_coins,
+        tier: 'Diamond',
+        next_claim_at: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+        seconds_remaining: 86400
+      });
+    }
+
     const tierName = user.subscription_tier || 'free';
     const tier = SUBSCRIPTION_TIERS[tierName];
     if (!tier) return res.status(500).json({ error: 'Invalid tier' });
 
     const now = new Date();
-    const lastClaim = user.last_bl_claim ? new Date(user.last_bl_claim) : null;
+    const lastClaim = user.last_daily_claim ? new Date(user.last_daily_claim) : null;
     const msIn24h = 24 * 60 * 60 * 1000;
 
     // Check 24-hour cooldown
@@ -39,10 +55,10 @@ router.post('/daily-claim', async (req, res) => {
       }
     }
 
-    // Award daily BL
+    // Award daily BL using the User model's creditCoins method
     const claimAmount = tier.daily_bl_claim;
-    user.bl_coins = (user.bl_coins || 0) + claimAmount;
-    user.last_bl_claim = now;
+    user.creditCoins(claimAmount, 'claim', `Daily ${tier.name} tier claim: ${claimAmount.toLocaleString()} BL`);
+    user.last_daily_claim = now;
     await user.save();
 
     const nextClaimAt = new Date(now.getTime() + msIn24h);
@@ -69,7 +85,7 @@ router.get('/status', async (req, res) => {
     const tierName = user.subscription_tier || 'free';
     const tier = SUBSCRIPTION_TIERS[tierName];
     const now = new Date();
-    const lastClaim = user.last_bl_claim ? new Date(user.last_bl_claim) : null;
+    const lastClaim = user.last_daily_claim ? new Date(user.last_daily_claim) : null;
     const msIn24h = 24 * 60 * 60 * 1000;
 
     let canClaim = true;
@@ -90,7 +106,8 @@ router.get('/status', async (req, res) => {
       can_claim: canClaim,
       seconds_remaining: secondsRemaining,
       next_claim_at: nextClaimAt ? nextClaimAt.toISOString() : null,
-      tier: tier.name
+      tier: tier.name,
+      tier_key: tierName
     });
   } catch (err) {
     console.error('BL status error:', err);
@@ -133,7 +150,7 @@ router.post('/purchase', async (req, res) => {
     }
 
     const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
-    const frontendUrl = process.env.FRONTEND_URL || 'https://zapcodes.net';
+    const frontendUrl = process.env.FRONTEND_URL || process.env.WEB_URL || 'https://zapcodes.net';
 
     const session = await stripe.checkout.sessions.create({
       payment_method_types: ['card'],
