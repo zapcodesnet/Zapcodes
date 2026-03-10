@@ -3,12 +3,13 @@ const router = express.Router();
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 const { auth } = require('../middleware/auth');
 const User = require('../models/User');
+const { SUBSCRIPTION_TIERS } = require('../config/tiers');
 
-// ══════════ PLAN CONFIG (prices match BlendLink) ══════════
+// ══════════ PLAN CONFIG — UPDATED: Gold = $39.99 ══════════
 const PLANS = {
   bronze:  { monthly: process.env.STRIPE_PRICE_BRONZE_MONTHLY,  yearly: process.env.STRIPE_PRICE_BRONZE_YEARLY,  amount: 499 },
   silver:  { monthly: process.env.STRIPE_PRICE_SILVER_MONTHLY,  yearly: process.env.STRIPE_PRICE_SILVER_YEARLY,  amount: 1499 },
-  gold:    { monthly: process.env.STRIPE_PRICE_GOLD_MONTHLY,    yearly: process.env.STRIPE_PRICE_GOLD_YEARLY,    amount: 2999 },
+  gold:    { monthly: process.env.STRIPE_PRICE_GOLD_MONTHLY,    yearly: process.env.STRIPE_PRICE_GOLD_YEARLY,    amount: 3999 },
   diamond: { monthly: process.env.STRIPE_PRICE_DIAMOND_MONTHLY, yearly: process.env.STRIPE_PRICE_DIAMOND_YEARLY, amount: 9999 },
 };
 
@@ -68,6 +69,62 @@ router.post('/create-checkout', auth, async (req, res) => {
   }
 });
 
+// ══════════ REFERRAL COMMISSION HELPER ══════════
+// Pays L1 + L2 commissions on subscription and BL top-up purchases
+async function processReferralCommission(user, amountUSD, sourceType) {
+  try {
+    if (!user.referred_by) return;
+
+    // Find Level 1 referrer
+    const l1Referrer = await User.findOne({
+      $or: [
+        { user_id: user.referred_by },
+        { _id: user.referred_by },
+        { referral_code: user.referred_by }
+      ]
+    });
+    if (!l1Referrer) return;
+
+    const l1Tier = SUBSCRIPTION_TIERS[l1Referrer.subscription_tier || 'free'];
+    const l1Percent = l1Tier.referral_l1_percent || 2;
+    const l1Commission = Math.round(amountUSD * (l1Percent / 100) * 100) / 100; // in USD
+
+    if (l1Commission > 0) {
+      l1Referrer.total_earnings_usd = (l1Referrer.total_earnings_usd || 0) + l1Commission;
+      l1Referrer.usd_balance = (l1Referrer.usd_balance || 0) + l1Commission;
+      l1Referrer.total_earnings = (l1Referrer.total_earnings || 0) + l1Commission;
+      await l1Referrer.save();
+      console.log(`[Referral] L1 ${l1Percent}%: ${l1Referrer.email} +$${l1Commission} from ${user.email} (${sourceType})`);
+    }
+
+    // Find Level 2 referrer (the person who referred the L1 referrer)
+    if (l1Referrer.referred_by) {
+      const l2Referrer = await User.findOne({
+        $or: [
+          { user_id: l1Referrer.referred_by },
+          { _id: l1Referrer.referred_by },
+          { referral_code: l1Referrer.referred_by }
+        ]
+      });
+      if (l2Referrer) {
+        const l2Tier = SUBSCRIPTION_TIERS[l2Referrer.subscription_tier || 'free'];
+        const l2Percent = l2Tier.referral_l2_percent || 1;
+        const l2Commission = Math.round(amountUSD * (l2Percent / 100) * 100) / 100;
+
+        if (l2Commission > 0) {
+          l2Referrer.total_earnings_usd = (l2Referrer.total_earnings_usd || 0) + l2Commission;
+          l2Referrer.usd_balance = (l2Referrer.usd_balance || 0) + l2Commission;
+          l2Referrer.total_earnings = (l2Referrer.total_earnings || 0) + l2Commission;
+          await l2Referrer.save();
+          console.log(`[Referral] L2 ${l2Percent}%: ${l2Referrer.email} +$${l2Commission} from ${user.email} (${sourceType})`);
+        }
+      }
+    }
+  } catch (err) {
+    console.error('[Referral] Commission error:', err.message);
+  }
+}
+
 // ══════════ POST /api/stripe/webhook ══════════
 router.post('/webhook', express.raw({ type: 'application/json' }), async (req, res) => {
   const sig = req.headers['stripe-signature'];
@@ -83,32 +140,59 @@ router.post('/webhook', express.raw({ type: 'application/json' }), async (req, r
     switch (event.type) {
       case 'checkout.session.completed': {
         const session = event.data.object;
-        const userId = session.metadata?.userId;
+        const userId = session.metadata?.userId || session.client_reference_id;
         if (!userId) break;
         const user = await User.findById(userId);
         if (!user) break;
 
+        // ── BL Coin Top-Up Purchase (from /api/bl-coins/purchase route) ──
+        if (session.metadata?.type === 'bl_topup') {
+          const coins = parseInt(session.metadata.coinsToAdd || session.metadata.coins) || 0;
+          if (coins > 0) {
+            const packPrice = parseFloat(session.metadata.packPrice) || (session.amount_total / 100) || 0;
+            user.creditCoins(coins, 'topup', `Top-up: ${coins.toLocaleString()} BL ($${packPrice.toFixed(2)})`);
+            await user.save();
+            console.log(`[Stripe] BL Top-up: ${user.email} +${coins.toLocaleString()} BL ($${packPrice.toFixed(2)})`);
+
+            // Pay referral commissions on BL top-up (ongoing, no time limit)
+            if (packPrice > 0) {
+              await processReferralCommission(user, packPrice, 'bl_topup');
+            }
+          }
+          break;
+        }
+
+        // ── Legacy top-up format (from old coins route) ──
         if (session.metadata?.type === 'topup') {
-          // BL coin top-up
           const coins = parseInt(session.metadata.coins) || 0;
           if (coins > 0) {
             user.creditCoins(coins, 'topup', `Top-up: ${coins.toLocaleString()} BL`);
             await user.save();
-            console.log(`[Stripe] Top-up: ${user.email} +${coins} BL`);
+            console.log(`[Stripe] Top-up (legacy): ${user.email} +${coins} BL`);
           }
-        } else {
-          // Subscription upgrade — CHANGED: "plan" → "subscription_tier"
-          const plan = session.metadata?.plan;
-          const interval = session.metadata?.interval || 'monthly';
-          if (plan && PLANS[plan]) {
-            user.subscription_tier = plan;
-            user.stripeSubscriptionId = session.subscription;
-            user.paymentProvider = 'stripe';
-            user.subscriptionStart = new Date();
-            user.billingInterval = interval;
-            await user.save();
-            console.log(`[Stripe] Upgrade: ${user.email} → ${plan} (${interval})`);
-          }
+          break;
+        }
+
+        // ── Subscription Upgrade ──
+        const plan = session.metadata?.plan;
+        const interval = session.metadata?.interval || 'monthly';
+        if (plan && PLANS[plan]) {
+          const oldTier = user.subscription_tier;
+          user.subscription_tier = plan;
+          user.stripeSubscriptionId = session.subscription;
+          user.paymentProvider = 'stripe';
+          user.subscriptionStart = new Date();
+          user.billingInterval = interval;
+
+          // Set is_diamond flag for BlendLink compatibility
+          user.is_diamond = (plan === 'diamond');
+
+          await user.save();
+          console.log(`[Stripe] Upgrade: ${user.email} ${oldTier} → ${plan} (${interval})`);
+
+          // Pay referral commissions on subscription (capped at 6 months per referral)
+          const amountUSD = PLANS[plan].amount / 100;
+          await processReferralCommission(user, amountUSD, 'subscription');
         }
         break;
       }
@@ -121,6 +205,7 @@ router.post('/webhook', express.raw({ type: 'application/json' }), async (req, r
           user.subscription_tier = 'free';
           user.stripeSubscriptionId = null;
           user.billingInterval = null;
+          user.is_diamond = false;
           await user.save();
         }
         break;
@@ -130,7 +215,20 @@ router.post('/webhook', express.raw({ type: 'application/json' }), async (req, r
         const subscription = event.data.object;
         if (subscription.cancel_at_period_end) {
           const user = await User.findOne({ stripeSubscriptionId: subscription.id });
-          if (user) console.log(`[Stripe] Cancellation scheduled: ${user.email}`);
+          if (user) console.log(`[Stripe] Cancellation scheduled: ${user.email} (${user.subscription_tier} ends at period)`);
+        }
+        break;
+      }
+
+      case 'invoice.payment_succeeded': {
+        // Recurring subscription payment — pay referral commission
+        const invoice = event.data.object;
+        if (invoice.subscription && invoice.amount_paid > 0) {
+          const user = await User.findOne({ stripeCustomerId: invoice.customer });
+          if (user && user.referred_by) {
+            const amountUSD = invoice.amount_paid / 100;
+            await processReferralCommission(user, amountUSD, 'subscription_renewal');
+          }
         }
         break;
       }
@@ -167,9 +265,11 @@ router.post('/portal', auth, async (req, res) => {
 router.get('/plans', (req, res) => {
   res.json({
     plans: Object.entries(PLANS).map(([id, p]) => ({
-      id, monthly: `$${(p.amount / 100).toFixed(2)}`,
+      id,
+      name: id.charAt(0).toUpperCase() + id.slice(1),
+      monthly: `$${(p.amount / 100).toFixed(2)}`,
       yearly: `$${((p.amount * 12) / 100).toFixed(2)}`,
-      yearlySavings: '$0.00',
+      amount_cents: p.amount,
     })),
   });
 });
