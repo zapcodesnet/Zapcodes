@@ -4,7 +4,13 @@ import { AuthContext } from '../context/AuthContext';
 import api, { API_URL } from '../api';
 
 const TIER_COLORS = { free: '#888', bronze: '#cd7f32', silver: '#c0c0c0', gold: '#ffd700', diamond: '#b9f2ff' };
-const MODEL_LABELS = { 'gemini-pro': 'Gemini Pro', 'gemini-flash': 'Gemini Flash', haiku: 'Claude Haiku 4.5', sonnet: 'Claude Sonnet 4.6', groq: 'Groq AI' };
+// Updated: includes both old and new model keys
+const MODEL_LABELS = {
+  'gemini-3.1-pro': 'Gemini 3.1 Pro', 'gemini-2.5-flash': 'Gemini 2.5 Flash',
+  'haiku-4.5': 'Haiku 4.5', 'sonnet-4.6': 'Sonnet 4.6', 'groq': 'Groq AI',
+  'gemini-pro': 'Gemini 3.1 Pro', 'gemini-flash': 'Gemini 2.5 Flash',
+  'haiku': 'Haiku 4.5', 'sonnet': 'Sonnet 4.6',
+};
 const TEMPLATES = [
   { id: 'custom', name: 'Custom (AI Chat)', icon: '💬' },
   { id: 'portfolio', name: 'Portfolio', icon: '👤' },
@@ -15,7 +21,12 @@ const TEMPLATES = [
   { id: 'webapp', name: 'Web App', icon: '⚡' },
   { id: 'saas', name: 'SaaS', icon: '💎' },
 ];
-const MODEL_TIMEOUTS = { 'gemini-pro': 300000, 'gemini-flash': 180000, haiku: 360000, sonnet: 300000, groq: 180000 };
+// Updated: includes new model keys
+const MODEL_TIMEOUTS = {
+  'gemini-3.1-pro': 300000, 'gemini-2.5-flash': 180000,
+  'haiku-4.5': 360000, 'sonnet-4.6': 300000, 'groq': 180000,
+  'gemini-pro': 300000, 'gemini-flash': 180000, 'haiku': 360000, 'sonnet': 300000,
+};
 const UNLIMITED = 999999999;
 function isUnlimited(n) { return n >= UNLIMITED || n === Infinity; }
 function formatBL(n) {
@@ -24,6 +35,29 @@ function formatBL(n) {
   if (n >= 1000) return `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}K`;
   return n.toLocaleString();
 }
+
+// BL cost per model for display (matches backend config/blCoins.js)
+const BL_COST_LABELS = {
+  'sonnet-4.6': 60000, 'gemini-3.1-pro': 50000, 'haiku-4.5': 20000,
+  'gemini-2.5-flash': 10000, 'groq': 5000,
+  'sonnet': 60000, 'gemini-pro': 50000, 'haiku': 20000, 'gemini-flash': 10000,
+};
+
+// Minimum tier for each model (for showing lock icons on unavailable models)
+const MODEL_MIN_TIER = {
+  'groq': 'free', 'gemini-2.5-flash': 'free',
+  'gemini-3.1-pro': 'bronze', 'haiku-4.5': 'silver', 'sonnet-4.6': 'gold',
+};
+const TIER_ORDER = ['free', 'bronze', 'silver', 'gold', 'diamond'];
+
+// All models in display order for showing locked ones too
+const ALL_MODELS_DISPLAY = [
+  { id: 'sonnet-4.6', name: 'Sonnet 4.6', tier: 'gold' },
+  { id: 'gemini-3.1-pro', name: 'Gemini 3.1 Pro', tier: 'bronze' },
+  { id: 'haiku-4.5', name: 'Haiku 4.5', tier: 'silver' },
+  { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash', tier: 'free' },
+  { id: 'groq', name: 'Groq AI', tier: 'free' },
+];
 
 export default function Build() {
   const { user } = useContext(AuthContext);
@@ -55,13 +89,21 @@ export default function Build() {
   const [sessionId, setSessionId] = useState(null);
   const [genResult, setGenResult] = useState(null);
   const [availableModels, setAvailableModels] = useState([]);
+  const [allModelsInfo, setAllModelsInfo] = useState([]);
   const iframeRef = useRef(null);
   const fileInputRef = useRef(null);
   const genTimeoutRef = useRef(null);
   const abortControllerRef = useRef(null);
 
   useEffect(() => { api.get('/api/coins/balance').then(r => setCoinData(r.data)).catch(() => {}); }, []);
-  useEffect(() => { api.get('/api/build/available-models').then(r => setAvailableModels(r.data.models || [])).catch(() => {}); }, [coinData]);
+  useEffect(() => {
+    api.get('/api/build/available-models').then(r => {
+      setAvailableModels(r.data.models || []);
+      setAllModelsInfo(r.data.allModels || []);
+      // Update balance from this endpoint too
+      if (r.data.bl_coins !== undefined) setCoinData(p => ({ ...p, balance: r.data.bl_coins }));
+    }).catch(() => {});
+  }, [coinData?.balance]);
   useEffect(() => { const h = () => setIsMobile(window.innerWidth < 768); window.addEventListener('resize', h); return () => window.removeEventListener('resize', h); }, []);
 
   useEffect(() => {
@@ -77,9 +119,9 @@ export default function Build() {
     }
   }, [searchParams]);
 
-  const plan = coinData?.plan || user?.plan || 'free';
+  const plan = coinData?.subscription_tier || coinData?.plan || user?.subscription_tier || user?.plan || 'free';
   const tc = coinData?.tierConfig || {};
-  const balance = coinData?.balance || 0;
+  const balance = coinData?.balance ?? coinData?.bl_coins ?? user?.bl_coins ?? 0;
 
   const effectiveModel = (() => {
     if (selectedModel) { const m = availableModels.find(x => x.id === selectedModel && x.available); if (m) return m.id; }
@@ -88,7 +130,7 @@ export default function Build() {
   })();
 
   const currentModelInfo = availableModels.find(m => m.id === effectiveModel) || {};
-  const cost = currentModelInfo.cost || 5000;
+  const cost = currentModelInfo.cost || BL_COST_LABELS[effectiveModel] || 5000;
   const maxChars = tc.maxChars || 2000;
   const charsUsed = prompt.length;
   const charPct = isUnlimited(maxChars) ? 0 : (charsUsed / maxChars) * 100;
@@ -112,7 +154,7 @@ export default function Build() {
           try {
             const data = JSON.parse(line.slice(6));
             if (data.type === 'progress') { setProgressStep(data.step); setProgressMessages(p => [...p.slice(-20), { step: data.step, message: data.message, time: new Date() }]); if (data.sessionId) setSessionId(data.sessionId); }
-            else if (data.type === 'complete') { setFiles(data.files || []); setPreview(data.preview || ''); setCoinData(p => ({ ...p, balance: data.balanceRemaining })); if (iframeRef.current && data.preview) iframeRef.current.srcdoc = data.preview; setProgressStep('done'); setGenResult('done'); setProgressMessages(p => [...p, { step: 'done', message: `Done! ${data.fileCount} file(s) using ${MODEL_LABELS[data.model] || data.model}. Cost: ${(data.blSpent||0).toLocaleString()} BL.`, time: new Date() }]); api.get('/api/build/available-models').then(r => setAvailableModels(r.data.models || [])).catch(() => {}); }
+            else if (data.type === 'complete') { setFiles(data.files || []); setPreview(data.preview || ''); setCoinData(p => ({ ...p, balance: data.balanceRemaining })); if (iframeRef.current && data.preview) iframeRef.current.srcdoc = data.preview; setProgressStep('done'); setGenResult('done'); setProgressMessages(p => [...p, { step: 'done', message: `Done! ${data.fileCount} file(s) using ${MODEL_LABELS[data.model] || data.model}. Cost: ${(data.blSpent||0).toLocaleString()} BL.`, time: new Date() }]); api.get('/api/build/available-models').then(r => { setAvailableModels(r.data.models || []); setAllModelsInfo(r.data.allModels || []); }).catch(() => {}); }
             else if (data.type === 'error') { setProgressStep('error'); setGenResult('error'); setProgressMessages(p => [...p, { step: 'error', message: data.error + (data.suggestion ? ` — ${data.suggestion}` : ''), time: new Date() }]); }
             else if (data.type === 'stopped') { setProgressStep('stopped'); setGenResult('stopped'); setProgressMessages(p => [...p, { step: 'stopped', message: data.message || 'Stopped. Coins refunded.', time: new Date() }]); }
           } catch (e) { console.warn('[SSE] Parse error:', e.message); }
@@ -131,6 +173,38 @@ export default function Build() {
   const handleCloneAnalyze = async () => { if (!cloneUrl.trim()) return; setAnalyzing(true); try { const { data } = await api.post('/api/build/clone-analyze', { url: cloneUrl }); setCloneAnalysis(data.analysis); } catch (e) { alert(e.response?.data?.error || 'Failed'); } finally { setAnalyzing(false); } };
   const handleFileUpload = (fileList) => { const uploaded = Array.from(fileList); const zips = uploaded.filter(f => f.name.endsWith('.zip')); const texts = uploaded.filter(f => !f.name.endsWith('.zip')); if (zips.length) { const fd = new FormData(); zips.forEach(f => fd.append('files', f)); api.post('/api/files/upload', fd, { headers: { 'Content-Type': 'multipart/form-data' } }).then(({ data }) => { setFixFiles(p => [...p, ...data.files]); alert(`${data.totalFiles} files extracted`); }).catch(e => alert(e.response?.data?.error || 'ZIP failed')); } if (texts.length) Promise.all(texts.map(f => new Promise(r => { const rd = new FileReader(); rd.onload = e => r({ name: f.name, content: e.target.result }); rd.readAsText(f); }))).then(p => setFixFiles(prev => [...prev, ...p])); };
   const handleCodeFix = async () => { if (!fixFiles.length) return alert('Upload files first'); setFixing(true); try { const { data } = await api.post('/api/build/code-fix', { files: fixFiles, description: fixDescription, model: effectiveModel }); setFiles(data.files || []); setPreview(data.preview || ''); setCoinData(p => ({ ...p, balance: data.balanceRemaining })); if (iframeRef.current && data.preview) iframeRef.current.srcdoc = data.preview; setTab('build'); } catch (e) { alert(e.response?.data?.error || 'Fix failed'); } finally { setFixing(false); } };
+
+  // Build the model selector list: show available + locked models
+  const modelSelectorItems = (() => {
+    const items = [];
+    const availableIds = new Set(availableModels.map(m => m.id));
+
+    // First: add all available models from backend
+    for (const m of availableModels) {
+      items.push({ ...m, locked: false });
+    }
+
+    // Then: add locked models the user can't access yet
+    for (const m of ALL_MODELS_DISPLAY) {
+      if (!availableIds.has(m.id)) {
+        const userTierIdx = TIER_ORDER.indexOf(plan);
+        const requiredTierIdx = TIER_ORDER.indexOf(m.tier);
+        items.push({
+          id: m.id,
+          name: m.name,
+          cost: BL_COST_LABELS[m.id] || 5000,
+          available: false,
+          locked: true,
+          requiredTier: m.tier,
+          monthlyLimit: '—',
+          monthlyUsed: 0,
+          type: 'locked',
+        });
+      }
+    }
+
+    return items;
+  })();
 
   const s = {
     page: { display: 'flex', flexDirection: 'column', height: 'calc(100vh - 52px)', overflow: 'hidden' },
@@ -153,6 +227,14 @@ export default function Build() {
     dropZone: { border: '2px dashed var(--border)', borderRadius: 12, padding: 24, textAlign: 'center', cursor: 'pointer', marginBottom: 12 },
     progressItem: (e) => ({ padding: '6px 0', fontSize: 13, color: e ? '#ef4444' : 'var(--text-secondary)', display: 'flex', gap: 8, alignItems: 'flex-start' }),
     progressDot: (s) => ({ width: 8, height: 8, borderRadius: 4, marginTop: 4, flexShrink: 0, background: s === 'error' ? '#ef4444' : s === 'done' ? '#22c55e' : s === 'stopped' ? '#f59e0b' : '#6366f1' }),
+    modelBtn: (selected, available, locked) => ({
+      padding: '6px 10px', borderRadius: 8, border: selected ? '1px solid #6366f1' : locked ? '1px solid rgba(255,255,255,0.08)' : '1px solid var(--border)',
+      cursor: available ? 'pointer' : 'default', fontWeight: 600, fontSize: 11,
+      background: selected ? 'rgba(99,102,241,.2)' : locked ? 'rgba(255,255,255,0.02)' : 'transparent',
+      color: selected ? '#6366f1' : locked ? 'var(--text-muted)' : 'var(--text-secondary)',
+      opacity: locked ? 0.5 : available ? 1 : 0.6, transition: 'all .2s',
+      display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2, minWidth: 80,
+    }),
   };
   if (isMobile) { s.main = { ...s.main, flexDirection: 'column' }; s.leftPanel = { ...s.leftPanel, width: '100%', minWidth: 'unset', borderRight: 'none', borderBottom: '1px solid var(--border)', maxHeight: '50vh' }; s.rightPanel = { ...s.rightPanel, minHeight: '40vh' }; }
 
@@ -181,15 +263,42 @@ export default function Build() {
             <>
               <div style={s.chatArea}>
                 <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--text-primary)', marginBottom: 12 }}>Describe your website</div>
-                {availableModels.length > 1 && (
-                  <div style={{ marginBottom: 12, display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                    {availableModels.map(m => (
-                      <button key={m.id} style={{ ...s.tab(effectiveModel === m.id), fontSize: 11, opacity: m.available ? 1 : 0.4 }} onClick={() => m.available && setSelectedModel(m.id)} disabled={!m.available}>
-                        {m.name} ({formatBL(m.cost)} BL) {m.monthlyLimit !== 'Unlimited' ? `${m.monthlyUsed}/${m.monthlyLimit}` : ''}
+
+                {/* ── Enhanced Model Selector ── */}
+                <div style={{ marginBottom: 12 }}>
+                  <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 6 }}>AI Model:</div>
+                  <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                    {modelSelectorItems.map(m => (
+                      <button
+                        key={m.id}
+                        style={s.modelBtn(effectiveModel === m.id, m.available, m.locked)}
+                        onClick={() => m.available && !m.locked && setSelectedModel(m.id)}
+                        disabled={!m.available || m.locked}
+                        title={m.locked ? `Requires ${m.requiredTier?.charAt(0).toUpperCase() + m.requiredTier?.slice(1)}+ plan` : `${m.name} — ${formatBL(m.cost)} BL per gen`}
+                      >
+                        <span style={{ fontSize: 12, fontWeight: 700 }}>
+                          {m.locked ? '🔒 ' : ''}{m.name}
+                        </span>
+                        {!m.locked && (
+                          <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>
+                            {formatBL(m.cost)} BL
+                            {m.monthlyLimit && m.monthlyLimit !== 'Unlimited' && m.monthlyLimit !== '—'
+                              ? ` · ${m.monthlyUsed || 0}/${m.monthlyLimit}`
+                              : m.monthlyLimit === 'Unlimited' ? ' · ∞' : ''
+                            }
+                            {m.type === 'one_time_trial' ? ' (trial)' : ''}
+                          </span>
+                        )}
+                        {m.locked && (
+                          <span style={{ fontSize: 9, color: 'var(--text-muted)' }}>
+                            {m.requiredTier?.charAt(0).toUpperCase() + m.requiredTier?.slice(1)}+
+                          </span>
+                        )}
                       </button>
                     ))}
                   </div>
-                )}
+                </div>
+
                 <input style={{ width: '100%', padding: '10px 14px', borderRadius: 10, border: '1px solid var(--border)', background: 'var(--bg-elevated)', color: 'var(--text-primary)', fontSize: 14, marginBottom: 12, boxSizing: 'border-box' }} placeholder="Project name (optional)" value={projectName} onChange={e => setProjectName(e.target.value)} />
                 <div style={{ marginBottom: 12 }}>
                   <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 6 }}>Template:</div>
@@ -215,8 +324,8 @@ export default function Build() {
                 <textarea style={s.textarea} placeholder="Describe the website you want to build..." value={prompt} onChange={e => setPrompt(e.target.value)} maxLength={isUnlimited(maxChars) ? undefined : maxChars + 100} />
                 <div style={{ fontSize: 11, textAlign: 'right', marginTop: 4, color: charPct > 100 ? '#ef4444' : 'var(--text-muted)' }}>{isUnlimited(maxChars) ? `${charsUsed} chars` : `${charsUsed}/${maxChars}`}</div>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 8, fontSize: 13, gap: 8 }}>
-                  <span style={{ color: 'var(--text-muted)' }}>Cost: <strong style={{ color: '#f59e0b' }}>{cost.toLocaleString()} BL</strong></span>
-                  {generating ? <button style={s.stopBtn} onClick={handleStop}>⛔ Stop</button> : <button style={s.genBtn(generating)} onClick={handleGenerate} disabled={generating}>Generate ({cost.toLocaleString()} BL)</button>}
+                  <span style={{ color: 'var(--text-muted)' }}>Cost: <strong style={{ color: '#f59e0b' }}>{cost.toLocaleString()} BL</strong> {balance < cost && <span style={{ color: '#ef4444', fontSize: 11 }}>(insufficient)</span>}</span>
+                  {generating ? <button style={s.stopBtn} onClick={handleStop}>⛔ Stop</button> : <button style={s.genBtn(generating || balance < cost)} onClick={handleGenerate} disabled={generating || balance < cost}>Generate ({cost.toLocaleString()} BL)</button>}
                 </div>
               </div>
             </>
