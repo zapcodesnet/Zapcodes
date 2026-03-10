@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const { auth } = require('../middleware/auth');
 const { callAI, parseFilesFromResponse, generateProjectMultiStep, verifyAndFix } = require('../services/ai');
+const { analyzeAndMatch, buildCustomizationUserPrompt, CUSTOMIZE_SYSTEM_PROMPT } = require('../services/prebuiltTemplates');
 const User = require('../models/User');
 const axios = require('axios');
 
@@ -348,15 +349,52 @@ router.post('/generate-with-progress', auth, async (req, res) => {
 
     const aiOpts = { onProgress: (msg) => { if (!aborted && connectionAlive) sendProgress('generating', msg); } };
 
+    // ══════════ SMART TEMPLATE MATCHING + AI CUSTOMIZATION ══════════
     let files;
     if (template && template !== 'custom') {
+      // User explicitly picked a template category (portfolio, blog, etc.)
       sendProgress('generating_html', `Building ${template} project: "${projectName || 'My Project'}"...`);
       files = await generateProjectMultiStep(template, projectName || 'My Project', description || prompt, colorScheme, features, model, aiOpts);
     } else {
-      sendProgress('generating_html', `Generating website using ${modelLabel}...`);
-      const userPrompt = `Create a complete, production-ready website: ${prompt}\n\nProject name: ${projectName || 'My Website'}\nColor scheme: ${colorScheme || 'modern dark theme'}\n${features ? `Features: ${features.join(', ')}` : ''}\n\nIMPORTANT: index.html must be self-contained with ALL CSS inside <style> and ALL JS inside <script>.`;
-      const result = await callAI(GEN_PROMPT, userPrompt, model, undefined, aiOpts);
-      files = result ? parseFilesFromResponse(result) : [];
+      // DEFAULT: Smart template matching — user just typed a prompt
+      sendProgress('analyzing', 'Finding the perfect template for your project...');
+
+      const matchResult = analyzeAndMatch(inputText);
+
+      if (matchResult.matched) {
+        // ✅ Found a good template match — customize instead of generating from scratch
+        const missingCount = matchResult.missingFeatures?.length || 0;
+
+        sendProgress('template_matched',
+          `Found perfect base template (${matchResult.score}% match)` +
+          (missingCount > 0 ? ` — will add ${missingCount} extra feature(s)` : '') +
+          (matchResult.detectedColor ? ` — applying custom colors` : '') +
+          (matchResult.detectedTheme && matchResult.detectedTheme !== matchResult.colorScheme ? ` — switching to ${matchResult.detectedTheme} theme` : '')
+        );
+
+        sendProgress('generating_html', `Customizing your website with ${modelLabel}...`);
+
+        // Build the customization prompt with the full template HTML embedded
+        const customizeUserPrompt = buildCustomizationUserPrompt(matchResult, inputText, projectName || 'My Website');
+
+        // Use the customization system prompt instead of the generic generation prompt
+        const result = await callAI(CUSTOMIZE_SYSTEM_PROMPT, customizeUserPrompt, model, undefined, aiOpts);
+        files = result ? parseFilesFromResponse(result) : [];
+
+        // If customization produced no files, fall back to from-scratch generation
+        if (!files || files.length === 0) {
+          sendProgress('fallback', 'Retrying with full generation...');
+          const fallbackPrompt = `Create a complete, production-ready website: ${inputText}\n\nProject name: ${projectName || 'My Website'}\nColor scheme: ${colorScheme || 'modern dark theme'}\n${features ? `Features: ${features.join(', ')}` : ''}\n\nIMPORTANT: index.html must be self-contained with ALL CSS inside <style> and ALL JS inside <script>.`;
+          const fallbackResult = await callAI(GEN_PROMPT, fallbackPrompt, model, undefined, aiOpts);
+          files = fallbackResult ? parseFilesFromResponse(fallbackResult) : [];
+        }
+      } else {
+        // ❌ No good template match — generate from scratch (original behavior)
+        sendProgress('generating_html', `Generating website from scratch with ${modelLabel}...`);
+        const userPrompt = `Create a complete, production-ready website: ${inputText}\n\nProject name: ${projectName || 'My Website'}\nColor scheme: ${colorScheme || 'modern dark theme'}\n${features ? `Features: ${features.join(', ')}` : ''}\n\nIMPORTANT: index.html must be self-contained with ALL CSS inside <style> and ALL JS inside <script>.`;
+        const result = await callAI(GEN_PROMPT, userPrompt, model, undefined, aiOpts);
+        files = result ? parseFilesFromResponse(result) : [];
+      }
     }
 
     if (aborted || !connectionAlive) {
@@ -426,13 +464,32 @@ router.post('/generate', auth, async (req, res) => {
     user.incrementMonthlyUsage(model, 'generation');
     if (config.trialModels && config.trialModels.includes(model)) user.incrementTrial(model);
     await user.save();
+
     let files;
-    if (template && template !== 'custom') { files = await generateProjectMultiStep(template, projectName || 'My Project', description || prompt, colorScheme, features, model); }
-    else {
-      const userPrompt = `Create a complete, production-ready website: ${prompt}\n\nProject name: ${projectName || 'My Website'}\nColor scheme: ${colorScheme || 'modern dark theme'}\n${features ? `Features: ${features.join(', ')}` : ''}\n\nIMPORTANT: index.html must be self-contained with ALL CSS in <style> and ALL JS in <script>.`;
-      const result = await callAI(GEN_PROMPT, userPrompt, model);
-      files = result ? parseFilesFromResponse(result) : [];
+    if (template && template !== 'custom') {
+      files = await generateProjectMultiStep(template, projectName || 'My Project', description || prompt, colorScheme, features, model);
+    } else {
+      // Smart template matching (same logic as SSE endpoint)
+      const matchResult = analyzeAndMatch(inputText);
+
+      if (matchResult.matched) {
+        const customizeUserPrompt = buildCustomizationUserPrompt(matchResult, inputText, projectName || 'My Website');
+        const result = await callAI(CUSTOMIZE_SYSTEM_PROMPT, customizeUserPrompt, model);
+        files = result ? parseFilesFromResponse(result) : [];
+
+        // Fallback to from-scratch if customization fails
+        if (!files || files.length === 0) {
+          const fallbackPrompt = `Create a complete, production-ready website: ${inputText}\n\nProject name: ${projectName || 'My Website'}\nColor scheme: ${colorScheme || 'modern dark theme'}\n${features ? `Features: ${features.join(', ')}` : ''}\n\nIMPORTANT: index.html must be self-contained with ALL CSS inside <style> and ALL JS inside <script>.`;
+          const fallbackResult = await callAI(GEN_PROMPT, fallbackPrompt, model);
+          files = fallbackResult ? parseFilesFromResponse(fallbackResult) : [];
+        }
+      } else {
+        const userPrompt = `Create a complete, production-ready website: ${inputText}\n\nProject name: ${projectName || 'My Website'}\nColor scheme: ${colorScheme || 'modern dark theme'}\n${features ? `Features: ${features.join(', ')}` : ''}\n\nIMPORTANT: index.html must be self-contained with ALL CSS inside <style> and ALL JS inside <script>.`;
+        const result = await callAI(GEN_PROMPT, userPrompt, model);
+        files = result ? parseFilesFromResponse(result) : [];
+      }
     }
+
     if (!files || !files.length) { user.creditCoins(cost, 'generation', 'Refund: failed'); user.decrementMonthlyUsage(model, 'generation'); await user.save(); return res.status(500).json({ error: 'Generation failed. Coins refunded.' }); }
     const preview = generatePreviewHTML(files);
     res.json({ files, preview, model, blSpent: cost, balanceRemaining: user.bl_coins, monthlyUsage: user.getMonthlyUsage(), fileCount: files.length });
