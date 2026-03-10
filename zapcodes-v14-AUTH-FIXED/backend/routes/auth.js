@@ -44,12 +44,13 @@ router.post('/register', async (req, res) => {
       referral_code: userReferralCode,
     });
 
-    // Handle referral bonus
+    // Handle referral bonus — 50K BL to BOTH new user and referrer
     if (refCode) {
       const referrer = await User.findOne({ referral_code: refCode });
       if (referrer && referrer._id.toString() !== user._id.toString()) {
         user.referred_by = referrer.user_id || referrer._id.toString();
         user.creditCoins(50000, 'referral_bonus', `Referred by ${referrer.name}`);
+        user.signup_bonus_claimed = true;
         await user.save();
         referrer.creditCoins(50000, 'referral_bonus', `Referred ${user.name}`);
         referrer.referral_count += 1;
@@ -57,7 +58,19 @@ router.post('/register', async (req, res) => {
         referrer.direct_referrals = (referrer.direct_referrals || 0) + 1;
         await referrer.save();
         console.log(`[Referral] ${referrer.email} → ${user.email} (50K BL each)`);
+      } else {
+        // Invalid referral code — still give signup bonus to new user only
+        user.creditCoins(50000, 'signup_bonus', 'Welcome bonus: 50,000 BL');
+        user.signup_bonus_claimed = true;
+        await user.save();
+        console.log(`[Signup Bonus] ${user.email} (50K BL — invalid referral code ignored)`);
       }
+    } else {
+      // No referral code — give signup bonus to new user
+      user.creditCoins(50000, 'signup_bonus', 'Welcome bonus: 50,000 BL');
+      user.signup_bonus_claimed = true;
+      await user.save();
+      console.log(`[Signup Bonus] ${user.email} (50K BL — no referral)`);
     }
 
     // Super admin still requires email verification on registration
