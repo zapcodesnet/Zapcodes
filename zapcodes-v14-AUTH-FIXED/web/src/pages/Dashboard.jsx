@@ -37,19 +37,13 @@ export default function Dashboard() {
 
   const fetchData = useCallback(async () => {
     try {
-      const [balRes, usageRes, txRes, siteRes] = await Promise.all([
+      const [balRes, txRes, siteRes] = await Promise.all([
         api.get('/api/coins/balance'),
-        api.get('/api/usage/stats').catch(() => ({ data: null })),
         api.get('/api/coins/transactions'),
         api.get('/api/build/sites'),
       ]);
       setCoinData(balRes.data);
       setCountdown(balRes.data.nextClaimIn || 0);
-      if (usageRes.data) {
-        setUsageData(usageRes.data);
-        // Use countdown from usage endpoint if available
-        if (usageRes.data.claim_countdown > 0) setCountdown(usageRes.data.claim_countdown);
-      }
       setTransactions(txRes.data.transactions || []);
       setSites(siteRes.data.sites || []);
     } catch (err) { console.error('Dashboard fetch error:', err); }
