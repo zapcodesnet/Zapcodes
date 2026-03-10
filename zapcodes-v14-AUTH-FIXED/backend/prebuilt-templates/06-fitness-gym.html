@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Fitness Gym - Built with ZapCodes</title>
+<link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Rubik:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+<style>
+*,*::before,*::after{margin:0;padding:0;box-sizing:border-box}:root{--red:#e53e3e;--dark:#111;--darker:#0a0a0a;--white:#fff;--text:#aaa;--border:rgba(255,255,255,.08)}
+html{scroll-behavior:smooth}body{font-family:'Rubik',sans-serif;background:var(--dark);color:var(--text);line-height:1.7;overflow-x:hidden}
+a{text-decoration:none;color:inherit;transition:.3s}h1,h2,h3{color:var(--white)}.container{max-width:1140px;margin:0 auto;padding:0 20px}
+.nav{position:fixed;top:0;width:100%;z-index:999;padding:14px 0;background:rgba(17,17,17,.95);backdrop-filter:blur(10px)}
+.nav .container{display:flex;justify-content:space-between;align-items:center}
+.logo{font-family:'Bebas Neue',sans-serif;font-size:32px;color:var(--white);letter-spacing:2px}.logo span{color:var(--red)}
+.nav-links{display:flex;gap:24px;list-style:none;align-items:center}
+.nav-links a{font-size:13px;color:var(--text);text-transform:uppercase;letter-spacing:1px;font-weight:500}.nav-links a:hover{color:var(--red)}
+.btn{display:inline-block;padding:12px 28px;border-radius:4px;font-size:13px;font-weight:600;cursor:pointer;transition:.3s;font-family:inherit;border:none;text-transform:uppercase;letter-spacing:1px}
+.btn-red{background:var(--red);color:var(--white)}.btn-red:hover{background:#c53030;transform:translateY(-2px)}
+.btn-ghost{border:1px solid var(--red);color:var(--red);background:none}.btn-ghost:hover{background:var(--red);color:var(--white)}
+.hero{height:100vh;display:flex;align-items:center;position:relative;overflow:hidden}
+.hero-bg{position:absolute;inset:0;background:url('https://images.unsplash.com/photo-1534438327276-14e5300c3a48?w=1920&q=80') center/cover;filter:brightness(.3)}
+.hero-content{position:relative;z-index:2;max-width:600px}
+.hero h1{font-family:'Bebas Neue',sans-serif;font-size:clamp(48px,8vw,96px);line-height:.95;letter-spacing:3px;margin-bottom:16px}
+.hero h1 span{color:var(--red)}
+.hero p{font-size:17px;margin-bottom:28px;line-height:1.8}
+.hero-btns{display:flex;gap:14px;flex-wrap:wrap}
+section{padding:80px 0}.stitle{text-align:center;margin-bottom:48px}
+.stitle h2{font-family:'Bebas Neue',sans-serif;font-size:clamp(32px,4vw,48px);letter-spacing:2px;margin-bottom:6px}
+.stitle .line{width:50px;height:3px;background:var(--red);margin:10px auto}.stitle p{font-size:15px}
+/* CLASSES */
+.class-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:20px}
+.class-card{position:relative;border-radius:10px;overflow:hidden;height:320px;cursor:pointer}
+.class-card img{width:100%;height:100%;object-fit:cover;transition:.5s}
+.class-card:hover img{transform:scale(1.08);filter:brightness(.5)}
+.class-over{position:absolute;inset:0;background:linear-gradient(transparent 40%,rgba(0,0,0,.85));display:flex;flex-direction:column;justify-content:flex-end;padding:24px}
+.class-over h3{font-family:'Bebas Neue',sans-serif;font-size:24px;letter-spacing:1px;margin-bottom:4px}
+.class-over p{font-size:13px}
+.class-over .class-tag{position:absolute;top:14px;right:14px;background:var(--red);padding:4px 12px;border-radius:4px;font-size:11px;font-weight:600;color:var(--white);text-transform:uppercase}
+/* SCHEDULE */
+.sched-sec{background:var(--darker)}
+.sched-table{width:100%;border-collapse:collapse;font-size:13px}
+.sched-table th{background:var(--red);color:var(--white);padding:12px;text-transform:uppercase;letter-spacing:1px;font-size:12px}
+.sched-table td{padding:10px;border:1px solid var(--border);text-align:center}
+.sched-table tr:hover td{background:rgba(229,62,62,.05)}
+.sched-table .has-class{color:var(--white);font-weight:500;cursor:pointer}
+.sched-table .has-class:hover{color:var(--red)}
+/* PRICING */
+.price-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:24px}
+.price-card{background:rgba(255,255,255,.03);border:1px solid var(--border);border-radius:10px;padding:32px;text-align:center;position:relative;transition:.3s}
+.price-card:hover{border-color:var(--red);transform:translateY(-4px)}
+.price-card.pop{border-color:var(--red);background:rgba(229,62,62,.05)}
+.price-card.pop::before{content:'BEST VALUE';position:absolute;top:-12px;left:50%;transform:translateX(-50%);background:var(--red);color:var(--white);padding:4px 14px;border-radius:12px;font-size:10px;font-weight:700;letter-spacing:1px}
+.price-card h3{font-family:'Bebas Neue',sans-serif;font-size:24px;letter-spacing:1px;margin-bottom:16px}
+.price-card .amount{font-size:48px;font-weight:700;color:var(--white)}.price-card .amount span{font-size:16px;color:var(--text)}
+.price-card .per{font-size:13px;margin-bottom:20px}
+.price-card ul{list-style:none;margin-bottom:24px;text-align:left}
+.price-card li{padding:8px 0;border-bottom:1px solid var(--border);font-size:13px;display:flex;gap:8px;align-items:center}
+.price-card li i{color:var(--red);font-size:12px}
+/* BMI */
+.bmi-sec{background:var(--darker)}
+.bmi-grid{display:grid;grid-template-columns:1fr 1fr;gap:40px;max-width:800px;margin:0 auto}
+.bmi-form label{display:block;font-size:13px;font-weight:600;color:var(--white);margin-bottom:6px;margin-top:14px}
+.bmi-form input,.bmi-form select{width:100%;padding:12px;background:rgba(255,255,255,.05);border:1px solid var(--border);border-radius:6px;color:var(--white);font-family:inherit;font-size:14px;outline:none}
+.bmi-form input:focus{border-color:var(--red)}
+.bmi-result{background:rgba(255,255,255,.03);border:1px solid var(--border);border-radius:10px;padding:28px;text-align:center;display:flex;flex-direction:column;align-items:center;justify-content:center}
+.bmi-result .big{font-size:64px;font-weight:700;color:var(--red)}
+.bmi-result .label{font-size:20px;color:var(--white);margin:8px 0}
+.bmi-bar{width:100%;height:8px;background:rgba(255,255,255,.1);border-radius:4px;margin-top:16px;position:relative;overflow:hidden}
+.bmi-fill{height:100%;border-radius:4px;transition:.5s;width:0}
+/* CONTACT */
+.contact-form{max-width:600px;margin:0 auto;display:grid;gap:14px}
+.contact-form input,.contact-form textarea,.contact-form select{width:100%;padding:13px;background:rgba(255,255,255,.04);border:1px solid var(--border);border-radius:6px;color:var(--white);font-family:inherit;font-size:14px;outline:none}
+.contact-form input:focus,.contact-form textarea:focus{border-color:var(--red)}
+.contact-form input::placeholder,.contact-form textarea::placeholder{color:rgba(255,255,255,.3)}
+.contact-form select option{background:var(--dark)}
+.contact-form textarea{min-height:100px;resize:vertical}
+.contact-form .row{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.form-msg{padding:12px;border-radius:6px;font-size:14px;display:none;text-align:center}
+.form-msg.ok{display:block;background:rgba(72,187,120,.1);color:#48bb78;border:1px solid rgba(72,187,120,.2)}
+footer{padding:40px 0 16px;border-top:1px solid var(--border)}
+.foot-grid{display:grid;grid-template-columns:2fr 1fr 1fr 1fr;gap:32px;margin-bottom:24px}
+.foot-col .logo{margin-bottom:10px;display:inline-block;font-size:24px}
+.foot-col p{font-size:13px}.foot-col h4{color:var(--white);font-size:13px;font-weight:600;margin-bottom:12px;text-transform:uppercase;letter-spacing:1px}
+.foot-col ul{list-style:none}.foot-col li{margin-bottom:8px;font-size:13px}.foot-col a:hover{color:var(--red)}
+.foot-bottom{text-align:center;padding-top:16px;border-top:1px solid var(--border);font-size:12px}
+.foot-bottom a{color:var(--red)}
+.toast{position:fixed;bottom:30px;left:50%;transform:translateX(-50%) translateY(100px);background:var(--red);color:var(--white);padding:14px 28px;font-size:14px;font-weight:600;z-index:9999;transition:.4s;opacity:0;border-radius:6px}
+.toast.show{transform:translateX(-50%) translateY(0);opacity:1}
+@media(max-width:900px){.class-grid,.price-grid{grid-template-columns:1fr 1fr}.bmi-grid{grid-template-columns:1fr}}
+@media(max-width:600px){.class-grid,.price-grid{grid-template-columns:1fr}.nav-links{display:none}.foot-grid{grid-template-columns:1fr}.sched-table{font-size:11px}.contact-form .row{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<nav class="nav"><div class="container"><a href="#" class="logo">ZAP<span>CODES</span></a><ul class="nav-links"><li><a href="#classes">Classes</a></li><li><a href="#schedule">Schedule</a></li><li><a href="#pricing">Pricing</a></li><li><a href="#bmi">BMI</a></li><li><a href="#contact" class="btn btn-red" style="padding:8px 20px">Join Now</a></li></ul></div></nav>
+
+<section class="hero"><div class="hero-bg"></div><div class="container"><div class="hero-content"><h1>PUSH YOUR <span>LIMITS</span></h1><p>Transform your body and mind with world-class trainers, cutting-edge equipment, and a community that never quits.</p><div class="hero-btns"><a href="#pricing" class="btn btn-red">Get Membership</a><a href="#classes" class="btn btn-ghost">View Classes</a></div></div></div></section>
+
+<section id="classes"><div class="container"><div class="stitle"><h2>OUR CLASSES</h2><div class="line"></div><p>Expert-led programs for every fitness level</p></div><div class="class-grid">
+<div class="class-card" onclick="showToast('Book CrossFit class')"><img src="https://images.unsplash.com/photo-1534258936925-c58bed479fcb?w=600&q=80" alt="CrossFit"><div class="class-over"><span class="class-tag">Intense</span><h3>CrossFit</h3><p>High-intensity functional training</p></div></div>
+<div class="class-card" onclick="showToast('Book Yoga class')"><img src="https://images.unsplash.com/photo-1544367567-0f2fcb009e0b?w=600&q=80" alt="Yoga"><div class="class-over"><span class="class-tag">Relaxing</span><h3>Yoga & Pilates</h3><p>Mind-body connection</p></div></div>
+<div class="class-card" onclick="showToast('Book Boxing class')"><img src="https://images.unsplash.com/photo-1549719386-74dfcbf7dbed?w=600&q=80" alt="Boxing"><div class="class-over"><span class="class-tag">Power</span><h3>Boxing</h3><p>Strength and conditioning</p></div></div>
+<div class="class-card" onclick="showToast('Book Spinning class')"><img src="https://images.unsplash.com/photo-1534787238916-9ba6764efd4f?w=600&q=80" alt="Spinning"><div class="class-over"><span class="class-tag">Cardio</span><h3>Spinning</h3><p>High-energy cycling sessions</p></div></div>
+<div class="class-card" onclick="showToast('Book Weight Training')"><img src="https://images.unsplash.com/photo-1581009146145-b5ef050c2e1e?w=600&q=80" alt="Weights"><div class="class-over"><span class="class-tag">Strength</span><h3>Weight Training</h3><p>Build muscle and power</p></div></div>
+<div class="class-card" onclick="showToast('Book HIIT class')"><img src="https://images.unsplash.com/photo-1518611012118-696072aa579a?w=600&q=80" alt="HIIT"><div class="class-over"><span class="class-tag">Burn</span><h3>HIIT</h3><p>Maximum calorie burn in 45 mins</p></div></div>
+</div></div></section>
+
+<section class="sched-sec" id="schedule"><div class="container"><div class="stitle"><h2>CLASS SCHEDULE</h2><div class="line"></div></div>
+<div style="overflow-x:auto"><table class="sched-table"><thead><tr><th>Time</th><th>Mon</th><th>Tue</th><th>Wed</th><th>Thu</th><th>Fri</th><th>Sat</th></tr></thead><tbody>
+<tr><td>6:00 AM</td><td class="has-class" onclick="showToast('Book CrossFit Mon 6AM')">CrossFit</td><td class="has-class" onclick="showToast('Book Spinning Tue 6AM')">Spinning</td><td class="has-class" onclick="showToast('Book CrossFit Wed 6AM')">CrossFit</td><td class="has-class" onclick="showToast('Book HIIT Thu 6AM')">HIIT</td><td class="has-class" onclick="showToast('Book CrossFit Fri 6AM')">CrossFit</td><td>-</td></tr>
+<tr><td>8:00 AM</td><td class="has-class" onclick="showToast('Book Yoga Mon 8AM')">Yoga</td><td class="has-class" onclick="showToast('Book Boxing Tue 8AM')">Boxing</td><td class="has-class" onclick="showToast('Book Yoga Wed 8AM')">Yoga</td><td class="has-class" onclick="showToast('Book Boxing Thu 8AM')">Boxing</td><td class="has-class" onclick="showToast('Book Yoga Fri 8AM')">Yoga</td><td class="has-class" onclick="showToast('Book HIIT Sat 8AM')">HIIT</td></tr>
+<tr><td>10:00 AM</td><td class="has-class" onclick="showToast('Book Weights Mon 10AM')">Weights</td><td class="has-class" onclick="showToast('Book Spinning Tue 10AM')">Spinning</td><td class="has-class" onclick="showToast('Book Weights Wed 10AM')">Weights</td><td class="has-class" onclick="showToast('Book Spinning Thu 10AM')">Spinning</td><td class="has-class" onclick="showToast('Book Weights Fri 10AM')">Weights</td><td class="has-class" onclick="showToast('Book Yoga Sat 10AM')">Yoga</td></tr>
+<tr><td>5:00 PM</td><td class="has-class" onclick="showToast('Book HIIT Mon 5PM')">HIIT</td><td class="has-class" onclick="showToast('Book CrossFit Tue 5PM')">CrossFit</td><td class="has-class" onclick="showToast('Book Boxing Wed 5PM')">Boxing</td><td class="has-class" onclick="showToast('Book CrossFit Thu 5PM')">CrossFit</td><td class="has-class" onclick="showToast('Book HIIT Fri 5PM')">HIIT</td><td>-</td></tr>
+<tr><td>7:00 PM</td><td class="has-class" onclick="showToast('Book Boxing Mon 7PM')">Boxing</td><td class="has-class" onclick="showToast('Book Yoga Tue 7PM')">Yoga</td><td class="has-class" onclick="showToast('Book Spinning Wed 7PM')">Spinning</td><td class="has-class" onclick="showToast('Book Yoga Thu 7PM')">Yoga</td><td>-</td><td>-</td></tr>
+</tbody></table></div></div></section>
+
+<section id="pricing"><div class="container"><div class="stitle"><h2>MEMBERSHIP PLANS</h2><div class="line"></div><p>Find the plan that fits your goals</p></div><div class="price-grid">
+<div class="price-card"><h3>STARTER</h3><div class="amount">$29<span>/mo</span></div><p class="per">Basic access</p><ul><li><i class="fas fa-check"></i>Gym Access (6am-10pm)</li><li><i class="fas fa-check"></i>Basic Equipment</li><li><i class="fas fa-check"></i>Locker Room</li><li><i class="fas fa-check"></i>1 Free Class/Week</li></ul><button class="btn btn-ghost" style="width:100%" onclick="showToast('Signing up for Starter...')">Join Now</button></div>
+<div class="price-card pop"><h3>UNLIMITED</h3><div class="amount">$59<span>/mo</span></div><p class="per">Most popular</p><ul><li><i class="fas fa-check"></i>24/7 Gym Access</li><li><i class="fas fa-check"></i>All Equipment</li><li><i class="fas fa-check"></i>Unlimited Classes</li><li><i class="fas fa-check"></i>Personal Locker</li><li><i class="fas fa-check"></i>Sauna & Pool</li></ul><button class="btn btn-red" style="width:100%" onclick="showToast('Signing up for Unlimited...')">Join Now</button></div>
+<div class="price-card"><h3>ELITE</h3><div class="amount">$99<span>/mo</span></div><p class="per">Premium experience</p><ul><li><i class="fas fa-check"></i>Everything in Unlimited</li><li><i class="fas fa-check"></i>Personal Trainer (4x/mo)</li><li><i class="fas fa-check"></i>Nutrition Plan</li><li><i class="fas fa-check"></i>Recovery Room</li><li><i class="fas fa-check"></i>Guest Passes (2/mo)</li></ul><button class="btn btn-ghost" style="width:100%" onclick="showToast('Signing up for Elite...')">Join Now</button></div>
+</div></div></section>
+
+<section class="bmi-sec" id="bmi"><div class="container"><div class="stitle"><h2>BMI CALCULATOR</h2><div class="line"></div><p>Check where you stand</p></div>
+<div class="bmi-grid"><div class="bmi-form">
+<label>Height (cm)</label><input type="number" id="bmiH" value="175" oninput="calcBMI()">
+<label>Weight (kg)</label><input type="number" id="bmiW" value="75" oninput="calcBMI()">
+<button class="btn btn-red" style="width:100%;margin-top:20px" onclick="calcBMI()">Calculate BMI</button>
+</div><div class="bmi-result">
+<div class="big" id="bmiVal">24.5</div>
+<div class="label" id="bmiLabel">Normal Weight</div>
+<p id="bmiDesc">You're in a healthy range. Keep up the good work!</p>
+<div class="bmi-bar"><div class="bmi-fill" id="bmiFill" style="width:49%;background:#48bb78"></div></div>
+</div></div></div></section>
+
+<section id="contact"><div class="container"><div class="stitle"><h2>GET IN TOUCH</h2><div class="line"></div><p>Ready to start your fitness journey?</p></div>
+<form class="contact-form" id="cForm" onsubmit="return handleForm(event)">
+<div class="row"><input type="text" name="name" placeholder="Your Name *" required><input type="email" name="email" placeholder="Email *" required></div>
+<div class="row"><input type="tel" name="phone" placeholder="Phone"><select name="plan"><option value="">Interested In...</option><option>Starter Plan</option><option>Unlimited Plan</option><option>Elite Plan</option><option>Personal Training</option><option>General Inquiry</option></select></div>
+<textarea name="msg" placeholder="Your Message..." required></textarea>
+<div class="form-msg" id="fMsg"></div>
+<button type="submit" class="btn btn-red" style="width:100%;padding:14px">Send Message</button>
+</form></div></section>
+
+<footer><div class="container"><div class="foot-grid">
+<div class="foot-col"><a href="#" class="logo">ZAP<span>CODES</span></a><p>Transform your body and mind with us.</p></div>
+<div class="foot-col"><h4>Quick Links</h4><ul><li><a href="#classes">Classes</a></li><li><a href="#schedule">Schedule</a></li><li><a href="#pricing">Pricing</a></li><li><a href="#contact">Contact</a></li></ul></div>
+<div class="foot-col"><h4>Hours</h4><ul><li>Mon-Fri: 5am - 11pm</li><li>Sat: 6am - 9pm</li><li>Sun: 7am - 8pm</li></ul></div>
+<div class="foot-col"><h4>Contact</h4><ul><li><i class="fas fa-map-marker-alt" style="color:var(--red);margin-right:4px"></i> 123 Fitness Blvd</li><li><i class="fas fa-phone" style="color:var(--red);margin-right:4px"></i> (555) 123-4567</li></ul></div>
+</div><div class="foot-bottom">&copy; 2026 Built with <a href="https://zapcodes.net">ZapCodes</a></div></div></footer>
+
+<div class="toast" id="toast"></div>
+<script>
+function showToast(m){const t=document.getElementById('toast');t.textContent=m;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2500)}
+window.addEventListener('scroll',()=>document.querySelector('.nav').classList.toggle('scrolled',scrollY>50));
+
+function calcBMI(){
+  const h=parseFloat(document.getElementById('bmiH').value)/100;
+  const w=parseFloat(document.getElementById('bmiW').value);
+  if(!h||!w||h<=0||w<=0)return;
+  const bmi=(w/(h*h)).toFixed(1);
+  let label,color,pct,desc;
+  if(bmi<18.5){label='Underweight';color='#63b3ed';pct=Math.max(10,bmi/40*100);desc='Consider gaining some healthy weight.'}
+  else if(bmi<25){label='Normal Weight';color='#48bb78';pct=bmi/40*100;desc="You're in a healthy range. Keep up the good work!"}
+  else if(bmi<30){label='Overweight';color='#ed8936';pct=bmi/40*100;desc='Consider increasing exercise and adjusting diet.'}
+  else{label='Obese';color='#e53e3e';pct=Math.min(95,bmi/40*100);desc='Consult a healthcare professional for guidance.'}
+  document.getElementById('bmiVal').textContent=bmi;
+  document.getElementById('bmiLabel').textContent=label;
+  document.getElementById('bmiDesc').textContent=desc;
+  const fill=document.getElementById('bmiFill');fill.style.width=pct+'%';fill.style.background=color;
+}
+
+function handleForm(e){
+  e.preventDefault();const f=e.target;let ok=true;
+  f.querySelectorAll('[required]').forEach(i=>{if(!i.value.trim()){ok=false;i.style.borderColor='#e53e3e'}else i.style.borderColor=''});
+  if(!ok)return false;
+  const msg=document.getElementById('fMsg');msg.className='form-msg ok';
+  msg.textContent=`Thanks ${f.name.value}! We'll contact you within 24 hours to get you started.`;
+  f.reset();showToast('Message sent!');return false;
+}
+calcBMI();
+</script>
+</body>
+</html>

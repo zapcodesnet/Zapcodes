@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Blog - Built with ZapCodes</title>
+<link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,wght@0,400;0,600;1,400&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+<style>
+*,*::before,*::after{margin:0;padding:0;box-sizing:border-box}:root{--bg:#fafafa;--white:#fff;--dark:#1a1a1a;--text:#555;--accent:#2563eb;--border:#e5e7eb;--light:#f3f4f6}
+html{scroll-behavior:smooth}body{font-family:'Inter',sans-serif;background:var(--bg);color:var(--text);line-height:1.8}
+a{text-decoration:none;color:inherit;transition:.3s}h1,h2,h3{font-family:'Newsreader',serif;color:var(--dark)}
+.container{max-width:960px;margin:0 auto;padding:0 20px}
+.nav{background:var(--white);border-bottom:1px solid var(--border);padding:14px 0;position:sticky;top:0;z-index:99}
+.nav .container{display:flex;justify-content:space-between;align-items:center}
+.logo{font-family:'Newsreader',serif;font-size:24px;font-weight:600;color:var(--dark)}.logo span{color:var(--accent)}
+.nav-links{display:flex;gap:20px;list-style:none;align-items:center}
+.nav-links a{font-size:14px;color:var(--text);font-weight:500}.nav-links a:hover{color:var(--accent)}
+.search-box{position:relative}
+.search-box input{padding:8px 32px 8px 12px;border:1px solid var(--border);border-radius:6px;font-family:inherit;font-size:13px;width:180px;outline:none}
+.search-box input:focus{border-color:var(--accent);width:220px}
+.search-box i{position:absolute;right:10px;top:50%;transform:translateY(-50%);color:var(--text);font-size:13px}
+/* HERO */
+.hero{padding:60px 0 40px;text-align:center;border-bottom:1px solid var(--border)}
+.hero h1{font-size:clamp(28px,4vw,44px);margin-bottom:10px;line-height:1.2}
+.hero p{font-size:16px;max-width:500px;margin:0 auto}
+/* CATEGORIES */
+.cats{display:flex;gap:10px;justify-content:center;padding:20px 0;border-bottom:1px solid var(--border);flex-wrap:wrap}
+.cat-btn{padding:6px 16px;border:1px solid var(--border);border-radius:20px;font-size:12px;cursor:pointer;background:var(--white);color:var(--text);font-family:inherit;transition:.3s}
+.cat-btn.active,.cat-btn:hover{background:var(--accent);color:var(--white);border-color:var(--accent)}
+/* POSTS */
+.posts{padding:40px 0}
+.post-card{background:var(--white);border:1px solid var(--border);border-radius:12px;overflow:hidden;margin-bottom:24px;display:grid;grid-template-columns:280px 1fr;transition:.3s}
+.post-card:hover{box-shadow:0 4px 20px rgba(0,0,0,.06)}
+.post-card img{width:100%;height:100%;object-fit:cover;min-height:220px}
+.post-body{padding:24px}
+.post-meta{display:flex;gap:16px;font-size:12px;color:var(--text);margin-bottom:10px;flex-wrap:wrap;align-items:center}
+.post-meta .tag{background:rgba(37,99,235,.08);color:var(--accent);padding:2px 10px;border-radius:10px;font-weight:600}
+.post-body h2{font-size:22px;margin-bottom:8px;line-height:1.3}
+.post-body h2 a:hover{color:var(--accent)}
+.post-body p{font-size:14px;line-height:1.8;margin-bottom:14px}
+.read-more{font-size:13px;color:var(--accent);font-weight:600;display:inline-flex;align-items:center;gap:6px}
+.read-more:hover{gap:10px}
+/* NEWSLETTER */
+.nl-sec{background:var(--dark);padding:50px 0;text-align:center;color:var(--white);border-radius:16px;margin:20px 0 40px}
+.nl-sec h2{color:var(--white);margin-bottom:8px;font-size:28px}
+.nl-sec p{color:#94a3b8;margin-bottom:20px}
+.nl-form{display:flex;max-width:400px;margin:0 auto;gap:0}
+.nl-form input{flex:1;padding:12px 16px;border:none;border-radius:8px 0 0 8px;font-family:inherit;font-size:14px;outline:none}
+.nl-form button{padding:12px 24px;background:var(--accent);color:var(--white);border:none;border-radius:0 8px 8px 0;cursor:pointer;font-family:inherit;font-weight:600;transition:.3s}
+.nl-form button:hover{background:#1d4ed8}
+.nl-msg{margin-top:10px;font-size:14px;color:#10b981;display:none}
+/* SINGLE POST (for demo) */
+.single{display:none;padding:40px 0}
+.single .back{display:inline-flex;align-items:center;gap:6px;color:var(--accent);font-size:14px;font-weight:500;margin-bottom:20px;cursor:pointer}
+.single article h1{font-size:clamp(24px,3.5vw,36px);margin-bottom:12px;line-height:1.3}
+.single article .post-meta{margin-bottom:20px}
+.single article .featured{width:100%;max-height:400px;object-fit:cover;border-radius:12px;margin-bottom:24px}
+.single article .content{font-size:15px;line-height:2}
+.single article .content p{margin-bottom:16px}
+/* COMMENTS */
+.comments{margin-top:40px;padding-top:30px;border-top:1px solid var(--border)}
+.comments h3{margin-bottom:20px;font-size:20px}
+.comment{padding:16px;background:var(--light);border-radius:10px;margin-bottom:12px}
+.comment .chead{display:flex;justify-content:space-between;margin-bottom:6px}
+.comment .cname{font-weight:600;color:var(--dark);font-size:14px}
+.comment .cdate{font-size:12px}
+.comment p{font-size:14px}
+.comment-form{margin-top:20px}
+.comment-form h4{margin-bottom:12px;font-size:16px}
+.comment-form input,.comment-form textarea{width:100%;padding:12px;border:1px solid var(--border);border-radius:8px;font-family:inherit;font-size:14px;outline:none;margin-bottom:10px}
+.comment-form input:focus,.comment-form textarea:focus{border-color:var(--accent)}
+.comment-form textarea{min-height:80px;resize:vertical}
+.comment-form button{padding:10px 24px;background:var(--accent);color:var(--white);border:none;border-radius:8px;cursor:pointer;font-family:inherit;font-weight:600;transition:.3s}
+.comment-form button:hover{background:#1d4ed8}
+footer{padding:30px 0;border-top:1px solid var(--border);text-align:center;font-size:13px}
+footer a{color:var(--accent)}
+.toast{position:fixed;bottom:30px;left:50%;transform:translateX(-50%) translateY(100px);background:var(--accent);color:var(--white);padding:14px 28px;font-size:14px;font-weight:600;z-index:9999;transition:.4s;opacity:0;border-radius:8px}
+.toast.show{transform:translateX(-50%) translateY(0);opacity:1}
+@media(max-width:768px){.post-card{grid-template-columns:1fr}.post-card img{max-height:200px}.nav-links{gap:12px}.search-box{display:none}}
+@media(max-width:480px){.nl-form{flex-direction:column;gap:8px}.nl-form input,.nl-form button{border-radius:8px}}
+</style>
+</head>
+<body>
+<nav class="nav"><div class="container"><a href="#" class="logo" onclick="showHome()">Zap<span>Codes</span></a><ul class="nav-links"><li><a href="#" onclick="showHome()">Blog</a></li><li><a href="#" onclick="showToast('About page')">About</a></li><li><a href="#" onclick="showToast('Contact page')">Contact</a></li><li><div class="search-box"><input type="text" id="searchInput" placeholder="Search..." oninput="searchPosts()"><i class="fas fa-search"></i></div></li></ul></div></nav>
+
+<!-- HOME VIEW -->
+<div id="homeView">
+<section class="hero"><div class="container"><h1>Thoughts, Stories &<br>Ideas That Matter</h1><p>Exploring technology, design, and life through thoughtful writing.</p></div></section>
+
+<div class="cats container">
+<button class="cat-btn active" onclick="filterCat('all',this)">All</button>
+<button class="cat-btn" onclick="filterCat('tech',this)">Technology</button>
+<button class="cat-btn" onclick="filterCat('design',this)">Design</button>
+<button class="cat-btn" onclick="filterCat('life',this)">Lifestyle</button>
+<button class="cat-btn" onclick="filterCat('business',this)">Business</button>
+</div>
+
+<section class="posts"><div class="container" id="postGrid"></div></section>
+
+<div class="container"><div class="nl-sec">
+<h2>Never Miss a Post</h2><p>Get weekly insights delivered to your inbox</p>
+<form class="nl-form" onsubmit="return handleNl(event)"><input type="email" placeholder="your@email.com" required><button type="submit">Subscribe</button></form>
+<div class="nl-msg" id="nlMsg">🎉 You're subscribed! Welcome aboard.</div>
+</div></div>
+</div>
+
+<!-- SINGLE POST VIEW -->
+<div class="single" id="singleView">
+<div class="container">
+<span class="back" onclick="showHome()"><i class="fas fa-arrow-left"></i> Back to Blog</span>
+<article id="singleArticle"></article>
+<div class="comments">
+<h3>Comments (<span id="commentCount">2</span>)</h3>
+<div id="commentList">
+<div class="comment"><div class="chead"><span class="cname">Alex Rivera</span><span class="cdate">2 days ago</span></div><p>Great article! Really insightful perspective on this topic.</p></div>
+<div class="comment"><div class="chead"><span class="cname">Sarah Kim</span><span class="cdate">1 day ago</span></div><p>I've been thinking about this too. Thanks for putting it into words so clearly.</p></div>
+</div>
+<form class="comment-form" onsubmit="return addComment(event)">
+<h4>Leave a Comment</h4>
+<input type="text" name="name" placeholder="Your Name *" required>
+<input type="email" name="email" placeholder="Email (not published) *" required>
+<textarea name="comment" placeholder="Your comment *" required></textarea>
+<button type="submit">Post Comment</button>
+</form>
+</div>
+</div>
+</div>
+
+<footer><div class="container">&copy; 2026 All rights reserved. Built with <a href="https://zapcodes.net">ZapCodes</a></div></footer>
+<div class="toast" id="toast"></div>
+
+<script>
+function showToast(m){const t=document.getElementById('toast');t.textContent=m;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2500)}
+
+const posts=[
+  {id:1,title:"The Future of AI in Web Development",cat:"tech",date:"Mar 5, 2026",read:"6 min",img:"https://images.unsplash.com/photo-1677442136019-21780ecad995?w=600&q=80",excerpt:"How artificial intelligence is revolutionizing the way we build websites and applications, from code generation to autonomous deployment.",content:"<p>Artificial intelligence is transforming web development at an unprecedented pace. From AI-powered code assistants to fully autonomous build pipelines, the landscape is shifting rapidly.</p><p>What used to take weeks can now be accomplished in hours. AI models can generate entire websites from a simple text description, handle debugging autonomously, and even deploy to production with minimal human oversight.</p><p>But this raises important questions about the role of developers, the quality of AI-generated code, and how businesses should adapt to these changes.</p><p>In this article, we explore the current state of AI in web development and what it means for the future of the industry.</p>"},
+  {id:2,title:"10 Design Principles Every Creator Should Know",cat:"design",date:"Mar 3, 2026",read:"8 min",img:"https://images.unsplash.com/photo-1558655146-9f40138edfeb?w=600&q=80",excerpt:"Timeless design principles that separate good designs from great ones. From contrast to hierarchy, master the fundamentals.",content:"<p>Great design isn't about trends — it's about timeless principles that guide how humans perceive and interact with visual information.</p><p>Whether you're designing a website, a mobile app, or a poster, these ten fundamental principles will elevate your work.</p><p>Contrast creates visual interest and guides attention. Hierarchy organizes information by importance. Alignment creates order and connection. Proximity groups related elements together.</p><p>Master these foundations and everything you create will feel more polished and intentional.</p>"},
+  {id:3,title:"Building a Morning Routine That Actually Works",cat:"life",date:"Mar 1, 2026",read:"5 min",img:"https://images.unsplash.com/photo-1506126613408-eca07ce68773?w=600&q=80",excerpt:"Forget the 4am hustle culture. Here's how to build a sustainable morning routine based on science and self-awareness.",content:"<p>The internet is full of morning routine advice that feels impossible to follow. Wake up at 4am, cold shower, meditate for an hour, journal, exercise — all before breakfast.</p><p>The truth is, the best morning routine is one you'll actually stick to. It doesn't have to be extreme. It just has to be intentional.</p><p>Start with one keystone habit. For me, it's 10 minutes of quiet with coffee before checking my phone. That small ritual sets the tone for everything else.</p><p>Build from there. Add one thing at a time. Give each addition two weeks before evaluating whether it serves you.</p>"},
+  {id:4,title:"Why Small Businesses Need to Think Like Startups",cat:"business",date:"Feb 28, 2026",read:"7 min",img:"https://images.unsplash.com/photo-1553877522-43269d4ea984?w=600&q=80",excerpt:"The startup mindset isn't just for tech companies. Here's how any small business can adopt lean thinking to grow faster.",content:"<p>You don't need venture capital or a Silicon Valley address to think like a startup. The principles of lean methodology apply to every business.</p><p>Start small, test fast, iterate based on feedback. Don't build what you think customers want — build the minimum viable version and let real data guide your decisions.</p><p>Every small business owner can benefit from this approach. Whether you run a restaurant, a salon, or a consulting firm, the principle is the same: speed of learning beats perfection.</p><p>The businesses that thrive in 2026 will be the ones that experiment relentlessly and adapt quickly.</p>"},
+  {id:5,title:"The Art of Minimalist Web Design",cat:"design",date:"Feb 25, 2026",read:"4 min",img:"https://images.unsplash.com/photo-1507238691740-187a5b1d37b8?w=600&q=80",excerpt:"Less isn't just more — it's better. How stripping away the unnecessary creates more powerful digital experiences.",content:"<p>Minimalism in web design isn't about removing things. It's about keeping only what matters.</p><p>Every element on a page should earn its place. If it doesn't serve the user's goal or enhance understanding, it's noise.</p><p>White space isn't empty space — it's breathing room. Typography becomes more important when there's less competing for attention. Color choices carry more weight when used sparingly.</p><p>The result is a faster, cleaner, more focused experience that respects the user's time and attention.</p>"},
+  {id:6,title:"Remote Work in 2026: What's Changed?",cat:"business",date:"Feb 22, 2026",read:"6 min",img:"https://images.unsplash.com/photo-1522202176988-66273c2fd55f?w=600&q=80",excerpt:"The remote work revolution has matured. Here's where we are, what works, and what companies are getting wrong.",content:"<p>Remote work isn't new anymore. It's just work. But many companies are still figuring out how to do it well.</p><p>The tools have gotten better. AI assistants handle scheduling, communication, and project management. Video calls feel more natural. Asynchronous collaboration is the new default.</p><p>But the human side still needs work. Loneliness, burnout, and the blurred boundaries between work and life remain real challenges.</p><p>The companies thriving in this environment are the ones investing in culture, not surveillance.</p>"},
+];
+
+let currentCat='all';
+
+function renderPosts(list){
+  document.getElementById('postGrid').innerHTML=list.map(p=>`<div class="post-card" data-cat="${p.cat}">
+    <img src="${p.img}" alt="${p.title}" loading="lazy">
+    <div class="post-body">
+      <div class="post-meta"><span class="tag">${p.cat.charAt(0).toUpperCase()+p.cat.slice(1)}</span><span>${p.date}</span><span><i class="far fa-clock"></i> ${p.read} read</span></div>
+      <h2><a href="#" onclick="openPost(${p.id});return false">${p.title}</a></h2>
+      <p>${p.excerpt}</p>
+      <a href="#" class="read-more" onclick="openPost(${p.id});return false">Read More <i class="fas fa-arrow-right"></i></a>
+    </div></div>`).join('');
+}
+
+function filterCat(cat,el){
+  currentCat=cat;
+  document.querySelectorAll('.cat-btn').forEach(b=>b.classList.remove('active'));
+  el.classList.add('active');
+  const f=cat==='all'?posts:posts.filter(p=>p.cat===cat);
+  renderPosts(f);
+}
+
+function searchPosts(){
+  const q=document.getElementById('searchInput').value.toLowerCase();
+  let f=currentCat==='all'?posts:posts.filter(p=>p.cat===currentCat);
+  if(q)f=f.filter(p=>p.title.toLowerCase().includes(q)||p.excerpt.toLowerCase().includes(q));
+  renderPosts(f);
+}
+
+function openPost(id){
+  const p=posts.find(x=>x.id===id);
+  document.getElementById('singleArticle').innerHTML=`
+    <div class="post-meta"><span class="tag" style="background:rgba(37,99,235,.08);color:var(--accent);padding:2px 10px;border-radius:10px;font-size:12px;font-weight:600">${p.cat.charAt(0).toUpperCase()+p.cat.slice(1)}</span><span>${p.date}</span><span><i class="far fa-clock"></i> ${p.read} read</span></div>
+    <h1>${p.title}</h1>
+    <img src="${p.img}" alt="${p.title}" class="featured">
+    <div class="content">${p.content}</div>`;
+  document.getElementById('homeView').style.display='none';
+  document.getElementById('singleView').style.display='block';
+  window.scrollTo(0,0);
+}
+
+function showHome(){
+  document.getElementById('homeView').style.display='block';
+  document.getElementById('singleView').style.display='none';
+  window.scrollTo(0,0);
+}
+
+let commentNum=2;
+function addComment(e){
+  e.preventDefault();const f=e.target;
+  let ok=true;f.querySelectorAll('[required]').forEach(i=>{if(!i.value.trim()){ok=false;i.style.borderColor='#e74c3c'}else i.style.borderColor=''});
+  if(!ok)return false;
+  commentNum++;
+  document.getElementById('commentCount').textContent=commentNum;
+  const div=document.createElement('div');div.className='comment';
+  div.innerHTML=`<div class="chead"><span class="cname">${f.name.value}</span><span class="cdate">Just now</span></div><p>${f.comment.value}</p>`;
+  document.getElementById('commentList').appendChild(div);
+  f.reset();showToast('Comment posted!');return false;
+}
+
+function handleNl(e){
+  e.preventDefault();document.getElementById('nlMsg').style.display='block';e.target.reset();
+  showToast('Subscribed!');return false;
+}
+
+renderPosts(posts);
+</script>
+</body>
+</html>

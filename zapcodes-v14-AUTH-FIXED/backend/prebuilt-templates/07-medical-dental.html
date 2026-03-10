@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Medical Clinic - Built with ZapCodes</title>
+<link href="https://fonts.googleapis.com/css2?family=Nunito+Sans:wght@400;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+<style>
+*,*::before,*::after{margin:0;padding:0;box-sizing:border-box}:root{--primary:#0369a1;--accent:#0ea5e9;--light:#f0f9ff;--bg:#fff;--text:#64748b;--dark:#0f172a;--border:#e2e8f0;--success:#10b981}
+html{scroll-behavior:smooth}body{font-family:'Nunito Sans',sans-serif;background:var(--bg);color:var(--text);line-height:1.7}
+a{text-decoration:none;color:inherit;transition:.3s}h1,h2,h3,h4{color:var(--dark)}.container{max-width:1140px;margin:0 auto;padding:0 20px}
+/* Emergency bar */
+.emer{background:var(--primary);color:#fff;padding:8px 0;font-size:13px;text-align:center}
+.emer a{color:#fff;font-weight:700;margin-left:8px;text-decoration:underline}
+.nav{position:sticky;top:0;z-index:999;background:#fff;border-bottom:1px solid var(--border);padding:12px 0}
+.nav .container{display:flex;justify-content:space-between;align-items:center}
+.logo{font-size:24px;font-weight:800;color:var(--primary)}.logo span{color:var(--accent)}
+.nav-links{display:flex;gap:20px;list-style:none;align-items:center}
+.nav-links a{font-size:14px;color:var(--text);font-weight:600}.nav-links a:hover{color:var(--accent)}
+.btn{display:inline-block;padding:11px 24px;border-radius:8px;font-size:14px;font-weight:700;cursor:pointer;transition:.3s;font-family:inherit;border:none}
+.btn-primary{background:var(--accent);color:#fff}.btn-primary:hover{background:var(--primary)}
+.btn-outline{border:1px solid var(--border);color:var(--dark);background:#fff}.btn-outline:hover{border-color:var(--accent);color:var(--accent)}
+.hero{padding:80px 0;display:grid;grid-template-columns:1fr 1fr;gap:40px;align-items:center}
+.hero h1{font-size:clamp(28px,4vw,44px);line-height:1.2;margin-bottom:16px}
+.hero h1 span{color:var(--accent)}
+.hero p{font-size:16px;margin-bottom:24px}
+.hero-btns{display:flex;gap:12px;flex-wrap:wrap}
+.hero-img{border-radius:16px;overflow:hidden;box-shadow:0 20px 50px rgba(0,0,0,.1)}
+.hero-img img{width:100%;display:block}
+.trust-bar{display:flex;gap:24px;margin-top:28px;flex-wrap:wrap}
+.trust-item{display:flex;align-items:center;gap:8px;font-size:13px;font-weight:600;color:var(--dark)}
+.trust-item i{color:var(--success);font-size:16px}
+section{padding:70px 0}.stitle{text-align:center;margin-bottom:40px}
+.stitle h2{font-size:clamp(24px,3vw,32px);margin-bottom:8px}.stitle p{font-size:15px;max-width:500px;margin:0 auto}
+/* SERVICES */
+.serv-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:20px}
+.serv-card{background:var(--light);border-radius:12px;padding:28px;text-align:center;transition:.3s;border:1px solid transparent}
+.serv-card:hover{border-color:var(--accent);background:#fff;box-shadow:0 8px 30px rgba(0,0,0,.06);transform:translateY(-4px)}
+.serv-card i{font-size:32px;color:var(--accent);margin-bottom:14px}
+.serv-card h3{font-size:17px;margin-bottom:8px}.serv-card p{font-size:14px}
+/* DOCTORS */
+.doc-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:20px}
+.doc-card{text-align:center;background:#fff;border:1px solid var(--border);border-radius:12px;overflow:hidden;transition:.3s}
+.doc-card:hover{box-shadow:0 8px 24px rgba(0,0,0,.06)}
+.doc-card img{width:100%;height:220px;object-fit:cover}
+.doc-card .info{padding:16px}
+.doc-card h3{font-size:16px;margin-bottom:2px}.doc-card .spec{font-size:13px;color:var(--accent);font-weight:600}
+.doc-card .doc-btn{display:inline-block;margin-top:10px;padding:7px 18px;border:1px solid var(--accent);border-radius:6px;font-size:12px;color:var(--accent);font-weight:600;cursor:pointer;background:none;font-family:inherit;transition:.3s}
+.doc-card .doc-btn:hover{background:var(--accent);color:#fff}
+/* APPOINTMENT */
+.appt-sec{background:var(--light)}
+.appt-form{max-width:700px;margin:0 auto;background:#fff;padding:32px;border-radius:14px;box-shadow:0 4px 20px rgba(0,0,0,.06);display:grid;gap:14px}
+.appt-form .row{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.appt-form input,.appt-form select,.appt-form textarea{width:100%;padding:13px 16px;border:1px solid var(--border);border-radius:8px;font-family:inherit;font-size:14px;outline:none}
+.appt-form input:focus,.appt-form select:focus,.appt-form textarea:focus{border-color:var(--accent)}
+.appt-form textarea{min-height:80px;resize:vertical}
+.form-msg{padding:12px;border-radius:8px;font-size:14px;display:none}
+.form-msg.ok{display:block;background:rgba(16,185,129,.1);color:var(--success);border:1px solid rgba(16,185,129,.2)}
+/* STATS */
+.stat-bar{background:var(--primary);padding:40px 0;color:#fff}
+.stat-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:20px;text-align:center}
+.stat-grid h3{font-size:32px;color:#fff;margin-bottom:4px}.stat-grid p{font-size:13px;color:rgba(255,255,255,.7);text-transform:uppercase;letter-spacing:1px}
+/* TESTIMONIALS */
+.test-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:20px}
+.test-card{background:var(--light);border-radius:12px;padding:24px}
+.test-card .stars{color:#f59e0b;font-size:14px;margin-bottom:10px}
+.test-card blockquote{font-size:14px;color:var(--dark);line-height:1.7;margin-bottom:14px;font-style:italic}
+.test-card cite{font-style:normal;font-size:13px;font-weight:700;color:var(--primary)}
+footer{padding:40px 0 16px;background:var(--dark);color:#94a3b8}
+.foot-grid{display:grid;grid-template-columns:2fr 1fr 1fr 1fr;gap:32px;margin-bottom:24px}
+.foot-col .logo{color:#fff;font-size:20px;margin-bottom:10px;display:inline-block}
+.foot-col p{font-size:13px}.foot-col h4{color:#fff;font-size:13px;font-weight:700;margin-bottom:12px}
+.foot-col ul{list-style:none}.foot-col li{margin-bottom:8px;font-size:13px}.foot-col a:hover{color:var(--accent)}
+.foot-bottom{text-align:center;padding-top:16px;border-top:1px solid rgba(255,255,255,.06);font-size:12px}
+.foot-bottom a{color:var(--accent)}
+.toast{position:fixed;bottom:30px;left:50%;transform:translateX(-50%) translateY(100px);background:var(--success);color:#fff;padding:14px 28px;font-size:14px;font-weight:700;z-index:9999;transition:.4s;opacity:0;border-radius:8px}
+.toast.show{transform:translateX(-50%) translateY(0);opacity:1}
+@media(max-width:900px){.hero{grid-template-columns:1fr}.serv-grid{grid-template-columns:1fr 1fr}.doc-grid{grid-template-columns:1fr 1fr}.test-grid{grid-template-columns:1fr}.stat-grid{grid-template-columns:1fr 1fr}.foot-grid{grid-template-columns:1fr 1fr}}
+@media(max-width:600px){.nav-links{display:none}.serv-grid,.doc-grid{grid-template-columns:1fr}.appt-form .row{grid-template-columns:1fr}.foot-grid{grid-template-columns:1fr}.stat-grid{grid-template-columns:1fr 1fr}}
+</style>
+</head>
+<body>
+<div class="emer"><i class="fas fa-phone-alt"></i> Emergency? Call us 24/7: <a href="tel:5551234567">(555) 123-4567</a></div>
+<nav class="nav"><div class="container"><a href="#" class="logo">Zap<span>Codes</span></a><ul class="nav-links"><li><a href="#services">Services</a></li><li><a href="#doctors">Doctors</a></li><li><a href="#appointment">Book Now</a></li><li><a href="#reviews">Reviews</a></li><li><a href="#appointment" class="btn btn-primary" style="padding:8px 18px">Book Appointment</a></li></ul></div></nav>
+
+<section><div class="container"><div class="hero">
+<div><h1>Your Health,<br>Our <span>Priority</span></h1><p>Comprehensive healthcare with compassion. Our expert team is dedicated to providing exceptional medical care for you and your family.</p>
+<div class="hero-btns"><a href="#appointment" class="btn btn-primary">Book Appointment</a><a href="#services" class="btn btn-outline">Our Services</a></div>
+<div class="trust-bar"><div class="trust-item"><i class="fas fa-check-circle"></i>Board Certified</div><div class="trust-item"><i class="fas fa-check-circle"></i>Same-Day Appointments</div><div class="trust-item"><i class="fas fa-check-circle"></i>Insurance Accepted</div></div></div>
+<div class="hero-img"><img src="https://images.unsplash.com/photo-1631217868264-e5b90bb7e133?w=600&q=80" alt="Medical Team"></div>
+</div></div></section>
+
+<section id="services"><div class="container"><div class="stitle"><h2>Our Services</h2><p>Comprehensive care for every stage of life</p></div><div class="serv-grid">
+<div class="serv-card"><i class="fas fa-heartbeat"></i><h3>General Medicine</h3><p>Routine check-ups, preventive care, and chronic disease management.</p></div>
+<div class="serv-card"><i class="fas fa-tooth"></i><h3>Dental Care</h3><p>Cleanings, fillings, cosmetic dentistry, and oral surgery.</p></div>
+<div class="serv-card"><i class="fas fa-eye"></i><h3>Eye Care</h3><p>Vision tests, corrective procedures, and eye disease treatment.</p></div>
+<div class="serv-card"><i class="fas fa-baby"></i><h3>Pediatrics</h3><p>Specialized care for infants, children, and adolescents.</p></div>
+<div class="serv-card"><i class="fas fa-brain"></i><h3>Mental Health</h3><p>Counseling, therapy, and psychiatric care for all ages.</p></div>
+<div class="serv-card"><i class="fas fa-bone"></i><h3>Orthopedics</h3><p>Joint replacement, sports medicine, and fracture care.</p></div>
+</div></div></section>
+
+<section class="stat-bar"><div class="container"><div class="stat-grid"><div><h3>50+</h3><p>Doctors</p></div><div><h3>25K+</h3><p>Patients Served</p></div><div><h3>15+</h3><p>Years Experience</p></div><div><h3>98%</h3><p>Satisfaction Rate</p></div></div></div></section>
+
+<section id="doctors"><div class="container"><div class="stitle"><h2>Meet Our Doctors</h2><p>Expert physicians committed to your wellbeing</p></div><div class="doc-grid">
+<div class="doc-card"><img src="https://images.unsplash.com/photo-1559839734-2b71ea197ec2?w=400&q=80" alt="Doctor"><div class="info"><h3>Dr. Sarah Chen</h3><p class="spec">General Medicine</p><button class="doc-btn" onclick="showToast('Booking with Dr. Chen...')">Book Now</button></div></div>
+<div class="doc-card"><img src="https://images.unsplash.com/photo-1612349317150-e413f6a5b16d?w=400&q=80" alt="Doctor"><div class="info"><h3>Dr. James Miller</h3><p class="spec">Cardiology</p><button class="doc-btn" onclick="showToast('Booking with Dr. Miller...')">Book Now</button></div></div>
+<div class="doc-card"><img src="https://images.unsplash.com/photo-1594824476967-48c8b964ac31?w=400&q=80" alt="Doctor"><div class="info"><h3>Dr. Maria Garcia</h3><p class="spec">Pediatrics</p><button class="doc-btn" onclick="showToast('Booking with Dr. Garcia...')">Book Now</button></div></div>
+<div class="doc-card"><img src="https://images.unsplash.com/photo-1622253692010-333f2da6031d?w=400&q=80" alt="Doctor"><div class="info"><h3>Dr. Robert Kim</h3><p class="spec">Orthopedics</p><button class="doc-btn" onclick="showToast('Booking with Dr. Kim...')">Book Now</button></div></div>
+</div></div></section>
+
+<section class="appt-sec" id="appointment"><div class="container"><div class="stitle"><h2>Book an Appointment</h2><p>Schedule your visit in minutes</p></div>
+<form class="appt-form" id="apptForm" onsubmit="return handleAppt(event)">
+<div class="row"><input type="text" name="name" placeholder="Full Name *" required><input type="email" name="email" placeholder="Email *" required></div>
+<div class="row"><input type="tel" name="phone" placeholder="Phone *" required><select name="dept" required><option value="">Department *</option><option>General Medicine</option><option>Dental Care</option><option>Eye Care</option><option>Pediatrics</option><option>Mental Health</option><option>Orthopedics</option></select></div>
+<div class="row"><input type="date" name="date" required><select name="time" required><option value="">Preferred Time *</option><option>9:00 AM</option><option>10:00 AM</option><option>11:00 AM</option><option>1:00 PM</option><option>2:00 PM</option><option>3:00 PM</option><option>4:00 PM</option></select></div>
+<textarea name="notes" placeholder="Describe your symptoms or reason for visit"></textarea>
+<div class="form-msg" id="apptMsg"></div>
+<button type="submit" class="btn btn-primary" style="width:100%;padding:14px">Book Appointment</button>
+</form></div></section>
+
+<section id="reviews"><div class="container"><div class="stitle"><h2>Patient Reviews</h2><p>Hear from people who trust us with their health</p></div><div class="test-grid">
+<div class="test-card"><div class="stars">★★★★★</div><blockquote>"Dr. Chen is incredibly thorough and caring. The staff made me feel comfortable throughout."</blockquote><cite>— Anna Thompson</cite></div>
+<div class="test-card"><div class="stars">★★★★★</div><blockquote>"Best dental experience I've ever had. Pain-free, professional, and they explained everything clearly."</blockquote><cite>— David Park</cite></div>
+<div class="test-card"><div class="stars">★★★★★</div><blockquote>"They took amazing care of my son. The pediatrics team is patient and really great with kids."</blockquote><cite>— Michelle Rodriguez</cite></div>
+</div></div></section>
+
+<footer><div class="container"><div class="foot-grid">
+<div class="foot-col"><a href="#" class="logo">Zap<span>Codes</span></a><p>Comprehensive healthcare with compassion and expertise.</p></div>
+<div class="foot-col"><h4>Services</h4><ul><li><a href="#services">General Medicine</a></li><li><a href="#services">Dental Care</a></li><li><a href="#services">Eye Care</a></li><li><a href="#services">Pediatrics</a></li></ul></div>
+<div class="foot-col"><h4>Hours</h4><ul><li>Mon-Fri: 8am - 6pm</li><li>Sat: 9am - 1pm</li><li>Sun: Emergency Only</li><li>Emergency: 24/7</li></ul></div>
+<div class="foot-col"><h4>Contact</h4><ul><li>123 Health Ave</li><li>(555) 123-4567</li><li>info@example.com</li></ul></div>
+</div><div class="foot-bottom">&copy; 2026 Built with <a href="https://zapcodes.net">ZapCodes</a></div></div></footer>
+
+<div class="toast" id="toast"></div>
+<script>
+function showToast(m){const t=document.getElementById('toast');t.textContent=m;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2500)}
+const di=document.querySelector('[name="date"]');if(di){di.min=new Date().toISOString().split('T')[0]}
+function handleAppt(e){
+  e.preventDefault();const f=e.target;let ok=true;
+  f.querySelectorAll('[required]').forEach(i=>{if(!i.value.trim()){ok=false;i.style.borderColor='#e74c3c'}else i.style.borderColor=''});
+  const em=f.querySelector('[name="email"]');
+  if(em.value&&!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(em.value)){ok=false;em.style.borderColor='#e74c3c'}
+  if(!ok)return false;
+  const msg=document.getElementById('apptMsg');msg.className='form-msg ok';
+  msg.textContent=`Thank you ${f.name.value}! Your appointment for ${f.dept.value} on ${f.date.value} at ${f.time.value} has been booked. You'll receive a confirmation email shortly.`;
+  f.reset();showToast('Appointment booked!');return false;
+}
+</script>
+</body>
+</html>

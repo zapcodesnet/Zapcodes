@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Construction - Built with ZapCodes</title>
+<link href="https://fonts.googleapis.com/css2?family=Oswald:wght@400;500;600;700&family=Open+Sans:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+<style>
+*,*::before,*::after{margin:0;padding:0;box-sizing:border-box}:root{--yellow:#f59e0b;--dark:#1c1c1c;--darker:#111;--white:#fff;--text:#888;--border:rgba(255,255,255,.08)}
+html{scroll-behavior:smooth}body{font-family:'Open Sans',sans-serif;background:var(--dark);color:var(--text);line-height:1.7}
+a{text-decoration:none;color:inherit;transition:.3s}h1,h2,h3{font-family:'Oswald',sans-serif;color:var(--white);text-transform:uppercase}
+.container{max-width:1140px;margin:0 auto;padding:0 20px}
+.nav{position:fixed;top:0;width:100%;z-index:999;background:rgba(17,17,17,.95);backdrop-filter:blur(10px);padding:12px 0;border-bottom:1px solid var(--border)}
+.nav .container{display:flex;justify-content:space-between;align-items:center}
+.logo{font-family:'Oswald',sans-serif;font-size:26px;color:var(--white)}.logo span{color:var(--yellow)}
+.nav-links{display:flex;gap:20px;list-style:none;align-items:center}
+.nav-links a{font-size:13px;color:var(--text);text-transform:uppercase;letter-spacing:1px}.nav-links a:hover{color:var(--yellow)}
+.btn{display:inline-block;padding:12px 28px;font-size:13px;font-weight:600;cursor:pointer;transition:.3s;font-family:'Oswald',sans-serif;border:none;text-transform:uppercase;letter-spacing:1px}
+.btn-yellow{background:var(--yellow);color:var(--dark)}.btn-yellow:hover{background:#d97706}
+.btn-ghost{border:1px solid var(--yellow);color:var(--yellow);background:none}.btn-ghost:hover{background:var(--yellow);color:var(--dark)}
+.hero{height:100vh;display:flex;align-items:center;position:relative}
+.hero-bg{position:absolute;inset:0;background:url('https://images.unsplash.com/photo-1504307651254-35680f356dfd?w=1920&q=80') center/cover;filter:brightness(.25)}
+.hero-content{position:relative;z-index:2;max-width:600px}
+.hero h1{font-size:clamp(36px,7vw,72px);line-height:1;margin-bottom:16px;letter-spacing:2px}
+.hero h1 span{color:var(--yellow)}
+.hero p{font-size:16px;margin-bottom:28px;line-height:1.8}
+.hero-btns{display:flex;gap:14px;flex-wrap:wrap}
+section{padding:70px 0}.stitle{text-align:center;margin-bottom:44px}
+.stitle h2{font-size:clamp(26px,3.5vw,36px);letter-spacing:2px;margin-bottom:6px}
+.stitle .line{width:50px;height:3px;background:var(--yellow);margin:10px auto}.stitle p{font-size:14px;text-transform:none;font-family:'Open Sans',sans-serif}
+/* SERVICES */
+.serv-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:20px}
+.serv-card{background:var(--darker);border:1px solid var(--border);padding:28px;transition:.3s;position:relative;overflow:hidden}
+.serv-card::before{content:'';position:absolute;bottom:0;left:0;width:100%;height:3px;background:var(--yellow);transform:scaleX(0);transition:.4s;transform-origin:left}
+.serv-card:hover::before{transform:scaleX(1)}
+.serv-card:hover{border-color:rgba(245,158,11,.3)}
+.serv-card i{font-size:28px;color:var(--yellow);margin-bottom:14px}
+.serv-card h3{font-size:18px;letter-spacing:1px;margin-bottom:8px}.serv-card p{font-size:14px;font-family:'Open Sans',sans-serif}
+/* PROJECTS */
+.proj-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
+.proj-card{position:relative;overflow:hidden;aspect-ratio:4/3;cursor:pointer}
+.proj-card img{width:100%;height:100%;object-fit:cover;transition:.5s}
+.proj-card:hover img{transform:scale(1.08);filter:brightness(.5)}
+.proj-over{position:absolute;inset:0;display:flex;flex-direction:column;justify-content:flex-end;padding:20px;opacity:0;transition:.3s;background:linear-gradient(transparent 40%,rgba(0,0,0,.8))}
+.proj-card:hover .proj-over{opacity:1}
+.proj-over h3{font-size:18px;letter-spacing:1px}.proj-over p{font-size:12px;color:var(--yellow);text-transform:uppercase;letter-spacing:1px}
+/* STATS */
+.stats{background:var(--yellow);padding:40px 0}
+.stats-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:20px;text-align:center}
+.stats-grid h3{font-size:36px;color:var(--dark);margin-bottom:4px}.stats-grid p{font-size:12px;text-transform:uppercase;letter-spacing:1px;color:rgba(0,0,0,.6);font-family:'Open Sans',sans-serif}
+/* QUOTE FORM */
+.quote-sec{background:linear-gradient(rgba(0,0,0,.8),rgba(0,0,0,.8)),url('https://images.unsplash.com/photo-1621905252507-b35492cc74b4?w=1920&q=80') center/cover fixed}
+.quote-form{max-width:650px;margin:0 auto;display:grid;gap:14px}
+.quote-form .row{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.quote-form input,.quote-form select,.quote-form textarea{width:100%;padding:13px 16px;background:rgba(255,255,255,.05);border:1px solid var(--border);color:var(--white);font-family:inherit;font-size:14px;outline:none}
+.quote-form input:focus,.quote-form select:focus,.quote-form textarea:focus{border-color:var(--yellow)}
+.quote-form input::placeholder,.quote-form textarea::placeholder{color:rgba(255,255,255,.3)}
+.quote-form select option{background:var(--dark)}
+.quote-form textarea{min-height:100px;resize:vertical}
+.form-msg{padding:12px;font-size:14px;display:none;text-align:center}
+.form-msg.ok{display:block;background:rgba(245,158,11,.1);color:var(--yellow);border:1px solid rgba(245,158,11,.2)}
+/* REVIEWS */
+.rev-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:20px}
+.rev-card{background:var(--darker);border:1px solid var(--border);padding:24px}
+.rev-card .stars{color:var(--yellow);font-size:14px;margin-bottom:8px}
+.rev-card blockquote{font-size:14px;color:var(--white);line-height:1.7;margin-bottom:12px;font-style:italic;font-family:'Open Sans',sans-serif}
+.rev-card cite{font-style:normal;font-size:13px;color:var(--yellow)}
+footer{padding:40px 0 16px;border-top:1px solid var(--border)}
+.foot-grid{display:grid;grid-template-columns:2fr 1fr 1fr 1fr;gap:32px;margin-bottom:24px}
+.foot-col .logo{margin-bottom:10px;display:inline-block;font-size:22px}
+.foot-col p{font-size:13px}.foot-col h4{font-size:13px;letter-spacing:1px;margin-bottom:12px}
+.foot-col ul{list-style:none}.foot-col li{margin-bottom:8px;font-size:13px}.foot-col a:hover{color:var(--yellow)}
+.foot-bottom{text-align:center;padding-top:16px;border-top:1px solid var(--border);font-size:12px}
+.foot-bottom a{color:var(--yellow)}
+.toast{position:fixed;bottom:30px;left:50%;transform:translateX(-50%) translateY(100px);background:var(--yellow);color:var(--dark);padding:14px 28px;font-size:14px;font-weight:700;z-index:9999;transition:.4s;opacity:0;border-radius:4px}
+.toast.show{transform:translateX(-50%) translateY(0);opacity:1}
+@media(max-width:900px){.serv-grid,.proj-grid,.rev-grid{grid-template-columns:1fr 1fr}.stats-grid{grid-template-columns:1fr 1fr}.foot-grid{grid-template-columns:1fr 1fr}}
+@media(max-width:600px){.nav-links{display:none}.serv-grid,.proj-grid,.rev-grid{grid-template-columns:1fr}.quote-form .row{grid-template-columns:1fr}.foot-grid{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<nav class="nav"><div class="container"><a href="#" class="logo">ZAP<span>CODES</span></a><ul class="nav-links"><li><a href="#services">Services</a></li><li><a href="#projects">Projects</a></li><li><a href="#quote">Get Quote</a></li><li><a href="#quote" class="btn btn-yellow" style="padding:8px 20px">Free Quote</a></li></ul></div></nav>
+
+<section class="hero"><div class="hero-bg"></div><div class="container"><div class="hero-content"><h1>Building<br><span>Tomorrow's</span><br>World Today</h1><p>Premier construction services with 25+ years of excellence. From residential homes to commercial complexes, we build it right.</p><div class="hero-btns"><a href="#quote" class="btn btn-yellow">Get Free Quote</a><a href="#projects" class="btn btn-ghost">Our Projects</a></div></div></div></section>
+
+<section id="services"><div class="container"><div class="stitle"><h2>Our Services</h2><div class="line"></div></div><div class="serv-grid">
+<div class="serv-card"><i class="fas fa-home"></i><h3>Residential</h3><p>Custom homes, renovations, additions, and remodeling projects of all sizes.</p></div>
+<div class="serv-card"><i class="fas fa-building"></i><h3>Commercial</h3><p>Office buildings, retail spaces, warehouses, and mixed-use developments.</p></div>
+<div class="serv-card"><i class="fas fa-hard-hat"></i><h3>Industrial</h3><p>Manufacturing facilities, processing plants, and heavy infrastructure.</p></div>
+<div class="serv-card"><i class="fas fa-road"></i><h3>Infrastructure</h3><p>Roads, bridges, utilities, and public works projects.</p></div>
+<div class="serv-card"><i class="fas fa-drafting-compass"></i><h3>Design-Build</h3><p>Complete design and construction under one roof. Faster, simpler.</p></div>
+<div class="serv-card"><i class="fas fa-tools"></i><h3>Renovation</h3><p>Modernize and upgrade existing structures with expert craftsmanship.</p></div>
+</div></div></section>
+
+<section id="projects" style="background:var(--darker)"><div class="container"><div class="stitle"><h2>Featured Projects</h2><div class="line"></div></div><div class="proj-grid">
+<div class="proj-card" onclick="showToast('View project details')"><img src="https://images.unsplash.com/photo-1486406146926-c627a92ad1ab?w=600&q=80" alt="Project"><div class="proj-over"><h3>Metro Tower</h3><p>Commercial</p></div></div>
+<div class="proj-card" onclick="showToast('View project details')"><img src="https://images.unsplash.com/photo-1600585154340-be6161a56a0c?w=600&q=80" alt="Project"><div class="proj-over"><h3>Sunset Residence</h3><p>Residential</p></div></div>
+<div class="proj-card" onclick="showToast('View project details')"><img src="https://images.unsplash.com/photo-1590274853856-f22d5ee3d228?w=600&q=80" alt="Project"><div class="proj-over"><h3>Harbor Bridge</h3><p>Infrastructure</p></div></div>
+<div class="proj-card" onclick="showToast('View project details')"><img src="https://images.unsplash.com/photo-1600607687939-ce8a6c25118c?w=600&q=80" alt="Project"><div class="proj-over"><h3>Lakeside Villas</h3><p>Residential</p></div></div>
+<div class="proj-card" onclick="showToast('View project details')"><img src="https://images.unsplash.com/photo-1497366811353-6870744d04b2?w=600&q=80" alt="Project"><div class="proj-over"><h3>Innovation Hub</h3><p>Commercial</p></div></div>
+<div class="proj-card" onclick="showToast('View project details')"><img src="https://images.unsplash.com/photo-1541888946425-d81bb19240f5?w=600&q=80" alt="Project"><div class="proj-over"><h3>Central Warehouse</h3><p>Industrial</p></div></div>
+</div></div></section>
+
+<section class="stats"><div class="container"><div class="stats-grid"><div><h3>500+</h3><p>Projects Done</p></div><div><h3>25+</h3><p>Years Experience</p></div><div><h3>150+</h3><p>Team Members</p></div><div><h3>98%</h3><p>Client Satisfaction</p></div></div></div></section>
+
+<section class="quote-sec" id="quote"><div class="container"><div class="stitle"><h2>Request a Free Quote</h2><div class="line"></div><p>Tell us about your project and we'll get back within 24 hours</p></div>
+<form class="quote-form" id="quoteForm" onsubmit="return handleQuote(event)">
+<div class="row"><input type="text" name="name" placeholder="Full Name *" required><input type="email" name="email" placeholder="Email *" required></div>
+<div class="row"><input type="tel" name="phone" placeholder="Phone *" required><select name="service" required><option value="">Project Type *</option><option>Residential Construction</option><option>Commercial Building</option><option>Renovation</option><option>Infrastructure</option><option>Design-Build</option><option>Other</option></select></div>
+<div class="row"><input type="text" name="location" placeholder="Project Location"><input type="text" name="budget" placeholder="Estimated Budget"></div>
+<textarea name="desc" placeholder="Describe your project *" required></textarea>
+<div class="form-msg" id="quoteMsg"></div>
+<button type="submit" class="btn btn-yellow" style="width:100%;padding:14px;text-align:center">Submit Request</button>
+</form></div></section>
+
+<section><div class="container"><div class="stitle"><h2>Client Testimonials</h2><div class="line"></div></div><div class="rev-grid">
+<div class="rev-card"><div class="stars">★★★★★</div><blockquote>"They built our dream home on time and under budget. The quality of work is outstanding."</blockquote><cite>— Robert & Maria Santos</cite></div>
+<div class="rev-card"><div class="stars">★★★★★</div><blockquote>"Professional team, excellent communication, and the finished commercial building exceeded our expectations."</blockquote><cite>— James Chen, CEO</cite></div>
+<div class="rev-card"><div class="stars">★★★★★</div><blockquote>"Our kitchen renovation transformed our entire home. Attention to detail was incredible."</blockquote><cite>— Angela Torres</cite></div>
+</div></div></section>
+
+<footer><div class="container"><div class="foot-grid">
+<div class="foot-col"><a href="#" class="logo">ZAP<span>CODES</span></a><p>Building excellence since 2001. Licensed, bonded, insured.</p></div>
+<div class="foot-col"><h4>Services</h4><ul><li><a href="#services">Residential</a></li><li><a href="#services">Commercial</a></li><li><a href="#services">Renovation</a></li></ul></div>
+<div class="foot-col"><h4>Hours</h4><ul><li>Mon-Fri: 7am - 6pm</li><li>Sat: 8am - 2pm</li><li>Sun: Closed</li></ul></div>
+<div class="foot-col"><h4>Contact</h4><ul><li>123 Builder Rd</li><li>(555) 123-4567</li><li>info@example.com</li></ul></div>
+</div><div class="foot-bottom">&copy; 2026 Built with <a href="https://zapcodes.net">ZapCodes</a></div></div></footer>
+<div class="toast" id="toast"></div>
+<script>
+function showToast(m){const t=document.getElementById('toast');t.textContent=m;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2500)}
+function handleQuote(e){
+  e.preventDefault();const f=e.target;let ok=true;
+  f.querySelectorAll('[required]').forEach(i=>{if(!i.value.trim()){ok=false;i.style.borderColor='var(--yellow)'}else i.style.borderColor=''});
+  if(!ok)return false;
+  document.getElementById('quoteMsg').className='form-msg ok';
+  document.getElementById('quoteMsg').textContent=`Thank you ${f.name.value}! Your quote request for ${f.service.value} has been received. Our team will contact you within 24 hours.`;
+  f.reset();showToast('Quote request submitted!');return false;
+}
+</script>
+</body>
+</html>

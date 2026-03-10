@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Beauty Salon - Built with ZapCodes</title>
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,600;1,400&family=Jost:wght@300;400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+<style>
+*,*::before,*::after{margin:0;padding:0;box-sizing:border-box}:root{--rose:#c77dba;--dark:#2d2d2d;--bg:#fdf8f5;--white:#fff;--text:#8a8a8a;--border:#ece4df;--gold:#d4a574}
+html{scroll-behavior:smooth}body{font-family:'Jost',sans-serif;background:var(--bg);color:var(--text);line-height:1.7}
+a{text-decoration:none;color:inherit;transition:.3s}h1,h2,h3{font-family:'Cormorant Garamond',serif;color:var(--dark);font-weight:600}
+.container{max-width:1100px;margin:0 auto;padding:0 20px}
+.nav{position:fixed;top:0;width:100%;z-index:999;background:rgba(253,248,245,.95);backdrop-filter:blur(10px);border-bottom:1px solid var(--border);padding:14px 0}
+.nav .container{display:flex;justify-content:space-between;align-items:center}
+.logo{font-family:'Cormorant Garamond',serif;font-size:28px;color:var(--dark);font-weight:600}.logo span{color:var(--rose)}
+.nav-links{display:flex;gap:24px;list-style:none}.nav-links a{font-size:14px;color:var(--text);font-weight:400}.nav-links a:hover{color:var(--rose)}
+.btn{display:inline-block;padding:12px 28px;border-radius:30px;font-size:13px;font-weight:500;cursor:pointer;transition:.3s;font-family:inherit;border:none;letter-spacing:.5px}
+.btn-rose{background:var(--rose);color:var(--white)}.btn-rose:hover{background:#b06aa5;transform:translateY(-2px)}
+.btn-outline{border:1px solid var(--rose);color:var(--rose);background:none}.btn-outline:hover{background:var(--rose);color:var(--white)}
+.hero{padding:130px 0 80px;display:grid;grid-template-columns:1fr 1fr;gap:40px;align-items:center}
+.hero h1{font-size:clamp(32px,5vw,52px);line-height:1.15;margin-bottom:16px}
+.hero h1 span{color:var(--rose)}
+.hero p{font-size:16px;margin-bottom:28px}
+.hero-img{border-radius:200px 200px 20px 20px;overflow:hidden;height:500px}
+.hero-img img{width:100%;height:100%;object-fit:cover}
+section{padding:70px 0}.stitle{text-align:center;margin-bottom:40px}
+.stitle h2{font-size:clamp(28px,3vw,38px);margin-bottom:6px}
+.stitle .line{width:40px;height:2px;background:var(--rose);margin:10px auto}
+.stitle p{font-size:15px}
+/* SERVICES */
+.serv-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:20px}
+.serv-card{background:var(--white);border-radius:14px;padding:28px;text-align:center;border:1px solid var(--border);transition:.3s}
+.serv-card:hover{border-color:var(--rose);transform:translateY(-4px);box-shadow:0 10px 30px rgba(199,125,186,.1)}
+.serv-card i{font-size:28px;color:var(--rose);margin-bottom:14px}
+.serv-card h3{font-size:20px;margin-bottom:6px}.serv-card p{font-size:13px;margin-bottom:12px}
+.serv-card .price{font-family:'Cormorant Garamond',serif;font-size:22px;color:var(--rose);font-weight:600}
+/* TEAM */
+.team-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:20px}
+.team-card{text-align:center}
+.team-card img{width:100%;height:280px;object-fit:cover;border-radius:14px;margin-bottom:12px;transition:.3s}
+.team-card:hover img{transform:scale(1.02)}
+.team-card h3{font-size:18px;margin-bottom:2px}.team-card p{font-size:13px;color:var(--rose)}
+/* GALLERY */
+.gal-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
+.gal-grid img{width:100%;aspect-ratio:1;object-fit:cover;border-radius:8px;cursor:pointer;transition:.4s}
+.gal-grid img:hover{transform:scale(1.03);filter:brightness(.85)}
+/* BOOKING */
+.book-sec{background:var(--white)}
+.book-form{max-width:650px;margin:0 auto;display:grid;gap:14px}
+.book-form .row{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.book-form input,.book-form select,.book-form textarea{width:100%;padding:13px 16px;border:1px solid var(--border);border-radius:10px;font-family:inherit;font-size:14px;outline:none;background:var(--bg)}
+.book-form input:focus,.book-form select:focus{border-color:var(--rose)}
+.book-form textarea{min-height:80px;resize:vertical}
+.form-msg{padding:12px;border-radius:10px;font-size:14px;display:none;text-align:center}
+.form-msg.ok{display:block;background:rgba(199,125,186,.1);color:var(--rose);border:1px solid rgba(199,125,186,.2)}
+/* REVIEWS */
+.rev-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:20px}
+.rev-card{background:var(--white);border:1px solid var(--border);border-radius:14px;padding:24px}
+.rev-card .stars{color:#f59e0b;font-size:14px;margin-bottom:8px}
+.rev-card blockquote{font-size:14px;color:var(--dark);line-height:1.7;margin-bottom:12px;font-style:italic}
+.rev-card cite{font-style:normal;font-size:13px;color:var(--rose);font-weight:600}
+footer{padding:40px 0 16px;background:var(--dark);color:#aaa}
+.foot-grid{display:grid;grid-template-columns:2fr 1fr 1fr 1fr;gap:32px;margin-bottom:24px}
+.foot-col .logo{color:var(--white);font-size:22px;margin-bottom:10px;display:inline-block}
+.foot-col p{font-size:13px}.foot-col h4{color:var(--white);font-size:13px;margin-bottom:12px;font-family:'Jost',sans-serif;font-weight:600}
+.foot-col ul{list-style:none}.foot-col li{margin-bottom:8px;font-size:13px}.foot-col a:hover{color:var(--rose)}
+.foot-bottom{text-align:center;padding-top:16px;border-top:1px solid rgba(255,255,255,.08);font-size:12px}
+.foot-bottom a{color:var(--rose)}
+.toast{position:fixed;bottom:30px;left:50%;transform:translateX(-50%) translateY(100px);background:var(--rose);color:var(--white);padding:14px 28px;font-size:14px;font-weight:600;z-index:9999;transition:.4s;opacity:0;border-radius:30px}
+.toast.show{transform:translateX(-50%) translateY(0);opacity:1}
+@media(max-width:900px){.hero{grid-template-columns:1fr;text-align:center}.hero-img{height:350px;border-radius:20px}.serv-grid,.rev-grid{grid-template-columns:1fr 1fr}.team-grid{grid-template-columns:1fr 1fr}.gal-grid{grid-template-columns:1fr 1fr}.foot-grid{grid-template-columns:1fr 1fr}}
+@media(max-width:600px){.nav-links{display:none}.serv-grid,.team-grid,.rev-grid{grid-template-columns:1fr}.book-form .row{grid-template-columns:1fr}.foot-grid{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<nav class="nav"><div class="container"><a href="#" class="logo">Zap<span>Codes</span></a><ul class="nav-links"><li><a href="#services">Services</a></li><li><a href="#gallery">Gallery</a></li><li><a href="#booking">Book Now</a></li><li><a href="#booking" class="btn btn-rose" style="padding:8px 20px">Book Appointment</a></li></ul></div></nav>
+
+<section><div class="container"><div class="hero"><div><h1>Where <span>Beauty</span><br>Meets Expertise</h1><p>Indulge in premium beauty services tailored to enhance your natural radiance. Expert stylists, luxurious treatments, unforgettable results.</p><div style="display:flex;gap:12px;flex-wrap:wrap"><a href="#booking" class="btn btn-rose">Book Now</a><a href="#services" class="btn btn-outline">View Services</a></div></div><div class="hero-img"><img src="https://images.unsplash.com/photo-1560066984-138dadb4c035?w=600&q=80" alt="Salon"></div></div></div></section>
+
+<section id="services"><div class="container"><div class="stitle"><h2>Our Services</h2><div class="line"></div><p>Premium treatments for every need</p></div><div class="serv-grid">
+<div class="serv-card"><i class="fas fa-cut"></i><h3>Hair Styling</h3><p>Cut, color, highlights, blowouts by expert stylists</p><div class="price">From $45</div></div>
+<div class="serv-card"><i class="fas fa-spa"></i><h3>Facial Treatments</h3><p>Deep cleansing, anti-aging, hydrating facials</p><div class="price">From $65</div></div>
+<div class="serv-card"><i class="fas fa-hand-sparkles"></i><h3>Nail Art</h3><p>Manicure, pedicure, gel, nail art designs</p><div class="price">From $30</div></div>
+<div class="serv-card"><i class="fas fa-magic"></i><h3>Makeup</h3><p>Bridal, editorial, special occasion makeup</p><div class="price">From $80</div></div>
+<div class="serv-card"><i class="fas fa-leaf"></i><h3>Body Treatments</h3><p>Massage, body scrub, aromatherapy</p><div class="price">From $75</div></div>
+<div class="serv-card"><i class="fas fa-eye"></i><h3>Lash & Brow</h3><p>Extensions, tinting, lamination, shaping</p><div class="price">From $40</div></div>
+</div></div></section>
+
+<section id="team" style="background:var(--white)"><div class="container"><div class="stitle"><h2>Our Stylists</h2><div class="line"></div></div><div class="team-grid">
+<div class="team-card"><img src="https://images.unsplash.com/photo-1580489944761-15a19d654956?w=400&q=80" alt="Stylist"><h3>Emma Rose</h3><p>Master Stylist</p></div>
+<div class="team-card"><img src="https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?w=400&q=80" alt="Stylist"><h3>Sophie Kim</h3><p>Color Specialist</p></div>
+<div class="team-card"><img src="https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=400&q=80" alt="Stylist"><h3>Mia Chen</h3><p>Makeup Artist</p></div>
+<div class="team-card"><img src="https://images.unsplash.com/photo-1531746020798-e6953c6e8e04?w=400&q=80" alt="Stylist"><h3>Luna Park</h3><p>Nail Artist</p></div>
+</div></div></section>
+
+<section id="gallery"><div class="container"><div class="stitle"><h2>Our Work</h2><div class="line"></div></div><div class="gal-grid">
+<img src="https://images.unsplash.com/photo-1522337360788-8b13dee7a37e?w=400&q=80" alt="Work" onclick="showToast('View full gallery')">
+<img src="https://images.unsplash.com/photo-1487412912498-0447578fcca8?w=400&q=80" alt="Work" onclick="showToast('View full gallery')">
+<img src="https://images.unsplash.com/photo-1519699047748-de8e457a634e?w=400&q=80" alt="Work" onclick="showToast('View full gallery')">
+<img src="https://images.unsplash.com/photo-1604654894610-df63bc536371?w=400&q=80" alt="Work" onclick="showToast('View full gallery')">
+<img src="https://images.unsplash.com/photo-1457972729786-0411a3b2b626?w=400&q=80" alt="Work" onclick="showToast('View full gallery')">
+<img src="https://images.unsplash.com/photo-1522335789203-aabd1fc54bc9?w=400&q=80" alt="Work" onclick="showToast('View full gallery')">
+<img src="https://images.unsplash.com/photo-1516975080664-ed2fc6a32937?w=400&q=80" alt="Work" onclick="showToast('View full gallery')">
+<img src="https://images.unsplash.com/photo-1560869713-bf012d3b0d55?w=400&q=80" alt="Work" onclick="showToast('View full gallery')">
+</div></div></section>
+
+<section class="book-sec" id="booking"><div class="container"><div class="stitle"><h2>Book Your Visit</h2><div class="line"></div><p>Reserve your pampering session</p></div>
+<form class="book-form" id="bookForm" onsubmit="return handleBook(event)">
+<div class="row"><input type="text" name="name" placeholder="Your Name *" required><input type="email" name="email" placeholder="Email *" required></div>
+<div class="row"><input type="tel" name="phone" placeholder="Phone *" required><select name="service" required><option value="">Select Service *</option><option>Hair Styling</option><option>Facial Treatment</option><option>Nail Art</option><option>Makeup</option><option>Body Treatment</option><option>Lash & Brow</option></select></div>
+<div class="row"><input type="date" name="date" required><select name="time" required><option value="">Preferred Time *</option><option>9:00 AM</option><option>10:00 AM</option><option>11:00 AM</option><option>1:00 PM</option><option>2:00 PM</option><option>3:00 PM</option><option>4:00 PM</option><option>5:00 PM</option></select></div>
+<textarea name="notes" placeholder="Special requests (optional)"></textarea>
+<div class="form-msg" id="bookMsg"></div>
+<button type="submit" class="btn btn-rose" style="width:100%;padding:14px">Book Appointment</button>
+</form></div></section>
+
+<section id="reviews"><div class="container"><div class="stitle"><h2>Client Love</h2><div class="line"></div></div><div class="rev-grid">
+<div class="rev-card"><div class="stars">★★★★★</div><blockquote>"Best salon experience ever! Emma completely transformed my hair. I keep getting compliments."</blockquote><cite>— Isabella M.</cite></div>
+<div class="rev-card"><div class="stars">★★★★★</div><blockquote>"The facial treatment was heavenly. My skin has never looked better. Booking again next month!"</blockquote><cite>— Grace L.</cite></div>
+<div class="rev-card"><div class="stars">★★★★★</div><blockquote>"Mia did my wedding makeup and I cried tears of joy when I saw myself. Absolute perfection."</blockquote><cite>— Rachel K.</cite></div>
+</div></div></section>
+
+<footer><div class="container"><div class="foot-grid">
+<div class="foot-col"><a href="#" class="logo">Zap<span>Codes</span></a><p>Where beauty meets expertise. Premium services for your confidence.</p></div>
+<div class="foot-col"><h4>Services</h4><ul><li><a href="#services">Hair Styling</a></li><li><a href="#services">Facials</a></li><li><a href="#services">Nails</a></li><li><a href="#services">Makeup</a></li></ul></div>
+<div class="foot-col"><h4>Hours</h4><ul><li>Tue-Fri: 9am - 7pm</li><li>Sat: 9am - 5pm</li><li>Sun-Mon: Closed</li></ul></div>
+<div class="foot-col"><h4>Contact</h4><ul><li>123 Beauty Lane</li><li>(555) 987-6543</li><li>hello@example.com</li></ul></div>
+</div><div class="foot-bottom">&copy; 2026 Built with <a href="https://zapcodes.net">ZapCodes</a></div></div></footer>
+<div class="toast" id="toast"></div>
+<script>
+function showToast(m){const t=document.getElementById('toast');t.textContent=m;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2500)}
+const di=document.querySelector('[name="date"]');if(di)di.min=new Date().toISOString().split('T')[0];
+function handleBook(e){
+  e.preventDefault();const f=e.target;let ok=true;
+  f.querySelectorAll('[required]').forEach(i=>{if(!i.value.trim()){ok=false;i.style.borderColor='#c77dba'}else i.style.borderColor=''});
+  if(!ok)return false;
+  document.getElementById('bookMsg').className='form-msg ok';
+  document.getElementById('bookMsg').textContent=`Thank you ${f.name.value}! Your ${f.service.value} appointment on ${f.date.value} at ${f.time.value} is booked. See you soon!`;
+  f.reset();showToast('Appointment booked!');return false;
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Real Estate - Built with ZapCodes</title>
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+<style>
+*,*::before,*::after{margin:0;padding:0;box-sizing:border-box}
+:root{--primary:#1e3a5f;--accent:#e8a838;--bg:#f7f8fa;--white:#fff;--text:#6b7280;--dark:#111827;--border:#e5e7eb;--shadow:0 2px 12px rgba(0,0,0,.06)}
+html{scroll-behavior:smooth}body{font-family:'Outfit',sans-serif;background:var(--bg);color:var(--text);line-height:1.7}
+a{text-decoration:none;color:inherit;transition:.3s}h1,h2,h3,h4{color:var(--dark)}
+.container{max-width:1140px;margin:0 auto;padding:0 20px}
+.nav{position:fixed;top:0;width:100%;z-index:999;background:var(--white);border-bottom:1px solid var(--border);padding:12px 0}
+.nav .container{display:flex;justify-content:space-between;align-items:center}
+.logo{font-size:24px;font-weight:700;color:var(--primary)}.logo span{color:var(--accent)}
+.nav-links{display:flex;gap:24px;list-style:none;align-items:center}
+.nav-links a{font-size:14px;color:var(--text);font-weight:500}.nav-links a:hover{color:var(--accent)}
+.btn{display:inline-block;padding:11px 24px;border-radius:8px;font-size:14px;font-weight:600;cursor:pointer;transition:.3s;font-family:inherit;border:none}
+.btn-primary{background:var(--accent);color:var(--white)}.btn-primary:hover{background:#d4952e;transform:translateY(-2px)}
+.btn-outline{border:1px solid var(--border);background:var(--white);color:var(--dark)}.btn-outline:hover{border-color:var(--accent);color:var(--accent)}
+/* HERO */
+.hero{padding:120px 0 60px;background:linear-gradient(135deg,var(--primary) 0%,#0f2640 100%);color:var(--white);text-align:center}
+.hero h1{font-size:clamp(28px,5vw,48px);margin-bottom:16px;color:var(--white)}
+.hero p{font-size:17px;color:rgba(255,255,255,.7);margin-bottom:32px;max-width:550px;margin-left:auto;margin-right:auto}
+/* SEARCH BOX */
+.search-box{background:var(--white);border-radius:12px;padding:20px;display:flex;gap:12px;flex-wrap:wrap;max-width:800px;margin:-30px auto 0;position:relative;z-index:10;box-shadow:0 10px 40px rgba(0,0,0,.12)}
+.search-box select,.search-box input{flex:1;min-width:150px;padding:12px 14px;border:1px solid var(--border);border-radius:8px;font-family:inherit;font-size:14px;outline:none;color:var(--dark)}
+.search-box select:focus,.search-box input:focus{border-color:var(--accent)}
+.search-box .btn{min-width:120px;display:flex;align-items:center;justify-content:center;gap:8px}
+section{padding:70px 0}.stitle{text-align:center;margin-bottom:40px}
+.stitle h2{font-size:clamp(24px,3vw,32px);margin-bottom:8px}.stitle p{font-size:15px}
+/* PROPERTY CARDS */
+.prop-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:24px}
+.prop-card{background:var(--white);border-radius:12px;overflow:hidden;border:1px solid var(--border);transition:.3s}
+.prop-card:hover{box-shadow:0 8px 30px rgba(0,0,0,.08);transform:translateY(-4px)}
+.prop-img{position:relative;height:220px;overflow:hidden}
+.prop-img img{width:100%;height:100%;object-fit:cover;transition:.4s}
+.prop-card:hover .prop-img img{transform:scale(1.05)}
+.prop-badge{position:absolute;top:12px;left:12px;padding:5px 12px;border-radius:6px;font-size:11px;font-weight:600;text-transform:uppercase}
+.prop-badge.sale{background:var(--accent);color:var(--white)}.prop-badge.rent{background:var(--primary);color:var(--white)}.prop-badge.new{background:#10b981;color:var(--white)}
+.prop-fav{position:absolute;top:12px;right:12px;width:36px;height:36px;border-radius:50%;background:var(--white);border:none;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:16px;color:#e74c3c;box-shadow:var(--shadow);transition:.2s}
+.prop-fav:hover{transform:scale(1.1)}
+.prop-fav.liked i{font-weight:900}
+.prop-body{padding:18px}
+.prop-price{font-size:22px;font-weight:700;color:var(--primary);margin-bottom:4px}
+.prop-price span{font-size:14px;font-weight:400;color:var(--text)}
+.prop-body h3{font-size:16px;margin-bottom:4px}
+.prop-loc{font-size:13px;color:var(--text);margin-bottom:12px;display:flex;align-items:center;gap:4px}
+.prop-loc i{color:var(--accent);font-size:12px}
+.prop-meta{display:flex;gap:16px;padding-top:12px;border-top:1px solid var(--border)}
+.pm{display:flex;align-items:center;gap:6px;font-size:13px}.pm i{color:var(--accent);font-size:14px}
+/* STATS */
+.stats-bar{background:var(--primary);padding:40px 0;color:var(--white)}
+.stats-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:20px;text-align:center}
+.stats-grid h3{font-size:32px;color:var(--accent);margin-bottom:4px}
+.stats-grid p{font-size:13px;text-transform:uppercase;letter-spacing:1px;color:rgba(255,255,255,.7)}
+/* MORTGAGE CALC */
+.calc-sec{background:var(--white)}
+.calc-grid{display:grid;grid-template-columns:1fr 1fr;gap:40px;align-items:start;max-width:800px;margin:0 auto}
+.calc-form label{display:block;font-size:13px;font-weight:600;color:var(--dark);margin-bottom:6px;margin-top:14px}
+.calc-form input{width:100%;padding:12px 14px;border:1px solid var(--border);border-radius:8px;font-family:inherit;font-size:14px;outline:none}
+.calc-form input:focus{border-color:var(--accent)}
+.calc-result{background:var(--bg);border-radius:12px;padding:28px;text-align:center}
+.calc-result h3{font-size:16px;margin-bottom:16px}
+.calc-result .big{font-size:40px;font-weight:700;color:var(--primary);margin-bottom:8px}
+.calc-result .sub{font-size:13px;margin-bottom:16px}
+.calc-breakdown{text-align:left;font-size:13px}
+.calc-breakdown div{display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border)}
+/* CONTACT */
+.contact-grid{display:grid;grid-template-columns:1fr 1fr;gap:40px}
+.contact-form{display:grid;gap:14px}
+.contact-form input,.contact-form textarea,.contact-form select{width:100%;padding:13px 16px;border:1px solid var(--border);border-radius:8px;font-family:inherit;font-size:14px;outline:none}
+.contact-form input:focus,.contact-form textarea:focus,.contact-form select:focus{border-color:var(--accent)}
+.contact-form textarea{min-height:100px;resize:vertical}
+.contact-form .row{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.form-msg{padding:12px;border-radius:8px;font-size:14px;display:none}
+.form-msg.ok{display:block;background:rgba(16,185,129,.1);color:#10b981;border:1px solid rgba(16,185,129,.2)}
+.contact-info{padding:24px;background:var(--primary);border-radius:12px;color:var(--white)}
+.contact-info h3{font-size:22px;margin-bottom:12px;color:var(--white)}
+.contact-info p{font-size:14px;color:rgba(255,255,255,.7);margin-bottom:20px}
+.ci{display:flex;gap:12px;margin-bottom:16px;align-items:flex-start}
+.ci i{color:var(--accent);font-size:16px;margin-top:3px}
+.ci h4{font-size:14px;color:var(--white)}.ci p{font-size:13px;color:rgba(255,255,255,.6)}
+footer{padding:40px 0 16px;background:var(--dark);color:#9ca3af}
+.foot-grid{display:grid;grid-template-columns:2fr 1fr 1fr 1fr;gap:32px;margin-bottom:24px}
+.foot-col .logo{color:var(--white);font-size:20px;margin-bottom:10px;display:inline-block}
+.foot-col p{font-size:13px;line-height:1.8}.foot-col h4{color:var(--white);font-size:13px;font-weight:600;margin-bottom:14px}
+.foot-col ul{list-style:none}.foot-col li{margin-bottom:8px;font-size:13px}.foot-col a:hover{color:var(--accent)}
+.foot-bottom{text-align:center;padding-top:16px;border-top:1px solid rgba(255,255,255,.06);font-size:12px}
+.foot-bottom a{color:var(--accent)}
+.toast{position:fixed;bottom:30px;left:50%;transform:translateX(-50%) translateY(100px);background:var(--accent);color:var(--white);padding:14px 28px;font-size:14px;font-weight:600;z-index:9999;transition:.4s;opacity:0;border-radius:8px}
+.toast.show{transform:translateX(-50%) translateY(0);opacity:1}
+@media(max-width:900px){.prop-grid{grid-template-columns:1fr 1fr}.stats-grid{grid-template-columns:1fr 1fr}.calc-grid{grid-template-columns:1fr}.foot-grid{grid-template-columns:1fr 1fr}}
+@media(max-width:600px){.search-box{flex-direction:column}.prop-grid{grid-template-columns:1fr}.nav-links{display:none}.contact-grid{grid-template-columns:1fr}.foot-grid{grid-template-columns:1fr}.contact-form .row{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<nav class="nav"><div class="container"><a href="#" class="logo">Zap<span>Codes</span></a><ul class="nav-links"><li><a href="#listings">Listings</a></li><li><a href="#calculator">Calculator</a></li><li><a href="#contact">Contact</a></li><li><a href="#contact" class="btn btn-primary" style="padding:8px 18px">List Property</a></li></ul></div></nav>
+
+<section class="hero"><div class="container"><h1>Find Your Perfect Home</h1><p>Browse thousands of properties for sale and rent in your area.</p></div></section>
+
+<div class="container"><div class="search-box">
+<select id="sType"><option value="all">All Types</option><option value="sale">For Sale</option><option value="rent">For Rent</option></select>
+<select id="sBed"><option value="all">Bedrooms</option><option value="1">1+</option><option value="2">2+</option><option value="3">3+</option><option value="4">4+</option></select>
+<select id="sPrice"><option value="all">Price Range</option><option value="200000">Under $200K</option><option value="400000">Under $400K</option><option value="600000">Under $600K</option><option value="999999">Under $1M</option></select>
+<button class="btn btn-primary" onclick="filterProps()"><i class="fas fa-search"></i> Search</button>
+</div></div>
+
+<section id="listings"><div class="container"><div class="stitle"><h2>Featured Properties</h2><p id="propCount">Showing all properties</p></div><div class="prop-grid" id="propGrid"></div></div></section>
+
+<section class="stats-bar"><div class="container"><div class="stats-grid">
+<div><h3>2,500+</h3><p>Properties Listed</p></div>
+<div><h3>1,800+</h3><p>Happy Clients</p></div>
+<div><h3>150+</h3><p>Expert Agents</p></div>
+<div><h3>25+</h3><p>Years Experience</p></div>
+</div></div></section>
+
+<section class="calc-sec" id="calculator"><div class="container"><div class="stitle"><h2>Mortgage Calculator</h2><p>Estimate your monthly mortgage payments</p></div>
+<div class="calc-grid"><div class="calc-form">
+<label>Home Price ($)</label><input type="number" id="calcPrice" value="350000" oninput="calcMortgage()">
+<label>Down Payment ($)</label><input type="number" id="calcDown" value="70000" oninput="calcMortgage()">
+<label>Loan Term (Years)</label><input type="number" id="calcTerm" value="30" oninput="calcMortgage()">
+<label>Interest Rate (%)</label><input type="number" id="calcRate" value="6.5" step="0.1" oninput="calcMortgage()">
+</div><div class="calc-result">
+<h3>Estimated Monthly Payment</h3>
+<div class="big" id="monthlyPayment">$1,770</div>
+<div class="sub">Based on your inputs</div>
+<div class="calc-breakdown">
+<div><span>Loan Amount</span><span id="loanAmt">$280,000</span></div>
+<div><span>Monthly Principal & Interest</span><span id="monthlyPI">$1,770</span></div>
+<div><span>Total Interest Paid</span><span id="totalInt">$357,175</span></div>
+<div><span>Total Cost</span><span id="totalCost">$637,175</span></div>
+</div></div></div></div></section>
+
+<section id="contact"><div class="container"><div class="stitle"><h2>Get in Touch</h2><p>Ready to find your dream home? Contact our team.</p></div>
+<div class="contact-grid">
+<form class="contact-form" id="contactForm" onsubmit="return handleForm(event)">
+<div class="row"><input type="text" name="name" placeholder="Full Name *" required><input type="email" name="email" placeholder="Email *" required></div>
+<div class="row"><input type="tel" name="phone" placeholder="Phone *" required><select name="interest"><option value="">I'm interested in...</option><option>Buying a Home</option><option>Selling a Home</option><option>Renting</option><option>Investment Properties</option></select></div>
+<textarea name="msg" placeholder="Tell us what you're looking for..." required></textarea>
+<div class="form-msg" id="formMsg"></div>
+<button type="submit" class="btn btn-primary" style="width:100%;padding:14px">Send Inquiry</button>
+</form>
+<div class="contact-info"><h3>Our Office</h3><p>Visit us or reach out — we're here to help you find the perfect property.</p>
+<div class="ci"><i class="fas fa-map-marker-alt"></i><div><h4>Location</h4><p>123 Realty Ave, Downtown</p></div></div>
+<div class="ci"><i class="fas fa-phone"></i><div><h4>Phone</h4><p>(555) 123-4567</p></div></div>
+<div class="ci"><i class="fas fa-envelope"></i><div><h4>Email</h4><p>hello@example.com</p></div></div>
+<div class="ci"><i class="fas fa-clock"></i><div><h4>Hours</h4><p>Mon-Sat: 9am - 6pm</p></div></div>
+</div></div></div></section>
+
+<footer><div class="container"><div class="foot-grid">
+<div class="foot-col"><a href="#" class="logo">Zap<span>Codes</span></a><p>Your trusted partner in finding the perfect property.</p></div>
+<div class="foot-col"><h4>Quick Links</h4><ul><li><a href="#listings">Listings</a></li><li><a href="#calculator">Calculator</a></li><li><a href="#contact">Contact</a></li></ul></div>
+<div class="foot-col"><h4>Property Types</h4><ul><li><a href="#" onclick="showToast('Houses')">Houses</a></li><li><a href="#" onclick="showToast('Condos')">Condos</a></li><li><a href="#" onclick="showToast('Commercial')">Commercial</a></li></ul></div>
+<div class="foot-col"><h4>Support</h4><ul><li><a href="#" onclick="showToast('About')">About Us</a></li><li><a href="#" onclick="showToast('Privacy')">Privacy</a></li><li><a href="#" onclick="showToast('Terms')">Terms</a></li></ul></div>
+</div><div class="foot-bottom">&copy; 2026 Built with <a href="https://zapcodes.net">ZapCodes</a></div></div></footer>
+
+<div class="toast" id="toast"></div>
+<script>
+function showToast(m){const t=document.getElementById('toast');t.textContent=m;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2500)}
+const properties=[
+  {id:1,title:"Modern Condo Downtown",type:"sale",price:285000,beds:2,baths:2,sqft:1100,loc:"123 Main St, Downtown",badge:"new",img:"https://images.unsplash.com/photo-1560448204-e02f11c3d0e2?w=600&q=80"},
+  {id:2,title:"Suburban Family Home",type:"sale",price:450000,beds:4,baths:3,sqft:2400,loc:"456 Oak Dr, Suburbs",badge:"sale",img:"https://images.unsplash.com/photo-1564013799919-ab600027ffc6?w=600&q=80"},
+  {id:3,title:"Luxury Penthouse Suite",type:"rent",price:3500,beds:3,baths:2,sqft:1800,loc:"789 Sky Tower, Midtown",badge:"sale",img:"https://images.unsplash.com/photo-1600596542815-ffad4c1539a9?w=600&q=80"},
+  {id:4,title:"Cozy Studio Apartment",type:"rent",price:1200,beds:1,baths:1,sqft:550,loc:"12 Pine Ave, East Side",badge:"new",img:"https://images.unsplash.com/photo-1600585154340-be6161a56a0c?w=600&q=80"},
+  {id:5,title:"Waterfront Beach House",type:"sale",price:780000,beds:5,baths:4,sqft:3200,loc:"88 Ocean Blvd, Coastal",badge:"sale",img:"https://images.unsplash.com/photo-1613490493576-7fde63acd811?w=600&q=80"},
+  {id:6,title:"Modern Townhouse",type:"sale",price:320000,beds:3,baths:2,sqft:1600,loc:"55 Elm St, North End",badge:"new",img:"https://images.unsplash.com/photo-1600607687939-ce8a6c25118c?w=600&q=80"},
+];
+
+function renderProps(list){
+  const grid=document.getElementById('propGrid');
+  document.getElementById('propCount').textContent=`Showing ${list.length} properties`;
+  grid.innerHTML=list.map(p=>`<div class="prop-card">
+    <div class="prop-img"><img src="${p.img}" alt="${p.title}" loading="lazy">
+    <span class="prop-badge ${p.badge}">${p.badge==='sale'?'For Sale':'New'}</span>
+    <button class="prop-fav" onclick="toggleFav(this)" title="Save"><i class="far fa-heart"></i></button></div>
+    <div class="prop-body">
+    <div class="prop-price">${p.type==='rent'?'$'+p.price.toLocaleString()+'/mo':'$'+p.price.toLocaleString()}</div>
+    <h3>${p.title}</h3>
+    <div class="prop-loc"><i class="fas fa-map-marker-alt"></i>${p.loc}</div>
+    <div class="prop-meta">
+    <div class="pm"><i class="fas fa-bed"></i>${p.beds} Beds</div>
+    <div class="pm"><i class="fas fa-bath"></i>${p.baths} Baths</div>
+    <div class="pm"><i class="fas fa-vector-square"></i>${p.sqft.toLocaleString()} sqft</div>
+    </div></div></div>`).join('');
+}
+
+function filterProps(){
+  const type=document.getElementById('sType').value;
+  const beds=document.getElementById('sBed').value;
+  const price=document.getElementById('sPrice').value;
+  let f=properties;
+  if(type!=='all')f=f.filter(p=>p.type===type);
+  if(beds!=='all')f=f.filter(p=>p.beds>=parseInt(beds));
+  if(price!=='all')f=f.filter(p=>p.price<=parseInt(price));
+  renderProps(f);
+  showToast(`Found ${f.length} properties`);
+}
+
+function toggleFav(btn){btn.classList.toggle('liked');const icon=btn.querySelector('i');icon.className=btn.classList.contains('liked')?'fas fa-heart':'far fa-heart';showToast(btn.classList.contains('liked')?'Saved to favorites!':'Removed from favorites')}
+
+function calcMortgage(){
+  const P=parseFloat(document.getElementById('calcPrice').value)-parseFloat(document.getElementById('calcDown').value);
+  const r=parseFloat(document.getElementById('calcRate').value)/100/12;
+  const n=parseFloat(document.getElementById('calcTerm').value)*12;
+  if(P<=0||r<=0||n<=0)return;
+  const M=P*(r*Math.pow(1+r,n))/(Math.pow(1+r,n)-1);
+  const total=M*n;
+  document.getElementById('monthlyPayment').textContent='$'+Math.round(M).toLocaleString();
+  document.getElementById('loanAmt').textContent='$'+Math.round(P).toLocaleString();
+  document.getElementById('monthlyPI').textContent='$'+Math.round(M).toLocaleString();
+  document.getElementById('totalInt').textContent='$'+Math.round(total-P).toLocaleString();
+  document.getElementById('totalCost').textContent='$'+Math.round(total).toLocaleString();
+}
+
+function handleForm(e){
+  e.preventDefault();const f=e.target;let ok=true;
+  f.querySelectorAll('[required]').forEach(i=>{if(!i.value.trim()){ok=false;i.style.borderColor='#e74c3c'}else i.style.borderColor=''});
+  if(!ok)return false;
+  const msg=document.getElementById('formMsg');msg.className='form-msg ok';
+  msg.textContent=`Thank you ${f.name.value}! An agent will contact you within 24 hours.`;
+  f.reset();showToast('Inquiry sent!');return false;
+}
+
+renderProps(properties);calcMortgage();
+</script>
+</body>
+</html>
