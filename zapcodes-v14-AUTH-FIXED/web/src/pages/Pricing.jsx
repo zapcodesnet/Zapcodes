@@ -170,16 +170,8 @@ export default function Pricing() {
     const topupId = pkg.id;
     setLoading(`topup-${topupId}`);
     try {
-      const quantity = pkg.multiplier ? ultimateQty : 1;
-      // Try new BL coins route first, fallback to legacy coins route
-      try {
-        const { data } = await api.post('/api/bl-coins/purchase', { packId: topupId, quantity });
-        if (data.checkoutUrl) { window.location.href = data.checkoutUrl; return; }
-      } catch {
-        // Fallback to legacy route
-        const { data } = await api.post('/api/coins/topup', { package: topupId, provider: payProvider });
-        if (data.url) window.location.href = data.url;
-      }
+      const { data } = await api.post('/api/coins/topup', { package: topupId, provider: payProvider });
+      if (data.url) window.location.href = data.url;
     } catch (err) { alert(err.response?.data?.error || 'Top-up failed'); }
     finally { setLoading(null); }
   };
