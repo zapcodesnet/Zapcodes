@@ -61,17 +61,9 @@ export default function Dashboard() {
   const handleClaim = async () => {
     setClaiming(true);
     try {
-      // Try new route first, fallback to legacy
-      let data;
-      try {
-        const res = await api.post('/api/bl-coins/daily-claim');
-        data = res.data;
-      } catch {
-        const res = await api.post('/api/coins/claim');
-        data = res.data;
-      }
-      setCoinData(prev => ({ ...prev, balance: data.new_balance || data.balance, canClaim: false }));
-      setCountdown(data.seconds_remaining || data.nextClaimIn || 86400);
+      const { data } = await api.post('/api/coins/claim');
+      setCoinData(prev => ({ ...prev, balance: data.balance, canClaim: false }));
+      setCountdown(data.nextClaimIn || 86400);
       if (data.bonus) alert(`🎉 Signup bonus: +${data.bonus.toLocaleString()} BL!`);
       alert(`✅ Claimed ${(data.claimed || 0).toLocaleString()} BL!`);
       fetchData();
