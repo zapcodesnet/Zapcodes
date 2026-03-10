@@ -29,6 +29,8 @@ function formatCountdown(seconds) {
   return `${m}m`;
 }
 
+const hidePaths = ['/', '/login', '/register', '/auth/callback', '/privacy', '/terms'];
+
 export default function Navbar() {
   const { user, logout } = useAuth();
   const location = useLocation();
@@ -39,19 +41,11 @@ export default function Navbar() {
   const [claimCountdown, setClaimCountdown] = useState(0);
   const [claiming, setClaiming] = useState(false);
 
-  // Don't show navbar on landing, login, register
-  const hidePaths = ['/', '/login', '/register', '/auth/callback', '/privacy', '/terms'];
-  if (!user || hidePaths.includes(location.pathname)) return null;
-
-  const plan = user?.subscription_tier || user?.plan || 'free';
-  const tierColor = TIER_COLORS[plan] || '#888';
-
-  // Fetch BL balance and claim status
+  // ALL hooks MUST be above any return statement — React Rules of Hooks
   useEffect(() => {
     if (!user) return;
     const fetchBalance = async () => {
       try {
-        // Try new endpoint first, fallback to legacy
         try {
           const { data } = await api.get('/api/bl-coins/status');
           setBlBalance(data.bl_coins);
@@ -66,12 +60,10 @@ export default function Navbar() {
       } catch {}
     };
     fetchBalance();
-    // Refresh every 60 seconds
     const interval = setInterval(fetchBalance, 60000);
     return () => clearInterval(interval);
   }, [user, location.pathname]);
 
-  // Countdown timer
   useEffect(() => {
     if (claimCountdown <= 0) return;
     const timer = setInterval(() => {
@@ -83,6 +75,13 @@ export default function Navbar() {
     }, 1000);
     return () => clearInterval(timer);
   }, [claimCountdown]);
+
+  // Early return AFTER all hooks
+  if (!user || hidePaths.includes(location.pathname)) return null;
+
+  const plan = user?.subscription_tier || user?.plan || 'free';
+  const tierColor = TIER_COLORS[plan] || '#888';
+  const displayBalance = blBalance ?? user?.bl_coins ?? user?.blCoins ?? 0;
 
   const handleClaim = async (e) => {
     e.preventDefault();
@@ -101,101 +100,61 @@ export default function Navbar() {
       setBlBalance(data.new_balance || data.balance);
       setCanClaim(false);
       setClaimCountdown(data.seconds_remaining || data.nextClaimIn || 86400);
-    } catch (err) {
-      // Silently fail in navbar — user can claim from dashboard
-    }
+    } catch {}
     setClaiming(false);
   };
-
-  const displayBalance = blBalance ?? user?.bl_coins ?? user?.blCoins ?? 0;
 
   return (
     <>
       <nav style={s.nav}>
         <div style={s.inner}>
-          {/* Logo */}
           <Link to="/dashboard" style={s.logo}>
             <span style={{ fontSize: 18 }}>⚡</span>
             <span style={s.logoText}>ZapCodes</span>
           </Link>
 
-          {/* Desktop links */}
           <div style={s.links} data-nav-links="true">
             {navItems.map(item => (
-              <Link
-                key={item.path}
-                to={item.path}
-                style={{
-                  ...s.link,
-                  ...(location.pathname === item.path ? s.linkActive : {}),
-                }}
-              >
+              <Link key={item.path} to={item.path} style={{ ...s.link, ...(location.pathname === item.path ? s.linkActive : {}) }}>
                 <span style={{ fontSize: 13 }}>{item.icon}</span>
                 <span>{item.label}</span>
               </Link>
             ))}
           </div>
 
-          {/* Right side — BL Balance + Claim + Tier + Sign Out */}
           <div style={s.right} data-nav-right="true">
-            {/* BL Coin Balance */}
             <Link to="/dashboard" style={s.blCoinBox} title="BL Coin Balance">
               <span style={{ fontSize: 13 }}>🪙</span>
               <span style={s.blAmount}>{formatBL(displayBalance)}</span>
             </Link>
 
-            {/* Daily Claim Button */}
             {canClaim ? (
-              <button
-                style={s.claimBtnReady}
-                onClick={handleClaim}
-                disabled={claiming}
-                title="Claim your daily BL coins!"
-              >
+              <button style={s.claimBtnReady} onClick={handleClaim} disabled={claiming} title="Claim your daily BL coins!">
                 {claiming ? '⏳' : '🎁 Claim'}
               </button>
             ) : claimCountdown > 0 ? (
-              <span style={s.claimTimer} title="Next daily claim">
-                ⏰ {formatCountdown(claimCountdown)}
-              </span>
+              <span style={s.claimTimer} title="Next daily claim">⏰ {formatCountdown(claimCountdown)}</span>
             ) : null}
 
-            {/* Tier Badge */}
-            <span style={{
-              ...s.planBadge,
-              background: tierColor,
-              color: (plan === 'gold' || plan === 'diamond' || plan === 'bronze') ? '#000' : '#fff',
-            }}>
+            <span style={{ ...s.planBadge, background: tierColor, color: (plan === 'gold' || plan === 'diamond' || plan === 'bronze') ? '#000' : '#fff' }}>
               {plan.toUpperCase()}
             </span>
 
-            <button
-              style={s.logoutBtn}
-              onClick={() => { logout(); navigate('/'); }}
-            >
-              Sign Out
-            </button>
+            <button style={s.logoutBtn} onClick={() => { logout(); navigate('/'); }}>Sign Out</button>
           </div>
 
-          {/* Mobile hamburger */}
           <button style={s.hamburger} data-nav-hamburger="true" onClick={() => setMobileOpen(!mobileOpen)}>
             {mobileOpen ? '✕' : '☰'}
           </button>
         </div>
 
-        {/* Mobile dropdown */}
         {mobileOpen && (
           <div style={s.mobileMenu}>
-            {/* Mobile BL Balance + Claim */}
             <div style={s.mobileBLRow}>
               <div style={s.mobileBLBox}>
                 <span>🪙</span>
                 <span style={{ fontWeight: 800, color: '#f59e0b' }}>{formatBL(displayBalance)} BL</span>
-                <span style={{
-                  padding: '2px 8px', borderRadius: 8, fontSize: 10, fontWeight: 700,
-                  background: tierColor,
-                  color: (plan === 'gold' || plan === 'diamond' || plan === 'bronze') ? '#000' : '#fff',
-                }}>
+                <span style={{ padding: '2px 8px', borderRadius: 8, fontSize: 10, fontWeight: 700, background: tierColor, color: (plan === 'gold' || plan === 'diamond' || plan === 'bronze') ? '#000' : '#fff' }}>
                   {plan.toUpperCase()}
                 </span>
               </div>
@@ -212,133 +171,44 @@ export default function Navbar() {
             </div>
 
             {navItems.map(item => (
-              <Link
-                key={item.path}
-                to={item.path}
-                onClick={() => setMobileOpen(false)}
-                style={{
-                  ...s.mobileLink,
-                  ...(location.pathname === item.path ? s.mobileLinkActive : {}),
-                }}
-              >
+              <Link key={item.path} to={item.path} onClick={() => setMobileOpen(false)} style={{ ...s.mobileLink, ...(location.pathname === item.path ? s.mobileLinkActive : {}) }}>
                 <span>{item.icon}</span> {item.label}
               </Link>
             ))}
-            <button
-              style={s.mobileLogout}
-              onClick={() => { logout(); navigate('/'); setMobileOpen(false); }}
-            >
-              Sign Out
-            </button>
+            <button style={s.mobileLogout} onClick={() => { logout(); navigate('/'); setMobileOpen(false); }}>Sign Out</button>
           </div>
         )}
       </nav>
-      {/* Spacer so content isn't hidden behind fixed nav */}
       <div style={{ height: 52 }} />
     </>
   );
 }
 
 const s = {
-  nav: {
-    position: 'fixed', top: 0, left: 0, right: 0, zIndex: 100,
-    background: 'var(--bg-card, #111)', borderBottom: '1px solid var(--border, #222)',
-    backdropFilter: 'blur(12px)',
-  },
-  inner: {
-    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-    padding: '0 16px', height: 52, maxWidth: 1400, margin: '0 auto',
-  },
-  logo: {
-    display: 'flex', alignItems: 'center', gap: 6,
-    textDecoration: 'none', color: 'var(--text-primary, #fff)',
-  },
+  nav: { position: 'fixed', top: 0, left: 0, right: 0, zIndex: 100, background: 'var(--bg-card, #111)', borderBottom: '1px solid var(--border, #222)', backdropFilter: 'blur(12px)' },
+  inner: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 16px', height: 52, maxWidth: 1400, margin: '0 auto' },
+  logo: { display: 'flex', alignItems: 'center', gap: 6, textDecoration: 'none', color: 'var(--text-primary, #fff)' },
   logoText: { fontWeight: 800, fontSize: 16 },
-  links: {
-    display: 'flex', gap: 2, alignItems: 'center',
-  },
-  link: {
-    display: 'flex', alignItems: 'center', gap: 4,
-    padding: '6px 12px', borderRadius: 8,
-    fontSize: 13, fontWeight: 500, color: 'var(--text-secondary, #999)',
-    textDecoration: 'none', transition: 'all .15s',
-    whiteSpace: 'nowrap',
-  },
-  linkActive: {
-    background: 'rgba(99,102,241,.12)', color: '#6366f1', fontWeight: 700,
-  },
-  right: {
-    display: 'flex', alignItems: 'center', gap: 8,
-  },
-  blCoinBox: {
-    display: 'flex', alignItems: 'center', gap: 4,
-    padding: '4px 10px', borderRadius: 10,
-    background: 'rgba(245,158,11,.1)', textDecoration: 'none',
-    transition: 'all .2s', cursor: 'pointer',
-  },
-  blAmount: {
-    fontSize: 13, fontWeight: 800, color: '#f59e0b',
-  },
-  claimBtnReady: {
-    padding: '4px 10px', borderRadius: 8, border: 'none',
-    background: 'linear-gradient(135deg, #22c55e, #16a34a)',
-    color: '#fff', cursor: 'pointer', fontSize: 11, fontWeight: 700,
-    animation: 'pulse-glow 2s ease-in-out infinite',
-    transition: 'all .2s',
-  },
-  claimTimer: {
-    fontSize: 11, color: 'var(--text-muted, #666)', fontWeight: 600,
-    padding: '4px 8px', borderRadius: 8,
-    background: 'rgba(255,255,255,0.04)',
-  },
-  planBadge: {
-    padding: '3px 10px', borderRadius: 12, fontSize: 10, fontWeight: 800,
-    letterSpacing: '.5px',
-  },
-  logoutBtn: {
-    padding: '5px 12px', borderRadius: 8, border: '1px solid var(--border, #333)',
-    background: 'transparent', color: 'var(--text-secondary, #888)', cursor: 'pointer',
-    fontSize: 12, fontWeight: 600,
-  },
-  hamburger: {
-    display: 'none', background: 'transparent', border: 'none',
-    color: 'var(--text-primary, #fff)', fontSize: 22, cursor: 'pointer',
-    padding: 4,
-  },
-  mobileMenu: {
-    padding: '8px 16px 16px', borderTop: '1px solid var(--border, #222)',
-    background: 'var(--bg-card, #111)',
-  },
-  mobileBLRow: {
-    padding: '10px 12px', marginBottom: 8, borderRadius: 10,
-    background: 'var(--bg-elevated, #1a1a2e)',
-    border: '1px solid rgba(245,158,11,0.15)',
-  },
-  mobileBLBox: {
-    display: 'flex', alignItems: 'center', gap: 8, fontSize: 14, marginBottom: 6,
-  },
-  mobileClaimBtn: {
-    width: '100%', padding: '8px 0', borderRadius: 8, border: 'none',
-    background: 'linear-gradient(135deg, #22c55e, #16a34a)',
-    color: '#fff', cursor: 'pointer', fontSize: 13, fontWeight: 700,
-  },
-  mobileLink: {
-    display: 'block', padding: '10px 12px', borderRadius: 8,
-    fontSize: 14, fontWeight: 500, color: 'var(--text-secondary, #999)',
-    textDecoration: 'none', transition: 'all .15s',
-  },
-  mobileLinkActive: {
-    background: 'rgba(99,102,241,.12)', color: '#6366f1', fontWeight: 700,
-  },
-  mobileLogout: {
-    width: '100%', padding: '10px 12px', borderRadius: 8,
-    border: '1px solid var(--border, #333)', background: 'transparent',
-    color: 'var(--text-secondary, #888)', cursor: 'pointer',
-    fontSize: 14, fontWeight: 600, marginTop: 8, textAlign: 'left',
-  },
+  links: { display: 'flex', gap: 2, alignItems: 'center' },
+  link: { display: 'flex', alignItems: 'center', gap: 4, padding: '6px 12px', borderRadius: 8, fontSize: 13, fontWeight: 500, color: 'var(--text-secondary, #999)', textDecoration: 'none', transition: 'all .15s', whiteSpace: 'nowrap' },
+  linkActive: { background: 'rgba(99,102,241,.12)', color: '#6366f1', fontWeight: 700 },
+  right: { display: 'flex', alignItems: 'center', gap: 8 },
+  blCoinBox: { display: 'flex', alignItems: 'center', gap: 4, padding: '4px 10px', borderRadius: 10, background: 'rgba(245,158,11,.1)', textDecoration: 'none', transition: 'all .2s', cursor: 'pointer' },
+  blAmount: { fontSize: 13, fontWeight: 800, color: '#f59e0b' },
+  claimBtnReady: { padding: '4px 10px', borderRadius: 8, border: 'none', background: 'linear-gradient(135deg, #22c55e, #16a34a)', color: '#fff', cursor: 'pointer', fontSize: 11, fontWeight: 700, transition: 'all .2s' },
+  claimTimer: { fontSize: 11, color: 'var(--text-muted, #666)', fontWeight: 600, padding: '4px 8px', borderRadius: 8, background: 'rgba(255,255,255,0.04)' },
+  planBadge: { padding: '3px 10px', borderRadius: 12, fontSize: 10, fontWeight: 800, letterSpacing: '.5px' },
+  logoutBtn: { padding: '5px 12px', borderRadius: 8, border: '1px solid var(--border, #333)', background: 'transparent', color: 'var(--text-secondary, #888)', cursor: 'pointer', fontSize: 12, fontWeight: 600 },
+  hamburger: { display: 'none', background: 'transparent', border: 'none', color: 'var(--text-primary, #fff)', fontSize: 22, cursor: 'pointer', padding: 4 },
+  mobileMenu: { padding: '8px 16px 16px', borderTop: '1px solid var(--border, #222)', background: 'var(--bg-card, #111)' },
+  mobileBLRow: { padding: '10px 12px', marginBottom: 8, borderRadius: 10, background: 'var(--bg-elevated, #1a1a2e)', border: '1px solid rgba(245,158,11,0.15)' },
+  mobileBLBox: { display: 'flex', alignItems: 'center', gap: 8, fontSize: 14, marginBottom: 6 },
+  mobileClaimBtn: { width: '100%', padding: '8px 0', borderRadius: 8, border: 'none', background: 'linear-gradient(135deg, #22c55e, #16a34a)', color: '#fff', cursor: 'pointer', fontSize: 13, fontWeight: 700 },
+  mobileLink: { display: 'block', padding: '10px 12px', borderRadius: 8, fontSize: 14, fontWeight: 500, color: 'var(--text-secondary, #999)', textDecoration: 'none', transition: 'all .15s' },
+  mobileLinkActive: { background: 'rgba(99,102,241,.12)', color: '#6366f1', fontWeight: 700 },
+  mobileLogout: { width: '100%', padding: '10px 12px', borderRadius: 8, border: '1px solid var(--border, #333)', background: 'transparent', color: 'var(--text-secondary, #888)', cursor: 'pointer', fontSize: 14, fontWeight: 600, marginTop: 8, textAlign: 'left' },
 };
 
-// Responsive CSS + claim button animation
 if (typeof document !== 'undefined') {
   const styleEl = document.getElementById('navbar-responsive') || document.createElement('style');
   styleEl.id = 'navbar-responsive';
@@ -347,10 +217,6 @@ if (typeof document !== 'undefined') {
       [data-nav-links] { display: none !important; }
       [data-nav-right] { display: none !important; }
       [data-nav-hamburger] { display: block !important; }
-    }
-    @keyframes pulse-glow {
-      0%, 100% { box-shadow: 0 0 4px rgba(34,197,94,.3); }
-      50% { box-shadow: 0 0 12px rgba(34,197,94,.6); }
     }
   `;
   if (!document.getElementById('navbar-responsive')) document.head.appendChild(styleEl);
