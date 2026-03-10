@@ -5,14 +5,19 @@ const ANTHROPIC_API_URL = 'https://api.anthropic.com/v1/messages';
 const GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1beta/models';
 
 // ================================================================
-// MODEL CONFIGS
+// MODEL CONFIGS — includes both old keys and new keys
 // ================================================================
 const MODELS = {
   groq: { models: ['llama-3.3-70b-versatile', 'llama3-70b-8192', 'deepseek-r1-distill-llama-70b', 'mixtral-8x7b-32768'], maxOutput: 8192, contextLimit: 30000 },
   'gemini-flash': { model: 'gemini-2.5-flash', maxOutput: 65536, contextLimit: 1000000 },
-  'gemini-pro': { model: 'gemini-3.1-pro-preview', maxOutput: 16384, contextLimit: 1000000 },
+  'gemini-pro': { model: 'gemini-2.5-pro-preview-06-05', maxOutput: 16384, contextLimit: 1000000 },
   haiku: { model: 'claude-haiku-4-5-20251001', maxOutput: 16384, contextLimit: 180000 },
-  sonnet: { model: 'claude-sonnet-4-6', maxOutput: 16384, contextLimit: 200000 },
+  sonnet: { model: 'claude-sonnet-4-6-20260217', maxOutput: 16384, contextLimit: 200000 },
+  // NEW model key aliases (point to same configs)
+  'gemini-2.5-flash': { model: 'gemini-2.5-flash', maxOutput: 65536, contextLimit: 1000000 },
+  'gemini-3.1-pro': { model: 'gemini-2.5-pro-preview-06-05', maxOutput: 16384, contextLimit: 1000000 },
+  'haiku-4.5': { model: 'claude-haiku-4-5-20251001', maxOutput: 16384, contextLimit: 180000 },
+  'sonnet-4.6': { model: 'claude-sonnet-4-6-20260217', maxOutput: 16384, contextLimit: 200000 },
 };
 const GROQ_MAX_OUTPUT = MODELS.groq.maxOutput;
 const GROQ_MODELS = MODELS.groq.models;
@@ -47,16 +52,33 @@ function systemPromptToString(sp) {
 }
 
 // ================================================================
-// UNIFIED: callAI
+// UNIFIED: callAI — supports BOTH old keys and new keys
 // ================================================================
 async function callAI(systemPrompt, userPrompt, model = 'groq', maxTokens, opts = {}) {
   if (opts.signal?.aborted) throw new Error('Generation cancelled');
   switch (model) {
-    case 'gemini-pro': return callGemini(systemPrompt, userPrompt, { model: MODELS['gemini-pro'].model, maxTokens: maxTokens || MODELS['gemini-pro'].maxOutput, label: 'Gemini Pro', onProgress: opts.onProgress, signal: opts.signal });
-    case 'gemini-flash': return callGemini(systemPrompt, userPrompt, { model: MODELS['gemini-flash'].model, maxTokens: maxTokens || MODELS['gemini-flash'].maxOutput, label: 'Gemini Flash', onProgress: opts.onProgress, signal: opts.signal });
-    case 'haiku': return callClaude(systemPrompt, userPrompt, { model: MODELS.haiku.model, maxTokens: maxTokens || MODELS.haiku.maxOutput, label: 'Haiku 4.5', onProgress: opts.onProgress, signal: opts.signal });
-    case 'sonnet': return callClaude(systemPrompt, userPrompt, { model: MODELS.sonnet.model, maxTokens: maxTokens || MODELS.sonnet.maxOutput, label: 'Sonnet 4.6', onProgress: opts.onProgress, signal: opts.signal });
-    case 'groq': default: return callGroq(systemPrompt, userPrompt, { maxTokens: maxTokens || GROQ_MAX_OUTPUT, onProgress: opts.onProgress, signal: opts.signal });
+    // ── Gemini models (old + new keys) ──
+    case 'gemini-pro':
+    case 'gemini-3.1-pro':
+      return callGemini(systemPrompt, userPrompt, { model: MODELS['gemini-3.1-pro'].model, maxTokens: maxTokens || MODELS['gemini-3.1-pro'].maxOutput, label: 'Gemini 3.1 Pro', onProgress: opts.onProgress, signal: opts.signal });
+
+    case 'gemini-flash':
+    case 'gemini-2.5-flash':
+      return callGemini(systemPrompt, userPrompt, { model: MODELS['gemini-2.5-flash'].model, maxTokens: maxTokens || MODELS['gemini-2.5-flash'].maxOutput, label: 'Gemini 2.5 Flash', onProgress: opts.onProgress, signal: opts.signal });
+
+    // ── Claude models (old + new keys) ──
+    case 'haiku':
+    case 'haiku-4.5':
+      return callClaude(systemPrompt, userPrompt, { model: MODELS['haiku-4.5'].model, maxTokens: maxTokens || MODELS['haiku-4.5'].maxOutput, label: 'Haiku 4.5', onProgress: opts.onProgress, signal: opts.signal });
+
+    case 'sonnet':
+    case 'sonnet-4.6':
+      return callClaude(systemPrompt, userPrompt, { model: MODELS['sonnet-4.6'].model, maxTokens: maxTokens || MODELS['sonnet-4.6'].maxOutput, label: 'Sonnet 4.6', onProgress: opts.onProgress, signal: opts.signal });
+
+    // ── Groq (default) ──
+    case 'groq':
+    default:
+      return callGroq(systemPrompt, userPrompt, { maxTokens: maxTokens || GROQ_MAX_OUTPUT, onProgress: opts.onProgress, signal: opts.signal });
   }
 }
 
@@ -64,9 +86,9 @@ async function callAI(systemPrompt, userPrompt, model = 'groq', maxTokens, opts 
 // Call Gemini (Flash or Pro)
 // ================================================================
 async function callGemini(systemPrompt, userPrompt, options = {}) {
-  const apiKey = process.env.GEMINI_API_KEY;
+  const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_AI_API_KEY;
   if (!apiKey) { console.warn('[Gemini] No GEMINI_API_KEY — fallback to Groq'); return callGroq(systemPrompt, userPrompt, { maxTokens: GROQ_MAX_OUTPUT, onProgress: options.onProgress, signal: options.signal }); }
-  const modelId = options.model || MODELS['gemini-flash'].model;
+  const modelId = options.model || MODELS['gemini-2.5-flash'].model;
   const maxTokens = options.maxTokens || 65536;
   const label = options.label || 'Gemini';
   const onProgress = options.onProgress;
@@ -105,7 +127,7 @@ async function callGemini(systemPrompt, userPrompt, options = {}) {
 async function callClaude(systemPrompt, userPrompt, options = {}) {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) { console.warn('[Claude] No ANTHROPIC_API_KEY — fallback to Groq'); return callGroq(systemPrompt, userPrompt, { maxTokens: GROQ_MAX_OUTPUT, onProgress: options.onProgress, signal: options.signal }); }
-  const modelId = options.model || MODELS.haiku.model;
+  const modelId = options.model || MODELS['haiku-4.5'].model;
   const maxTokens = options.maxTokens || 16384;
   const label = options.label || 'Claude';
   const onProgress = options.onProgress;
@@ -140,7 +162,7 @@ async function callClaudeWithImages(systemPrompt, userPrompt, images = [], optio
   try {
     const blocks = images.map(img => ({ type: 'image', source: { type: 'base64', media_type: img.mimeType || 'image/png', data: img.base64 } }));
     blocks.push({ type: 'text', text: userPrompt });
-    const r = await axios.post(ANTHROPIC_API_URL, { model: options.model || MODELS.haiku.model, max_tokens: options.maxTokens || 16384, system: [{ type: 'text', text: systemPromptToString(systemPrompt), cache_control: { type: 'ephemeral' } }], messages: [{ role: 'user', content: blocks }] }, { headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'Content-Type': 'application/json' }, timeout: 120000 });
+    const r = await axios.post(ANTHROPIC_API_URL, { model: options.model || MODELS['haiku-4.5'].model, max_tokens: options.maxTokens || 16384, system: [{ type: 'text', text: systemPromptToString(systemPrompt), cache_control: { type: 'ephemeral' } }], messages: [{ role: 'user', content: blocks }] }, { headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'Content-Type': 'application/json' }, timeout: 120000 });
     return extractClaudeText(r.data);
   } catch (err) { console.error(`[Claude+Image] X ${err.response?.data?.error?.message || err.message}`); return null; }
 }
@@ -245,13 +267,32 @@ function parseFilesFromResponse(response) {
 function dedup(files) { const seen = new Map(); for (const f of files) { if (!seen.has(f.name) || f.content.length > seen.get(f.name).content.length) seen.set(f.name, f); } return Array.from(seen.values()); }
 
 async function verifyAIStatus() {
-  const result = { groq: { available: false, models: [], error: null }, 'gemini-flash': { available: false, error: null }, 'gemini-pro': { available: false, error: null }, haiku: { available: false, error: null }, sonnet: { available: false, error: null } };
+  const result = {
+    groq: { available: false, models: [], error: null },
+    'gemini-2.5-flash': { available: false, error: null },
+    'gemini-3.1-pro': { available: false, error: null },
+    'haiku-4.5': { available: false, error: null },
+    'sonnet-4.6': { available: false, error: null },
+    // Legacy aliases
+    'gemini-flash': { available: false, error: null },
+    'gemini-pro': { available: false, error: null },
+    'haiku': { available: false, error: null },
+    'sonnet': { available: false, error: null },
+  };
   const gKey = process.env.GROQ_API_KEY;
   if (gKey) { for (const model of GROQ_MODELS.slice(0, 2)) { try { await axios.post(GROQ_API_URL, { model, messages: [{ role: 'user', content: 'OK' }], max_tokens: 5 }, { headers: { 'Authorization': `Bearer ${gKey}` }, timeout: 10000 }); result.groq.available = true; result.groq.models.push(model); } catch {} } if (!result.groq.available) result.groq.error = 'All Groq models failed'; } else { result.groq.error = 'GROQ_API_KEY not set'; }
-  const gemKey = process.env.GEMINI_API_KEY;
-  if (gemKey) { for (const [k, cfg] of [['gemini-flash', MODELS['gemini-flash']], ['gemini-pro', MODELS['gemini-pro']]]) { try { const r = await axios.post(`${GEMINI_API_URL}/${cfg.model}:generateContent?key=${gemKey}`, { contents: [{ role: 'user', parts: [{ text: 'OK' }] }], generationConfig: { maxOutputTokens: 5 } }, { headers: { 'Content-Type': 'application/json' }, timeout: 15000 }); if (r.data?.candidates?.[0]) result[k].available = true; } catch (err) { result[k].error = err.response?.data?.error?.message || err.message; } } } else { result['gemini-flash'].error = result['gemini-pro'].error = 'GEMINI_API_KEY not set'; }
+  const gemKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_AI_API_KEY;
+  if (gemKey) {
+    for (const [newKey, oldKey, cfg] of [['gemini-2.5-flash', 'gemini-flash', MODELS['gemini-2.5-flash']], ['gemini-3.1-pro', 'gemini-pro', MODELS['gemini-3.1-pro']]]) {
+      try { const r = await axios.post(`${GEMINI_API_URL}/${cfg.model}:generateContent?key=${gemKey}`, { contents: [{ role: 'user', parts: [{ text: 'OK' }] }], generationConfig: { maxOutputTokens: 5 } }, { headers: { 'Content-Type': 'application/json' }, timeout: 15000 }); if (r.data?.candidates?.[0]) { result[newKey].available = true; result[oldKey].available = true; } } catch (err) { result[newKey].error = err.response?.data?.error?.message || err.message; result[oldKey].error = result[newKey].error; }
+    }
+  } else { result['gemini-2.5-flash'].error = result['gemini-3.1-pro'].error = result['gemini-flash'].error = result['gemini-pro'].error = 'GEMINI_API_KEY not set'; }
   const aKey = process.env.ANTHROPIC_API_KEY;
-  if (aKey) { for (const [k, cfg] of [['haiku', MODELS.haiku], ['sonnet', MODELS.sonnet]]) { try { const r = await axios.post(ANTHROPIC_API_URL, { model: cfg.model, max_tokens: 10, messages: [{ role: 'user', content: 'OK' }] }, { headers: { 'x-api-key': aKey, 'anthropic-version': '2023-06-01', 'Content-Type': 'application/json' }, timeout: 15000 }); if (r.data.content?.[0]?.text) result[k].available = true; } catch (err) { result[k].error = err.response?.data?.error?.message || err.message; } } } else { result.haiku.error = result.sonnet.error = 'ANTHROPIC_API_KEY not set'; }
+  if (aKey) {
+    for (const [newKey, oldKey, cfg] of [['haiku-4.5', 'haiku', MODELS['haiku-4.5']], ['sonnet-4.6', 'sonnet', MODELS['sonnet-4.6']]]) {
+      try { const r = await axios.post(ANTHROPIC_API_URL, { model: cfg.model, max_tokens: 10, messages: [{ role: 'user', content: 'OK' }] }, { headers: { 'x-api-key': aKey, 'anthropic-version': '2023-06-01', 'Content-Type': 'application/json' }, timeout: 15000 }); if (r.data.content?.[0]?.text) { result[newKey].available = true; result[oldKey].available = true; } } catch (err) { result[newKey].error = err.response?.data?.error?.message || err.message; result[oldKey].error = result[newKey].error; }
+    }
+  } else { result['haiku-4.5'].error = result['sonnet-4.6'].error = result.haiku.error = result.sonnet.error = 'ANTHROPIC_API_KEY not set'; }
   return result;
 }
 
