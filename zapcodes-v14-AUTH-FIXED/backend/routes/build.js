@@ -5,23 +5,71 @@ const { callAI, parseFilesFromResponse, generateProjectMultiStep, verifyAndFix }
 const User = require('../models/User');
 const axios = require('axios');
 
-// ══════════ BL COIN COSTS PER MODEL ══════════
+// ══════════ BL COIN COSTS — Now imported from config (single source of truth) ══════════
+const { BL_COIN_COSTS } = require('../config/blCoins');
+
+// Unified cost lookup that works with both old and new model keys
 const BL_COSTS = {
-  generation: { 'gemini-pro': 25000, 'gemini-flash': 10000, haiku: 10000, sonnet: 50000, groq: 5000 },
-  codeFix:    { 'gemini-pro': 25000, 'gemini-flash': 10000, haiku: 10000, sonnet: 50000, groq: 5000 },
-  githubPush: 2000,
-  pwaBuild:   20000,
-  badgeRemoval: 100000,
+  generation: {
+    'sonnet-4.6': BL_COIN_COSTS.generation['sonnet-4.6'],
+    'gemini-3.1-pro': BL_COIN_COSTS.generation['gemini-3.1-pro'],
+    'haiku-4.5': BL_COIN_COSTS.generation['haiku-4.5'],
+    'gemini-2.5-flash': BL_COIN_COSTS.generation['gemini-2.5-flash'],
+    'groq': BL_COIN_COSTS.generation['groq'],
+    // Legacy aliases (so old frontend calls still work during migration)
+    'gemini-pro': BL_COIN_COSTS.generation['gemini-3.1-pro'],
+    'gemini-flash': BL_COIN_COSTS.generation['gemini-2.5-flash'],
+    'haiku': BL_COIN_COSTS.generation['haiku-4.5'],
+    'sonnet': BL_COIN_COSTS.generation['sonnet-4.6'],
+  },
+  codeFix: {
+    'sonnet-4.6': BL_COIN_COSTS.code_fix['sonnet-4.6'],
+    'gemini-3.1-pro': BL_COIN_COSTS.code_fix['gemini-3.1-pro'],
+    'haiku-4.5': BL_COIN_COSTS.code_fix['haiku-4.5'],
+    'gemini-2.5-flash': BL_COIN_COSTS.code_fix['gemini-2.5-flash'],
+    'groq': BL_COIN_COSTS.code_fix['groq'],
+    'gemini-pro': BL_COIN_COSTS.code_fix['gemini-3.1-pro'],
+    'gemini-flash': BL_COIN_COSTS.code_fix['gemini-2.5-flash'],
+    'haiku': BL_COIN_COSTS.code_fix['haiku-4.5'],
+    'sonnet': BL_COIN_COSTS.code_fix['sonnet-4.6'],
+  },
+  githubPush: BL_COIN_COSTS.github_push,
+  pwaBuild: 20000,
+  badgeRemoval: BL_COIN_COSTS.badge_removal,
   deploy: 0,
 };
 
+// ══════════ MODEL DISPLAY NAMES — Updated with new model keys ══════════
 const MODEL_DISPLAY = {
-  'gemini-pro': 'Gemini Pro',
-  'gemini-flash': 'Gemini Flash',
-  haiku: 'Claude Haiku 4.5',
-  sonnet: 'Claude Sonnet 4.6',
-  groq: 'Groq AI',
+  'gemini-3.1-pro': 'Gemini 3.1 Pro',
+  'gemini-2.5-flash': 'Gemini 2.5 Flash',
+  'haiku-4.5': 'Haiku 4.5',
+  'sonnet-4.6': 'Sonnet 4.6',
+  'groq': 'Groq AI',
+  // Legacy aliases
+  'gemini-pro': 'Gemini 3.1 Pro',
+  'gemini-flash': 'Gemini 2.5 Flash',
+  'haiku': 'Haiku 4.5',
+  'sonnet': 'Sonnet 4.6',
 };
+
+// ══════════ Map old model keys → new model keys ══════════
+const NORMALIZE_MODEL_KEY = {
+  'gemini-pro': 'gemini-3.1-pro',
+  'gemini-flash': 'gemini-2.5-flash',
+  'haiku': 'haiku-4.5',
+  'sonnet': 'sonnet-4.6',
+  'groq': 'groq',
+  // New keys pass through
+  'gemini-3.1-pro': 'gemini-3.1-pro',
+  'gemini-2.5-flash': 'gemini-2.5-flash',
+  'haiku-4.5': 'haiku-4.5',
+  'sonnet-4.6': 'sonnet-4.6',
+};
+
+function normalizeModelKey(key) {
+  return NORMALIZE_MODEL_KEY[key] || key;
+}
 
 const RESERVED = ['www', 'api', 'app', 'admin', 'mail', 'ftp', 'cdn', 'dev', 'staging', 'test', 'blog', 'docs', 'status', 'support', 'help', 'zapcodes', 'blendlink'];
 
@@ -77,37 +125,46 @@ You are ZapCodes AI — an expert code debugger. Fix code to be fully functional
 
 const CLONE_PROMPT = `Analyze the website and return JSON: {"title":"...","type":"...","sections":[...],"colors":{"primary":"#hex","secondary":"#hex","bg":"#hex","text":"#hex"},"fonts":"...","features":[...],"layout":"...","content":"..."}`;
 
-// ══════════ SMART MODEL SELECTION WITH MONTHLY LIMITS + FALLBACK ══════════
+// ══════════ SMART MODEL SELECTION — Updated for new 5-model system ══════════
 function getEffectiveModel(user, requestedModel) {
-  // Admin: can use any model including sonnet
+  // Admin: can use any model
   if (user.role === 'super-admin') {
-    if (requestedModel === 'sonnet') return 'sonnet';
-    return requestedModel || 'gemini-pro';
+    if (requestedModel) return normalizeModelKey(requestedModel);
+    return 'gemini-3.1-pro';
   }
 
-  const tier = user.subscription_tier;
-  const mu = user.getMonthlyUsage();
   const config = user.getTierConfig();
-
-  // Get the fallback chain for this tier
   const chain = config.modelChain || ['groq'];
 
-  // If user requested a specific model, check if it's in their chain and has quota
-  if (requestedModel && requestedModel !== 'auto') {
-    const idx = chain.indexOf(requestedModel);
-    if (idx >= 0) {
-      const limit = config.monthlyLimits?.[requestedModel];
-      const used = mu[`${requestedModel.replace('-', '_')}_gens`] || 0;
-      if (limit === Infinity || used < limit) return requestedModel;
+  // Normalize the requested model key (handle old frontend sending 'gemini-flash' etc.)
+  const normalized = requestedModel ? normalizeModelKey(requestedModel) : null;
+
+  // If user requested a specific model, check if it's available
+  if (normalized && normalized !== 'auto') {
+    if (chain.includes(normalized)) {
+      const limit = config.monthlyLimits?.[normalized];
+
+      // Check if it's a one-time trial model
+      if (config.trialModels && config.trialModels.includes(normalized)) {
+        if (!user.isTrialExhausted(normalized, limit)) return normalized;
+      } else {
+        // Monthly limit check
+        const used = user.getModelUsageCount(normalized);
+        if (limit === Infinity || used < limit) return normalized;
+      }
     }
   }
 
   // Auto-select: walk the chain and pick first available model
   for (const model of chain) {
     const limit = config.monthlyLimits?.[model];
-    const fieldName = `${model.replace('-', '_')}_gens`;
-    const used = mu[fieldName] || 0;
-    if (limit === Infinity || used < limit) return model;
+
+    if (config.trialModels && config.trialModels.includes(model)) {
+      if (!user.isTrialExhausted(model, limit)) return model;
+    } else {
+      const used = user.getModelUsageCount(model);
+      if (limit === Infinity || used < limit) return model;
+    }
   }
 
   // Everything exhausted
@@ -115,7 +172,7 @@ function getEffectiveModel(user, requestedModel) {
 }
 
 function getModelDisplayName(model) {
-  return MODEL_DISPLAY[model] || model;
+  return MODEL_DISPLAY[model] || MODEL_DISPLAY[normalizeModelKey(model)] || model;
 }
 
 // ══════════ HELPERS ══════════
@@ -146,35 +203,73 @@ const BADGE_SCRIPT = `<div id="zc-badge" style="position:fixed;bottom:10px;right
 // ══════════ GET /api/build/costs ══════════
 router.get('/costs', (req, res) => res.json({ costs: BL_COSTS }));
 
-// ══════════ GET /api/build/available-models ══════════
+// ══════════ GET /api/build/available-models — Updated for 5 AI models ══════════
 router.get('/available-models', auth, (req, res) => {
   const tier = req.user.subscription_tier;
   const config = req.user.getTierConfig();
-  const mu = req.user.getMonthlyUsage();
   const chain = config.modelChain || ['groq'];
   const isAdmin = req.user.role === 'super-admin';
 
   const models = chain.map(m => {
     const limit = config.monthlyLimits?.[m];
-    const fieldName = `${m.replace('-', '_')}_gens`;
-    const used = mu[fieldName] || 0;
+    const isTrial = config.trialModels && config.trialModels.includes(m);
+    let used = 0;
+
+    if (isTrial) {
+      used = (req.user.trials_used && req.user.trials_used[m]) || 0;
+    } else {
+      used = req.user.getModelUsageCount(m);
+    }
+
     return {
       id: m,
       name: getModelDisplayName(m),
       cost: BL_COSTS.generation[m] || 5000,
       monthlyLimit: limit === Infinity ? 'Unlimited' : limit,
       monthlyUsed: used,
-      available: limit === Infinity || used < limit,
+      available: isTrial ? !req.user.isTrialExhausted(m, limit) : (limit === Infinity || used < limit),
       primary: chain.indexOf(m) === 0,
+      type: isTrial ? 'one_time_trial' : 'monthly',
     };
   });
 
-  // Admin gets sonnet too
+  // Admin gets all models if not already in chain
   if (isAdmin) {
-    models.unshift({ id: 'sonnet', name: 'Claude Sonnet 4.6 (Admin)', cost: BL_COSTS.generation.sonnet, monthlyLimit: 'Unlimited', monthlyUsed: 0, available: true, primary: false });
+    const allModels = ['sonnet-4.6', 'gemini-3.1-pro', 'gemini-2.5-flash', 'haiku-4.5', 'groq'];
+    for (const m of allModels) {
+      if (!chain.includes(m)) {
+        models.push({
+          id: m,
+          name: getModelDisplayName(m) + ' (Admin)',
+          cost: BL_COSTS.generation[m] || 5000,
+          monthlyLimit: 'Unlimited',
+          monthlyUsed: 0,
+          available: true,
+          primary: false,
+          type: 'unlimited',
+        });
+      }
+    }
   }
 
-  res.json({ models, plan: tier, subscription_tier: tier, monthlyUsage: mu });
+  // Also include list of ALL models with availability status for the UI
+  const allModelsList = ['sonnet-4.6', 'gemini-3.1-pro', 'gemini-2.5-flash', 'haiku-4.5', 'groq'];
+  const allModelsInfo = allModelsList.map(m => ({
+    id: m,
+    name: getModelDisplayName(m),
+    cost: BL_COSTS.generation[m] || 5000,
+    available: chain.includes(m) || isAdmin,
+    tier_required: !chain.includes(m),
+  }));
+
+  res.json({
+    models,
+    allModels: allModelsInfo,
+    plan: tier,
+    subscription_tier: tier,
+    monthlyUsage: req.user.getMonthlyUsage(),
+    bl_coins: req.user.bl_coins || 0,
+  });
 });
 
 // ══════════ POST /api/build/generate-with-progress (SSE) ══════════
@@ -197,7 +292,7 @@ router.post('/generate-with-progress', auth, async (req, res) => {
 
     sendProgress('validating', 'Validating your request and checking limits...');
 
-    // Select model with fallback chain
+    // Select model with fallback chain (handles both old and new model keys)
     const model = getEffectiveModel(user, requestedModel);
     if (!model) {
       sendProgress('error', 'All AI model limits reached for this month. Upgrade your plan for more generations.');
@@ -220,9 +315,15 @@ router.post('/generate-with-progress', auth, async (req, res) => {
       return res.end();
     }
 
-    // Deduct coins + track monthly usage
+    // Deduct coins + track usage (uses User model's built-in methods)
     user.spendCoins(cost, 'generation', `Website generation (${getModelDisplayName(model)})`, model);
     user.incrementMonthlyUsage(model, 'generation');
+
+    // If one-time trial model, also track trial usage
+    if (config.trialModels && config.trialModels.includes(model)) {
+      user.incrementTrial(model);
+    }
+
     await user.save();
 
     sendProgress('analyzing', 'Analyzing your prompt...', { model, cost, sessionId });
@@ -236,7 +337,7 @@ router.post('/generate-with-progress', auth, async (req, res) => {
     }
 
     const modelLabel = getModelDisplayName(model);
-    const speed = model.includes('gemini') ? '~30-60s' : model === 'haiku' ? '~1-2 min' : model === 'sonnet' ? '~1-2 min' : '~15-30s';
+    const speed = model.includes('gemini') ? '~30-60s' : model.includes('haiku') ? '~1-2 min' : model.includes('sonnet') ? '~1-2 min' : '~15-30s';
     sendProgress('connecting', `Connecting to ${modelLabel}... (${speed})`);
 
     keepaliveInterval = setInterval(() => {
@@ -323,6 +424,7 @@ router.post('/generate', auth, async (req, res) => {
     if (user.role !== 'super-admin' && user.bl_coins < cost) return res.status(402).json({ error: 'Insufficient BL coins', required: cost, balance: user.bl_coins });
     user.spendCoins(cost, 'generation', `Website generation (${getModelDisplayName(model)})`, model);
     user.incrementMonthlyUsage(model, 'generation');
+    if (config.trialModels && config.trialModels.includes(model)) user.incrementTrial(model);
     await user.save();
     let files;
     if (template && template !== 'custom') { files = await generateProjectMultiStep(template, projectName || 'My Project', description || prompt, colorScheme, features, model); }
@@ -393,18 +495,31 @@ router.post('/deploy', auth, async (req, res) => {
   } catch (err) { res.status(500).json({ error: 'Deploy failed' }); }
 });
 
-// ══════════ Code Fix ══════════
+// ══════════ Code Fix — Updated for new model keys ══════════
 router.post('/code-fix', auth, async (req, res) => {
   try {
     const user = req.user; const { files, description, model: requestedModel } = req.body;
     const config = user.getTierConfig(); const mu = user.getMonthlyUsage();
-    if (config.monthlyFixCap !== Infinity && (mu.code_fixes || 0) >= config.monthlyFixCap) return res.status(403).json({ error: 'Monthly code fix limit reached', upgrade: true });
+
+    // Check fix limit
+    if (config.monthlyFixCap !== Infinity) {
+      if (config.monthlyFixType === 'one_time_trial') {
+        const trialUsed = (user.trials_used && user.trials_used['fixes']) || 0;
+        if (trialUsed >= config.monthlyFixCap) return res.status(403).json({ error: 'Your one-time trial fix has been used. Upgrade for more.', upgrade: true });
+      } else if ((mu.code_fixes || 0) >= config.monthlyFixCap) {
+        return res.status(403).json({ error: 'Monthly code fix limit reached', upgrade: true });
+      }
+    }
+
     const model = getEffectiveModel(user, requestedModel) || 'groq';
     const cost = BL_COSTS.codeFix[model] || 5000;
     if (user.role !== 'super-admin' && user.bl_coins < cost) return res.status(402).json({ error: 'Insufficient BL coins' });
+
     user.spendCoins(cost, 'code_fix', `Code fix (${getModelDisplayName(model)})`, model);
     user.incrementMonthlyUsage(model, 'code_fix');
+    if (config.monthlyFixType === 'one_time_trial') user.incrementTrial('fixes');
     await user.save();
+
     const fileContent = (files || []).map(f => `--- ${f.name} ---\n${f.content}`).join('\n\n');
     const result = await callAI(FIX_PROMPT, `Fix:\n\n${fileContent}\n\nIssue: ${description || 'Fix all bugs'}`, model);
     const fixedFiles = result ? parseFilesFromResponse(result) : [];
@@ -414,18 +529,31 @@ router.post('/code-fix', auth, async (req, res) => {
   } catch (err) { res.status(500).json({ error: 'Fix failed' }); }
 });
 
-// ══════════ GitHub Push ══════════
+// ══════════ GitHub Push — Updated for new model keys ══════════
 router.post('/github-push', auth, async (req, res) => {
   try {
     const user = req.user; const config = user.getTierConfig(); const mu = user.getMonthlyUsage();
-    if (config.monthlyPushCap !== Infinity && (mu.github_pushes || 0) >= config.monthlyPushCap) return res.status(403).json({ error: 'Monthly push limit reached' });
+
+    // Check push limit
+    if (config.monthlyPushCap !== Infinity) {
+      if (config.monthlyPushType === 'one_time_trial') {
+        const trialUsed = (user.trials_used && user.trials_used['github_pushes']) || 0;
+        if (trialUsed >= config.monthlyPushCap) return res.status(403).json({ error: 'Your one-time trial GitHub push has been used. Upgrade for more.' });
+      } else if ((mu.github_pushes || 0) >= config.monthlyPushCap) {
+        return res.status(403).json({ error: 'Monthly push limit reached' });
+      }
+    }
+
     if (user.role !== 'super-admin' && user.bl_coins < BL_COSTS.githubPush) return res.status(402).json({ error: 'Insufficient BL coins' });
     const { files, repoName, message } = req.body;
     const token = user.githubToken;
     if (!token) return res.status(400).json({ error: 'Connect GitHub in Settings' });
+
     user.spendCoins(BL_COSTS.githubPush, 'github_push', 'GitHub push');
-    user.incrementMonthlyUsage('github', 'push');
+    user.incrementMonthlyUsage(null, 'push');
+    if (config.monthlyPushType === 'one_time_trial') user.incrementTrial('github_pushes');
     await user.save();
+
     const ghUser = await axios.get('https://api.github.com/user', { headers: { Authorization: `Bearer ${token}` } });
     const owner = ghUser.data.login;
     let repo;
@@ -483,6 +611,8 @@ router.post('/clone-rebuild', auth, async (req, res) => {
     if (user.role !== 'super-admin' && user.bl_coins < cost) return res.status(402).json({ error: 'Insufficient BL coins' });
     user.spendCoins(cost, 'generation', `Clone rebuild (${getModelDisplayName(model)})`, model);
     user.incrementMonthlyUsage(model, 'generation');
+    const config = user.getTierConfig();
+    if (config.trialModels && config.trialModels.includes(model)) user.incrementTrial(model);
     await user.save();
     const prompt = `Rebuild this website:\n${JSON.stringify(req.body.analysis)}\n\nModifications: ${req.body.modifications || 'Keep faithful to original'}`;
     const result = await callAI(GEN_PROMPT, prompt, model);
