@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { auth } = require('../middleware/auth');
-const { callAI, callClaude } = require('../services/ai');
+const { callAI } = require('../services/ai');
 const User = require('../models/User');
 
 // ══════════════════════════════════════════════════════════════
@@ -181,22 +181,12 @@ router.post('/chat', auth, async (req, res) => {
     }
 
     // ── Call AI with fallback ──
-    // Opus 4.6 is admin-only and not in callAI() — needs direct callClaude
-    async function callHelpModel(model, sys, prompt) {
-      if (model === 'opus-4.6') {
-        return await callClaude(sys, prompt, {
-          model: 'claude-opus-4-0-20250514', maxTokens: 4096,
-          label: 'Opus 4.6', noFallback: true,
-        });
-      }
-      return await callAI(sys, prompt, model, 4096);
-    }
-
+    // callAI now routes all models including opus-4.6 with correct model ID
     let response = null;
     let usedModel = primaryModel;
 
     try {
-      response = await callHelpModel(primaryModel, systemPrompt, contextPrompt);
+      response = await callAI(systemPrompt, contextPrompt, primaryModel, 4096);
     } catch (err) {
       console.error(`[HelpAI] Primary ${primaryModel} failed: ${err.message}`);
     }
@@ -205,7 +195,7 @@ router.post('/chat', auth, async (req, res) => {
       usedModel = fallbackModel;
       console.log(`[HelpAI] Falling back ${primaryModel} → ${fallbackModel}`);
       try {
-        response = await callHelpModel(fallbackModel, systemPrompt, contextPrompt);
+        response = await callAI(systemPrompt, contextPrompt, fallbackModel, 4096);
       } catch (err) {
         console.error(`[HelpAI] Fallback ${fallbackModel} also failed: ${err.message}`);
       }
