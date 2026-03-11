@@ -216,13 +216,8 @@ export default function Build() {
   ) : null;
 
   // ── Deploy Bar (shared) ──
-  const DeployBar = () => preview ? (
-    <div style={{ padding: '12px 16px', borderTop: '1px solid var(--border)', background: 'var(--bg-card)', display: 'flex', gap: 8, alignItems: 'center', flexWrap: isMobile ? 'wrap' : 'nowrap' }}>
-      <input style={{ flex: 1, minWidth: isMobile ? '100%' : 'auto', padding: '8px 12px', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg-elevated)', color: 'var(--text-primary)', fontSize: 13, boxSizing: 'border-box' }} placeholder="subdomain" value={subdomain} onChange={e => setSubdomain(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, ''))} />
-      {!isMobile && <span style={{ color: 'var(--text-muted)', fontSize: 13 }}>.zapcodes.net</span>}
-      <button style={{ padding: '10px 20px', borderRadius: 8, border: 'none', cursor: deploying ? 'not-allowed' : 'pointer', fontWeight: 700, fontSize: 13, background: deploying ? 'var(--bg-elevated)' : '#22c55e', color: '#fff', opacity: deploying ? .5 : 1, width: isMobile ? '100%' : 'auto' }} onClick={handleDeploy} disabled={deploying}>{deploying ? 'Deploying...' : '🚀 Deploy to .zapcodes.net'}</button>
-    </div>
-  ) : null;
+  // Deploy bar JSX is inlined directly where used (not as a component)
+  // This prevents React from unmounting/remounting the input on every render
 
   // ── MOBILE LAYOUT ──
   if (isMobile) {
@@ -340,7 +335,10 @@ export default function Build() {
             {preview ? (
               <>
                 <iframe ref={iframeRef} srcDoc={preview} style={{ flex: 1, width: '100%', border: 'none', background: '#fff' }} title="Preview" sandbox="allow-scripts allow-same-origin" />
-                <DeployBar />
+                <div style={{ padding: '12px 16px', borderTop: '1px solid var(--border)', background: 'var(--bg-card)', display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                  <input style={{ flex: 1, minWidth: '100%', padding: '10px 12px', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg-elevated)', color: 'var(--text-primary)', fontSize: 14, boxSizing: 'border-box' }} placeholder="Enter subdomain (.zapcodes.net)" value={subdomain} onChange={e => setSubdomain(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, ''))} />
+                  <button style={{ padding: '12px 20px', borderRadius: 8, border: 'none', cursor: deploying ? 'not-allowed' : 'pointer', fontWeight: 700, fontSize: 14, background: deploying ? 'var(--bg-elevated)' : '#22c55e', color: '#fff', opacity: deploying ? .5 : 1, width: '100%' }} onClick={handleDeploy} disabled={deploying}>{deploying ? 'Deploying...' : '🚀 Deploy to .zapcodes.net'}</button>
+                </div>
                 {deployUrl && <div style={{ padding: '8px 12px', background: 'rgba(34,197,94,.1)', fontSize: 12 }}>✅ Live at <a href={deployUrl} target="_blank" rel="noreferrer" style={{ color: '#22c55e', fontWeight: 600 }}>{deployUrl}</a></div>}
                 <button style={{ padding: '10px', borderTop: '1px solid var(--border)', background: 'var(--bg-card)', color: 'var(--text-secondary)', fontSize: 13, fontWeight: 600, border: 'none', cursor: 'pointer' }} onClick={() => setMobileView('build')}>← Back to Builder</button>
               </>
@@ -495,7 +493,11 @@ export default function Build() {
           {preview ? (
             <>
               <iframe ref={iframeRef} srcDoc={preview} style={s.iframe} title="Preview" sandbox="allow-scripts allow-same-origin" />
-              <DeployBar />
+              <div style={{ padding: '12px 16px', borderTop: '1px solid var(--border)', background: 'var(--bg-card)', display: 'flex', gap: 8, alignItems: 'center' }}>
+                <input style={{ flex: 1, padding: '8px 12px', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg-elevated)', color: 'var(--text-primary)', fontSize: 13 }} placeholder="subdomain" value={subdomain} onChange={e => setSubdomain(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, ''))} />
+                <span style={{ color: 'var(--text-muted)', fontSize: 13 }}>.zapcodes.net</span>
+                <button style={{ padding: '8px 20px', borderRadius: 8, border: 'none', cursor: deploying ? 'not-allowed' : 'pointer', fontWeight: 700, fontSize: 13, background: deploying ? 'var(--bg-elevated)' : '#22c55e', color: '#fff', opacity: deploying ? .5 : 1 }} onClick={handleDeploy} disabled={deploying}>{deploying ? 'Deploying...' : '🚀 Deploy (Free)'}</button>
+              </div>
               {deployUrl && <div style={{ padding: '8px 16px', background: 'rgba(34,197,94,.1)', fontSize: 13 }}>✅ Live at <a href={deployUrl} target="_blank" rel="noreferrer" style={{ color: '#22c55e', fontWeight: 600 }}>{deployUrl}</a></div>}
             </>
           ) : (
