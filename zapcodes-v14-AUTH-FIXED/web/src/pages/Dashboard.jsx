@@ -31,21 +31,24 @@ export default function Dashboard() {
   const [usageData, setUsageData] = useState(null);
   const [transactions, setTransactions] = useState([]);
   const [sites, setSites] = useState([]);
+  const [projects, setProjects] = useState([]);
   const [countdown, setCountdown] = useState(0);
   const [claiming, setClaiming] = useState(false);
   const [loading, setLoading] = useState(true);
 
   const fetchData = useCallback(async () => {
     try {
-      const [balRes, txRes, siteRes] = await Promise.all([
+      const [balRes, txRes, siteRes, projRes] = await Promise.all([
         api.get('/api/coins/balance'),
         api.get('/api/coins/transactions'),
         api.get('/api/build/sites'),
+        api.get('/api/build/projects'),
       ]);
       setCoinData(balRes.data);
       setCountdown(balRes.data.nextClaimIn || 0);
       setTransactions(txRes.data.transactions || []);
       setSites(siteRes.data.sites || []);
+      setProjects(projRes.data.projects || []);
     } catch (err) { console.error('Dashboard fetch error:', err); }
     finally { setLoading(false); }
   }, []);
@@ -72,10 +75,31 @@ export default function Dashboard() {
   };
 
   const handleDeleteSite = async (subdomain) => {
-    if (!confirm(`Delete ${subdomain}.zapcodes.net?`)) return;
+    if (!confirm(`Permanently delete ${subdomain}.zapcodes.net AND its saved project? This frees the subdomain for others.`)) return;
     try {
       await api.delete(`/api/build/site/${subdomain}`);
       setSites(s => s.filter(site => site.subdomain !== subdomain));
+      setProjects(p => p.filter(proj => proj.linkedSubdomain !== subdomain));
+    } catch (err) { alert('Delete failed'); }
+  };
+
+  const handleShutdown = async (subdomain) => {
+    if (!confirm(`Shut down ${subdomain}.zapcodes.net?\n\nThe site will go offline but your project is still saved. You can re-deploy anytime.`)) return;
+    try {
+      await api.post('/api/build/site/shutdown', { subdomain });
+      setSites(s => s.filter(site => site.subdomain !== subdomain));
+    } catch (err) { alert('Shutdown failed'); }
+  };
+
+  const handleDeleteProject = async (projectId, linkedSubdomain) => {
+    const msg = linkedSubdomain
+      ? `Delete this project? This will also SHUT DOWN ${linkedSubdomain}.zapcodes.net and free the subdomain.`
+      : 'Delete this project?';
+    if (!confirm(msg)) return;
+    try {
+      const { data } = await api.delete(`/api/build/project/${projectId}`);
+      setProjects(p => p.filter(proj => proj.projectId !== projectId));
+      if (data.shutdownSite) setSites(s => s.filter(site => site.subdomain !== data.shutdownSite));
     } catch (err) { alert('Delete failed'); }
   };
 
@@ -230,37 +254,78 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* Deployed Sites */}
+      {/* Deployed Sites — Live sites. Only Shut Down button */}
       <div style={{ ...s.card, marginBottom: 24 }}>
-        <div style={s.cardTitle}>🌐 Deployed Sites ({sites.length} / {formatCap(maxSites)})</div>
+        <div style={s.cardTitle}>🌐 Live Sites ({sites.length} / {formatCap(maxSites)})</div>
         {sites.length === 0 ? (
           <p style={{ color: 'var(--text-secondary)', fontSize: 14 }}>
-            No sites deployed yet. <a href="/build" style={{ color: '#6366f1', fontWeight: 600 }}>Build one →</a>
+            No sites live yet. <a href="/build" style={{ color: '#6366f1', fontWeight: 600 }}>Build one →</a>
           </p>
         ) : (
           <div>
             {sites.map(site => (
               <div key={site.subdomain} style={s.siteCard}>
                 <div style={{ flex: 1 }}>
-                  <a href={`https://${site.subdomain}.zapcodes.net`} target="_blank" rel="noreferrer" style={s.siteUrl}>
-                    {site.subdomain}.zapcodes.net
-                  </a>
-                  <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2 }}>
-                    {site.title || site.subdomain}
-                    {site.hasBadge ? ' · Badge' : ' · No badge'}
-                    {site.isPWA ? ' · PWA' : ''}
-                    {site.lastUpdated ? ` · Updated ${new Date(site.lastUpdated).toLocaleDateString()}` : ''}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <span style={{ width: 8, height: 8, borderRadius: 4, background: '#22c55e', display: 'inline-block' }} />
+                    <a href={`https://${site.subdomain}.zapcodes.net`} target="_blank" rel="noreferrer" style={s.siteUrl}>
+                      {site.subdomain}.zapcodes.net
+                    </a>
                   </div>
-                  <div style={{ display: 'flex', gap: 6, marginTop: 8, flexWrap: 'wrap' }}>
-                    <a href={`/build?site=${site.subdomain}&action=edit`} style={s.siteActionBtn('#6366f1')}>✏️ Edit</a>
-                    <a href={`/build?site=${site.subdomain}&action=fix`} style={s.siteActionBtn('#8b5cf6')}>🔧 Fix</a>
-                    <a href={`/build?site=${site.subdomain}&action=feature`} style={s.siteActionBtn('#f59e0b')}>✨ Add Feature</a>
-                    <a href={`/build?site=${site.subdomain}&action=redesign`} style={s.siteActionBtn('#06b6d4')}>🎨 Redesign</a>
+                  <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2, marginLeft: 14 }}>
+                    {site.title || site.subdomain}
+                    {site.lastUpdated ? ` · Updated ${new Date(site.lastUpdated).toLocaleDateString()}` : ''}
+                    {site.hasBadge ? ' · Badge' : ''}
                   </div>
                 </div>
-                <button style={s.miniBtn} onClick={() => handleDeleteSite(site.subdomain)}>Delete</button>
+                <button style={{ ...s.miniBtn, color: '#ef4444', borderColor: '#ef444433' }} onClick={() => handleShutdown(site.subdomain)}>⛔ Shut Down</button>
               </div>
             ))}
+          </div>
+        )}
+      </div>
+
+      {/* Saved Projects — Edit, Fix, Deploy here */}
+      <div style={{ ...s.card, marginBottom: 24 }}>
+        <div style={s.cardTitle}>📁 Saved Projects ({projects.length})</div>
+        {projects.length === 0 ? (
+          <p style={{ color: 'var(--text-secondary)', fontSize: 14 }}>
+            No saved projects yet. Projects are auto-saved when you deploy a site.
+          </p>
+        ) : (
+          <div>
+            {projects.map(proj => {
+              const isLive = sites.some(s => s.subdomain === proj.linkedSubdomain);
+              return (
+                <div key={proj.projectId} style={s.siteCard}>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                      {proj.linkedSubdomain && (
+                        <span style={{ width: 8, height: 8, borderRadius: 4, background: isLive ? '#22c55e' : '#6b7280', display: 'inline-block' }} title={isLive ? 'Live' : 'Offline'} />
+                      )}
+                      <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)' }}>{proj.name}</span>
+                    </div>
+                    <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2, marginLeft: proj.linkedSubdomain ? 14 : 0 }}>
+                      {proj.linkedSubdomain ? (
+                        <span>{proj.linkedSubdomain}.zapcodes.net · {isLive ? <span style={{ color: '#22c55e' }}>Live</span> : <span style={{ color: '#6b7280' }}>Offline</span>} · </span>
+                      ) : null}
+                      {proj.fileCount} file{proj.fileCount !== 1 ? 's' : ''} · v{proj.version || 1}
+                      {proj.updatedAt ? ` · ${new Date(proj.updatedAt).toLocaleDateString()}` : ''}
+                    </div>
+                    <div style={{ display: 'flex', gap: 6, marginTop: 8, flexWrap: 'wrap' }}>
+                      <a href={`/build?project=${proj.projectId}&action=edit`} style={s.siteActionBtn('#6366f1')}>✏️ Edit</a>
+                      <a href={`/build?project=${proj.projectId}&action=fix`} style={s.siteActionBtn('#f59e0b')}>🔧 Fix Bugs</a>
+                      {proj.linkedSubdomain ? (
+                        <a href={`/build?project=${proj.projectId}&action=redeploy&subdomain=${proj.linkedSubdomain}`} style={s.siteActionBtn('#22c55e')}>🚀 {isLive ? 'Re-deploy' : 'Go Live'}</a>
+                      ) : (
+                        <a href={`/build?project=${proj.projectId}&action=deploy`} style={s.siteActionBtn('#22c55e')}>🚀 Deploy</a>
+                      )}
+                    </div>
+                  </div>
+                  <button style={s.miniBtn} onClick={() => handleDeleteProject(proj.projectId, proj.linkedSubdomain)}>Delete</button>
+                </div>
+              );
+            })}
           </div>
         )}
       </div>
@@ -347,6 +412,11 @@ const s = {
     padding: '4px 10px', borderRadius: 6, fontSize: 11, fontWeight: 600,
     color, border: `1px solid ${color}33`, background: `${color}11`,
     textDecoration: 'none', cursor: 'pointer', display: 'inline-block',
+  }),
+  siteActionBtnClick: (color) => ({
+    padding: '4px 10px', borderRadius: 6, fontSize: 11, fontWeight: 600,
+    color, border: `1px solid ${color}33`, background: `${color}11`,
+    cursor: 'pointer', display: 'inline-block',
   }),
   miniBtn: {
     padding: '5px 12px', borderRadius: 6, border: 'none', background: '#ef4444',
