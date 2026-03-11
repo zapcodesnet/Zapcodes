@@ -21,9 +21,9 @@ const TEMPLATES = [
   { id: 'saas', name: 'SaaS', icon: '💎' },
 ];
 const MODEL_TIMEOUTS = {
-  'gemini-3.1-pro': 300000, 'gemini-2.5-flash': 180000,
-  'haiku-4.5': 360000, 'sonnet-4.6': 300000, 'groq': 180000,
-  'gemini-pro': 300000, 'gemini-flash': 180000, 'haiku': 360000, 'sonnet': 300000,
+  'gemini-3.1-pro': 360000, 'gemini-2.5-flash': 360000,
+  'haiku-4.5': 360000, 'sonnet-4.6': 360000, 'groq': 360000,
+  'gemini-pro': 360000, 'gemini-flash': 360000, 'haiku': 360000, 'sonnet': 360000,
 };
 const UNLIMITED = 999999999;
 function isUnlimited(n) { return n >= UNLIMITED || n === Infinity; }
@@ -200,7 +200,7 @@ export default function Build() {
       <div style={{ maxHeight: isMobile ? 150 : 180, overflowY: 'auto' }}>
         {progressMessages.slice(isMobile ? -6 : -10).map((m, i) => (
           <div key={i} style={{ padding: '4px 0', fontSize: 12, color: m.step === 'error' ? '#ef4444' : 'var(--text-secondary)', display: 'flex', gap: 6, alignItems: 'flex-start' }}>
-            <div style={{ width: 7, height: 7, borderRadius: 4, marginTop: 4, flexShrink: 0, background: m.step === 'error' ? '#ef4444' : m.step === 'done' ? '#22c55e' : m.step === 'stopped' ? '#f59e0b' : '#6366f1' }} />
+            <div style={{ width: 7, height: 7, borderRadius: 4, marginTop: 4, flexShrink: 0, background: m.step === 'error' ? '#ef4444' : m.step === 'done' ? '#22c55e' : m.step === 'stopped' ? '#f59e0b' : m.step === 'building' ? '#06b6d4' : '#6366f1' }} />
             <span>{m.message}</span>
           </div>
         ))}
