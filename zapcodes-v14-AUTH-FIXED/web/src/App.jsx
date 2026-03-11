@@ -14,17 +14,15 @@ import Build from './pages/Build';
 import Admin from './pages/Admin';
 import Settings from './pages/Settings';
 import AuthCallback from './pages/AuthCallback';
-import TutorialChat from './components/TutorialChat';
+import HelpAI from './components/HelpAI';
 import MyProjects from './pages/MyProjects';
 import RepairCode from './pages/RepairCode';
-
 function ProtectedRoute({ children }) {
   const { user, loading } = useAuth();
   if (loading) return <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100vh' }}><div className="spinner" style={{ width: 40, height: 40 }} /></div>;
   if (!user) return <Navigate to="/login" />;
   return children;
 }
-
 export default function App() {
   return (
     <>
@@ -49,7 +47,7 @@ export default function App() {
         <Route path="/repo/:repoId" element={<ProtectedRoute><RepoDetail /></ProtectedRoute>} />
         <Route path="*" element={<Navigate to="/" />} />
       </Routes>
-      <TutorialChat />
+      <HelpAI />
     </>
   );
 }
