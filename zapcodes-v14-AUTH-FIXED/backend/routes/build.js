@@ -633,31 +633,69 @@ router.post('/generate-with-progress', auth, async (req, res) => {
       if (existingFiles && existingFiles.length > 0) {
         // ── EDITING EXISTING WEBSITE ──
         sendProgress('generating_html', `Carefully modifying your existing website using ${modelLabel}...`);
-        // Use custom prompt if provided, otherwise use EDIT_PROMPT
-        systemPrompt = (customSystemPrompt && customSystemPrompt.trim().length > 50) ? customSystemPrompt : EDIT_PROMPT;
+
+        // CRITICAL FIX: ALWAYS use EDIT_PROMPT for edits.
+        // customSystemPrompt is IGNORED during edits — the EDIT_PROMPT is
+        // specifically designed to prevent the AI from reverting/rebuilding.
+        // This was the #1 bug: customSystemPrompt (often GEN_PROMPT from the
+        // System Prompt Editor) was overriding EDIT_PROMPT, causing the AI
+        // to create a brand new website instead of editing the existing one.
+        systemPrompt = EDIT_PROMPT;
+
         const existingCode = existingFiles.map(f => `--- ${f.name} ---\n${f.content}`).join('\n\n');
-        userPrompt = `<existing_website>
-${existingCode}
-</existing_website>
+        const existingCodeSize = existingCode.length;
 
-<user_request>
-${prompt}
-</user_request>
-
-Project name: ${projectName || 'My Website'}
-${colorScheme && colorScheme !== 'keep existing' ? `Color scheme change requested: ${colorScheme}` : 'Color scheme: DO NOT CHANGE — keep existing colors'}
-${features ? `Additional features requested: ${features.join(', ')}` : ''}
-
-Remember: Return the COMPLETE updated file. Every line of the original must be present unless the user specifically asked to remove it.`;
+        // Auto-upgrade Groq for edits — Groq can only output 8K tokens (~6000 chars)
+        // but typical websites are 20K-60K chars. Groq literally can't return the full file.
+        if (model === 'groq' && existingCodeSize > 5000) {
+          const upgradeChain = ['gemini-2.5-flash', 'haiku-4.5', 'gemini-3.1-pro'];
+          for (const upgradeModel of upgradeChain) {
+            const upgradeCost = BL_COSTS.generation[upgradeModel] || 10000;
+            if (user.role === 'super-admin' || user.bl_coins >= upgradeCost) {
+              sendProgress('generating', `Your website is ${Math.round(existingCodeSize / 1000)}K chars — too large for Groq (8K limit). Auto-upgrading to ${getModelDisplayName(upgradeModel)} for accurate editing...`);
+              // Note: model variable is const, so we track the actual model used separately
+              // The callAI below will use this upgraded model
+              userPrompt = `<existing_website>\n${existingCode}\n</existing_website>\n\n<user_request>\n${prompt}\n</user_request>\n\nProject name: ${projectName || 'My Website'}\n${colorScheme && colorScheme !== 'keep existing' ? `Color scheme change requested: ${colorScheme}` : 'Color scheme: DO NOT CHANGE — keep existing colors'}\n${features ? `Additional features requested: ${features.join(', ')}` : ''}\n\nRemember: Return the COMPLETE updated file. Every line of the original must be present unless the user specifically asked to remove it.`;
+              const result = await callAI(systemPrompt, userPrompt, upgradeModel, undefined, aiOpts);
+              files = result ? parseFilesFromResponse(result) : [];
+              if (files && files.length > 0) {
+                usedModel = upgradeModel;
+                // Charge the upgraded model cost instead
+                const originalCost = BL_COSTS.generation[model] || 5000;
+                if (upgradeCost > originalCost) {
+                  const diff = upgradeCost - originalCost;
+                  user.spendCoins(diff, 'generation', `Edit upgrade: ${getModelDisplayName(model)} → ${getModelDisplayName(upgradeModel)}`);
+                  await user.save();
+                }
+                break;
+              }
+            }
+          }
+          // If upgrade worked, skip the normal callAI below
+          if (files && files.length > 0) {
+            // files already set by upgrade path above
+          } else {
+            // All upgrades failed or unavailable, fall through to normal edit with original model
+            sendProgress('generating', `No larger model available — trying edit with Groq (results may be incomplete)...`);
+            userPrompt = `<existing_website>\n${existingCode}\n</existing_website>\n\n<user_request>\n${prompt}\n</user_request>\n\nProject name: ${projectName || 'My Website'}\n${colorScheme && colorScheme !== 'keep existing' ? `Color scheme change requested: ${colorScheme}` : 'Color scheme: DO NOT CHANGE — keep existing colors'}\n${features ? `Additional features requested: ${features.join(', ')}` : ''}\n\nRemember: Return the COMPLETE updated file. Every line of the original must be present unless the user specifically asked to remove it.`;
+            const result = await callAI(systemPrompt, userPrompt, model, undefined, aiOpts);
+            files = result ? parseFilesFromResponse(result) : [];
+          }
+        } else {
+          // Normal edit path (non-Groq or small files)
+          userPrompt = `<existing_website>\n${existingCode}\n</existing_website>\n\n<user_request>\n${prompt}\n</user_request>\n\nProject name: ${projectName || 'My Website'}\n${colorScheme && colorScheme !== 'keep existing' ? `Color scheme change requested: ${colorScheme}` : 'Color scheme: DO NOT CHANGE — keep existing colors'}\n${features ? `Additional features requested: ${features.join(', ')}` : ''}\n\nRemember: Return the COMPLETE updated file. Every line of the original must be present unless the user specifically asked to remove it.`;
+          const result = await callAI(systemPrompt, userPrompt, model, undefined, aiOpts);
+          files = result ? parseFilesFromResponse(result) : [];
+        }
       } else {
         // ── CREATING NEW WEBSITE ──
         sendProgress('generating_html', `Generating website using ${modelLabel}...`);
         // Use custom prompt if provided, otherwise use GEN_PROMPT
         systemPrompt = (customSystemPrompt && customSystemPrompt.trim().length > 50) ? customSystemPrompt : GEN_PROMPT;
         userPrompt = `Create a complete, production-ready website: ${prompt}\n\nProject name: ${projectName || 'My Website'}\nColor scheme: ${colorScheme || 'modern dark theme'}\n${features ? `Features: ${features.join(', ')}` : ''}\n\nIMPORTANT: index.html must be self-contained with ALL CSS inside <style> and ALL JS inside <script>.`;
+        const result = await callAI(systemPrompt, userPrompt, model, undefined, aiOpts);
+        files = result ? parseFilesFromResponse(result) : [];
       }
-      const result = await callAI(systemPrompt, userPrompt, model, undefined, aiOpts);
-      files = result ? parseFilesFromResponse(result) : [];
     }
 
     if (aborted || !connectionAlive) {
@@ -977,7 +1015,26 @@ router.post('/code-fix', auth, async (req, res) => {
     await user.save();
 
     const fileContent = (files || []).map(f => `--- ${f.name} ---\n${f.content}`).join('\n\n');
-    const result = await callAI(FIX_PROMPT, `Fix:\n\n${fileContent}\n\nIssue: ${description || 'Fix all bugs'}`, model);
+    const fileSize = fileContent.length;
+
+    // Auto-upgrade Groq for large files — Groq can only output 8K tokens
+    let actualModel = model;
+    if (model === 'groq' && fileSize > 5000) {
+      const upgradeChain = ['gemini-2.5-flash', 'haiku-4.5', 'gemini-3.1-pro'];
+      for (const upgradeModel of upgradeChain) {
+        const upgradeCost = BL_COSTS.codeFix[upgradeModel] || 10000;
+        if (user.role === 'super-admin' || user.bl_coins >= upgradeCost) {
+          console.log(`[CodeFix] Auto-upgrading from Groq to ${upgradeModel} (file size: ${Math.round(fileSize / 1000)}K chars)`);
+          actualModel = upgradeModel;
+          // Charge the difference
+          const diff = upgradeCost - cost;
+          if (diff > 0) { user.spendCoins(diff, 'code_fix', `Fix upgrade: Groq → ${getModelDisplayName(upgradeModel)}`); await user.save(); }
+          break;
+        }
+      }
+    }
+
+    const result = await callAI(FIX_PROMPT, `Fix:\n\n${fileContent}\n\nIssue: ${description || 'Fix all bugs'}`, actualModel);
     const fixedFiles = result ? parseFilesFromResponse(result) : [];
     if (!fixedFiles.length) { user.creditCoins(cost, 'code_fix', 'Refund: fix failed'); user.decrementMonthlyUsage(model, 'code_fix'); await user.save(); return res.status(500).json({ error: 'Fix failed. Coins refunded.' }); }
     const preview = generatePreviewHTML(fixedFiles);
