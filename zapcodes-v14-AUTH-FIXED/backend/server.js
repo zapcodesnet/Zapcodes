@@ -19,6 +19,8 @@ const fileRoutes = require('./routes/files');
 const buildRoutes = require('./routes/build');
 const adminRoutes = require('./routes/admin');
 const coinRoutes = require('./routes/coins');
+const helpRoutes = require('./routes/help');
+const formsRoutes = require('./routes/forms');
 
 // NEW: Zapcodes v15 routes — pricing tiers, BL coins, usage stats
 const blCoinsRoutes = require('./routes/blCoins');
@@ -124,6 +126,8 @@ app.use('/api/files', fileRoutes);
 app.use('/api/build', buildRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/coins', coinRoutes);
+app.use('/api/help', helpRoutes);
+app.use('/api/forms', formsRoutes);
 
 // NEW: Zapcodes v15 routes
 app.use('/api/bl-coins', blCoinsRoutes);
