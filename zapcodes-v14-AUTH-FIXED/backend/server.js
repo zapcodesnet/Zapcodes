@@ -28,6 +28,7 @@ const pricingRoutes = require('./routes/pricing');
 const usageRoutes = require('./routes/usage');
 
 const app = express();
+app.set('trust proxy', 1); // Trust Render's reverse proxy — fixes rate limiting + X-Forwarded-For errors
 const httpServer = createServer(app);
 
 // Socket.IO for real-time sync between web & mobile
