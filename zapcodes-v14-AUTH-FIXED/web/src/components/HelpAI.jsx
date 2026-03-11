@@ -197,7 +197,7 @@ export default function HelpAI() {
 
   // ── Positions ──
   const defaultPos = isMobile
-    ? { x: window.innerWidth - 56, y: 6 } // Mobile: top-right next to burger
+    ? { x: window.innerWidth - 58, y: 60 } // Mobile: right side, BELOW the navbar (52px nav + 8px gap)
     : { x: window.innerWidth - 72, y: window.innerHeight - 72 }; // Desktop: bottom-right
   const pos = iconPos || defaultPos;
 
