@@ -34,9 +34,6 @@ export default function HelpAI() {
   const dragStartTime = useRef(0);
   const dragMoved = useRef(false);
 
-  // Don't render if not logged in
-  if (!user) return null;
-
   // ── Detect mobile ──
   useEffect(() => {
     const check = () => setIsMobile(window.innerWidth < 768);
@@ -194,6 +191,9 @@ export default function HelpAI() {
       };
     }
   }, [dragging, handleDragMove, handleDragEnd]);
+
+  // Don't render if not logged in (must be AFTER all hooks — React Rules of Hooks)
+  if (!user) return null;
 
   // ── Positions ──
   const defaultPos = isMobile
