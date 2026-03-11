@@ -77,6 +77,10 @@ export default function Build() {
   const [sessionId, setSessionId] = useState(null);
   const [genResult, setGenResult] = useState(null);
   const [availableModels, setAvailableModels] = useState([]);
+  const [showSystemPrompt, setShowSystemPrompt] = useState(false);
+  const [systemPromptText, setSystemPromptText] = useState('');
+  const [autoAttachPrompt, setAutoAttachPrompt] = useState(true);
+  const [defaultPrompts, setDefaultPrompts] = useState({ gen: '', edit: '', fix: '' });
   const iframeRef = useRef(null);
   const fileInputRef = useRef(null);
   const abortControllerRef = useRef(null);
@@ -89,6 +93,24 @@ export default function Build() {
       if (r.data.bl_coins !== undefined) setCoinData(p => ({ ...p, balance: r.data.bl_coins }));
     }).catch(() => {});
   }, [coinData?.balance]);
+
+  // Load system prompt settings from localStorage
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem('zc_system_prompt');
+      const autoAttach = localStorage.getItem('zc_auto_attach_prompt');
+      if (saved) setSystemPromptText(saved);
+      if (autoAttach !== null) setAutoAttachPrompt(autoAttach !== 'false');
+    } catch {}
+    // Fetch default prompts from backend
+    api.get('/api/build/system-prompts').then(r => {
+      setDefaultPrompts({ gen: r.data.gen_prompt || '', edit: r.data.edit_prompt || '', fix: r.data.fix_prompt || '' });
+      // If no saved prompt, use the appropriate default
+      if (!localStorage.getItem('zc_system_prompt')) {
+        setSystemPromptText(r.data.edit_prompt || r.data.gen_prompt || '');
+      }
+    }).catch(() => {});
+  }, []);
   useEffect(() => { const h = () => setIsMobile(window.innerWidth < 768); window.addEventListener('resize', h); return () => window.removeEventListener('resize', h); }, []);
 
   // Auto-scroll progress messages to latest
@@ -109,6 +131,38 @@ export default function Build() {
         else if (action === 'feature') setPrompt(`Existing project: ${p.name}\n\nAdd new feature: `);
       }).catch(() => {});
     }
+
+    // ── Load deployed site for editing ──
+    const siteSubdomain = searchParams.get('site');
+    if (siteSubdomain) {
+      api.get(`/api/build/site-content/${siteSubdomain}`).then(({ data }) => {
+        if (data.files?.length) {
+          setFiles(data.files);
+          setProjectName(data.title || siteSubdomain);
+          setSubdomain(siteSubdomain);
+          // Generate preview from loaded files
+          const htmlFile = data.files.find(f => f.name === 'index.html' || f.name.endsWith('.html'));
+          if (htmlFile) setPreview(htmlFile.content);
+
+          const action = searchParams.get('action') || 'edit';
+          if (action === 'fix') {
+            setTab('fix');
+            setFixFiles(data.files);
+            setFixDescription('');
+          } else if (action === 'feature') {
+            setTab('build');
+            setPrompt(`Here is my existing website "${data.title || siteSubdomain}" deployed at ${siteSubdomain}.zapcodes.net.\n\nPlease keep ALL existing content, design, and functionality, and ADD this new feature:\n\n`);
+          } else if (action === 'redesign') {
+            setTab('build');
+            setPrompt(`Here is my existing website "${data.title || siteSubdomain}" deployed at ${siteSubdomain}.zapcodes.net.\n\nPlease COMPLETELY REDESIGN this website with a fresh new look while keeping the same content and functionality. Make it more modern, visually stunning, and professional:\n\n`);
+          } else {
+            // Default: edit mode
+            setTab('build');
+            setPrompt(`Here is my existing website "${data.title || siteSubdomain}" deployed at ${siteSubdomain}.zapcodes.net.\n\nPlease make these changes:\n\n`);
+          }
+        }
+      }).catch(() => {});
+    }
   }, [searchParams]);
 
   const plan = coinData?.subscription_tier || coinData?.plan || user?.subscription_tier || user?.plan || 'free';
@@ -127,14 +181,49 @@ export default function Build() {
   const charsUsed = prompt.length;
   const charPct = isUnlimited(maxChars) ? 0 : (charsUsed / maxChars) * 100;
 
+  // ── System Prompt Management ──
+  const isEditMode = files.length > 0 || searchParams.get('site');
+  const activeDefaultPrompt = isEditMode ? defaultPrompts.edit : defaultPrompts.gen;
+
+  const saveSystemPrompt = () => {
+    try { localStorage.setItem('zc_system_prompt', systemPromptText); } catch {}
+    alert('System prompt saved!');
+  };
+  const resetSystemPrompt = () => {
+    const def = isEditMode ? defaultPrompts.edit : defaultPrompts.gen;
+    setSystemPromptText(def);
+    try { localStorage.removeItem('zc_system_prompt'); } catch {}
+  };
+  const deleteSystemPrompt = () => {
+    setSystemPromptText('');
+    try { localStorage.removeItem('zc_system_prompt'); } catch {}
+  };
+  const toggleAutoAttach = () => {
+    const next = !autoAttachPrompt;
+    setAutoAttachPrompt(next);
+    try { localStorage.setItem('zc_auto_attach_prompt', String(next)); } catch {}
+  };
+  const loadDefaultForMode = (mode) => {
+    if (mode === 'gen') setSystemPromptText(defaultPrompts.gen);
+    else if (mode === 'edit') setSystemPromptText(defaultPrompts.edit);
+    else if (mode === 'fix') setSystemPromptText(defaultPrompts.fix);
+  };
+
   const handleGenerate = useCallback(async () => {
     if (!prompt.trim()) return alert('Enter a description');
+    const editFiles = files.length > 0 ? [...files] : null;
     setGenerating(true); setGenResult(null); setFiles([]); setPreview(''); setDeployUrl(''); setProgressMessages([]); setProgressStep('validating');
-    if (isMobile) setMobileView('build'); // Stay on build view to see progress
+    if (isMobile) setMobileView('build');
     const controller = new AbortController(); abortControllerRef.current = controller;
     try {
       const token = localStorage.getItem('token');
-      const response = await fetch(`${API_URL}/api/build/generate-with-progress`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` }, body: JSON.stringify({ prompt, model: effectiveModel, template, projectName: projectName || 'My Website' }), signal: controller.signal });
+      const requestBody = { prompt, model: effectiveModel, template, projectName: projectName || 'My Website' };
+      if (editFiles) requestBody.existingFiles = editFiles;
+      // Attach system prompt if auto-attach is ON and prompt is not empty
+      if (autoAttachPrompt && systemPromptText && systemPromptText.trim().length > 50) {
+        requestBody.customSystemPrompt = systemPromptText;
+      }
+      const response = await fetch(`${API_URL}/api/build/generate-with-progress`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` }, body: JSON.stringify(requestBody), signal: controller.signal });
       if (!response.ok) { let msg = `Server error ${response.status}`; try { msg = (await response.json()).error || msg; } catch {} throw new Error(msg); }
       const reader = response.body.getReader(); const decoder = new TextDecoder(); let buffer = '';
       while (true) {
@@ -164,7 +253,7 @@ export default function Build() {
       if (err.name === 'AbortError') { if (!genResult) { setProgressStep('stopped'); setGenResult('stopped'); } }
       else { setProgressStep('error'); setGenResult('error'); setProgressMessages(p => [...p, { step: 'error', message: err.message || 'Connection failed', time: new Date() }]); }
     } finally { abortControllerRef.current = null; setGenerating(false); setSessionId(null); }
-  }, [prompt, effectiveModel, template, projectName, isMobile]);
+  }, [prompt, effectiveModel, template, projectName, isMobile, files, autoAttachPrompt, systemPromptText]);
 
   const handleStop = async () => { if (abortControllerRef.current) abortControllerRef.current.abort(); try { await api.post('/api/build/stop', { sessionId }); } catch {} setProgressStep('stopped'); setGenResult('stopped'); setProgressMessages(p => [...p, { step: 'stopped', message: 'Stopped. Coins refunded.', time: new Date() }]); setGenerating(false); };
   const handleDismissProgress = () => { setGenResult(null); setProgressMessages([]); setProgressStep(''); };
@@ -188,6 +277,60 @@ export default function Build() {
 
   const showProgress = generating || (genResult && progressMessages.length > 0);
   const pColor = genResult === 'error' ? '#ef4444' : genResult === 'done' ? '#22c55e' : genResult === 'stopped' ? '#f59e0b' : '#6366f1';
+
+  // ── System Prompt Editor Panel ──
+  const SystemPromptPanel = () => (
+    <div style={{ marginBottom: 10 }}>
+      {/* Toggle bar */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '6px 10px', borderRadius: 8, background: 'var(--bg-elevated)', cursor: 'pointer', marginBottom: showSystemPrompt ? 8 : 0 }} onClick={() => setShowSystemPrompt(!showSystemPrompt)}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <span style={{ fontSize: 12, fontWeight: 700, color: autoAttachPrompt ? '#22c55e' : 'var(--text-muted)' }}>
+            {showSystemPrompt ? '▼' : '▶'} System Prompt
+          </span>
+          <span style={{ fontSize: 10, padding: '2px 6px', borderRadius: 4, background: autoAttachPrompt ? 'rgba(34,197,94,.15)' : 'rgba(239,68,68,.15)', color: autoAttachPrompt ? '#22c55e' : '#ef4444', fontWeight: 600 }}>
+            {autoAttachPrompt ? 'ON' : 'OFF'}
+          </span>
+        </div>
+        <div style={{ display: 'flex', gap: 4 }} onClick={e => e.stopPropagation()}>
+          <button style={{ padding: '3px 8px', borderRadius: 4, border: 'none', fontSize: 10, fontWeight: 600, cursor: 'pointer', background: autoAttachPrompt ? 'rgba(34,197,94,.2)' : 'rgba(255,255,255,.06)', color: autoAttachPrompt ? '#22c55e' : 'var(--text-muted)' }} onClick={toggleAutoAttach}>
+            {autoAttachPrompt ? '✓ Auto' : '✗ Auto'}
+          </button>
+        </div>
+      </div>
+
+      {/* Editor (expanded) */}
+      {showSystemPrompt && (
+        <div style={{ border: '1px solid var(--border)', borderRadius: 10, padding: 10, background: 'var(--bg-card)' }}>
+          {/* Mode buttons */}
+          <div style={{ display: 'flex', gap: 4, marginBottom: 8, flexWrap: 'wrap' }}>
+            <button style={{ padding: '4px 8px', borderRadius: 6, border: '1px solid var(--border)', background: 'transparent', color: 'var(--text-secondary)', cursor: 'pointer', fontSize: 10, fontWeight: 600 }} onClick={() => loadDefaultForMode('gen')}>Load: New Website</button>
+            <button style={{ padding: '4px 8px', borderRadius: 6, border: '1px solid var(--border)', background: 'transparent', color: 'var(--text-secondary)', cursor: 'pointer', fontSize: 10, fontWeight: 600 }} onClick={() => loadDefaultForMode('edit')}>Load: Edit Website</button>
+            <button style={{ padding: '4px 8px', borderRadius: 6, border: '1px solid var(--border)', background: 'transparent', color: 'var(--text-secondary)', cursor: 'pointer', fontSize: 10, fontWeight: 600 }} onClick={() => loadDefaultForMode('fix')}>Load: Fix Code</button>
+          </div>
+
+          {/* Textarea */}
+          <textarea
+            value={systemPromptText}
+            onChange={e => setSystemPromptText(e.target.value)}
+            placeholder="System prompt instructions for the AI..."
+            style={{ width: '100%', minHeight: 150, maxHeight: 300, padding: 10, borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg-elevated)', color: 'var(--text-primary)', fontSize: 12, fontFamily: 'Consolas, monospace', resize: 'vertical', boxSizing: 'border-box', lineHeight: 1.5 }}
+          />
+
+          {/* Info + actions */}
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 8, flexWrap: 'wrap', gap: 6 }}>
+            <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>
+              {systemPromptText.length.toLocaleString()} chars · {autoAttachPrompt ? 'Will be sent with your next generation' : 'Auto-attach is OFF — prompt will NOT be sent'}
+            </span>
+            <div style={{ display: 'flex', gap: 4 }}>
+              <button style={{ padding: '4px 10px', borderRadius: 6, border: 'none', background: '#6366f1', color: '#fff', cursor: 'pointer', fontSize: 10, fontWeight: 600 }} onClick={saveSystemPrompt}>💾 Save</button>
+              <button style={{ padding: '4px 10px', borderRadius: 6, border: '1px solid var(--border)', background: 'transparent', color: 'var(--text-secondary)', cursor: 'pointer', fontSize: 10, fontWeight: 600 }} onClick={resetSystemPrompt}>↺ Reset</button>
+              <button style={{ padding: '4px 10px', borderRadius: 6, border: '1px solid #ef4444', background: 'transparent', color: '#ef4444', cursor: 'pointer', fontSize: 10, fontWeight: 600 }} onClick={deleteSystemPrompt}>✗ Clear</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
 
   // ── Progress Panel (shared between desktop right panel and mobile build view) ──
   const ProgressPanel = () => showProgress && progressMessages.length > 0 ? (
@@ -278,6 +421,9 @@ export default function Build() {
                       {TEMPLATES.map(t => <button key={t.id} style={{ padding: '4px 8px', borderRadius: 6, border: template === t.id ? '1px solid #6366f1' : '1px solid var(--border)', cursor: 'pointer', fontWeight: 600, fontSize: 10, background: template === t.id ? 'rgba(99,102,241,.15)' : 'transparent', color: template === t.id ? '#6366f1' : 'var(--text-secondary)' }} onClick={() => setTemplate(t.id)}>{t.icon} {t.name}</button>)}
                     </div>
                   </div>
+
+                  {/* System Prompt Editor */}
+                  <SystemPromptPanel />
 
                   {/* Generated files */}
                   {files.length > 0 && (
@@ -444,6 +590,7 @@ export default function Build() {
                     {TEMPLATES.map(t => <button key={t.id} style={{ padding: '5px 10px', borderRadius: 8, border: template === t.id ? '1px solid #6366f1' : '1px solid var(--border)', cursor: 'pointer', fontWeight: 600, fontSize: 11, background: template === t.id ? 'rgba(99,102,241,.15)' : 'transparent', color: template === t.id ? '#6366f1' : 'var(--text-secondary)' }} onClick={() => setTemplate(t.id)}>{t.icon} {t.name}</button>)}
                   </div>
                 </div>
+                <SystemPromptPanel />
                 {files.length > 0 && (
                   <div style={{ padding: 12 }}>
                     <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-secondary)', marginBottom: 8, display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: 6 }}>
