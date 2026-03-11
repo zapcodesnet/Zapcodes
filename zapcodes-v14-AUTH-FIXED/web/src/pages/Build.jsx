@@ -168,11 +168,11 @@ export default function Build() {
         }
 
         if (action === 'fix') {
-          setTab('fix');
-          setFixFiles(p.files || []);
-          setFixDescription('');
-          setActivePromptMode('fix');
-          setPrompt('');
+          // Fix Bugs → stay on Build tab in edit mode with fix-oriented prompt
+          // This uses the same EDIT_PROMPT flow which preserves existing code
+          setTab('build');
+          setActivePromptMode('edit');
+          setPrompt(`Here is my existing project "${p.name}".\n\nPlease fix all bugs and issues. Specifically:\n- Fix any broken JavaScript (buttons not working, forms not submitting, etc.)\n- Fix any CSS issues (layout problems, missing styles, responsive issues)\n- Fix any broken links or navigation\n- Make sure all forms submit to https://api.zapcodes.net/api/forms/submit\n\nDo NOT change the design, colors, content, or layout. Only fix what is broken.\n\n`);
         } else if (action === 'redeploy') {
           // Re-deploy mode — load files, show preview, user can deploy directly
           setTab('build');
@@ -202,10 +202,10 @@ export default function Build() {
           setProjectName(data.title || siteSubdomain);
           setSubdomain(siteSubdomain);
           setEditingDeployedSite(siteSubdomain);
-          setActivePromptMode(action === 'fix' ? 'fix' : 'edit');
+          setActivePromptMode('edit');
           if (action === 'fix') {
-            setTab('fix');
-            setFixFiles(data.files);
+            setTab('build');
+            setPrompt(`Here is my existing website "${data.title || siteSubdomain}" deployed at ${siteSubdomain}.zapcodes.net.\n\nPlease fix all bugs and issues. Do NOT change the design, colors, content, or layout. Only fix what is broken.\n\n`);
           } else {
             setTab('build');
             setPrompt(`Here is my existing website "${data.title || siteSubdomain}" deployed at ${siteSubdomain}.zapcodes.net.\n\nPlease make these changes:\n\n`);
@@ -270,10 +270,16 @@ export default function Build() {
     try {
       const token = localStorage.getItem('token');
       const requestBody = { prompt, model: effectiveModel, template, projectName: projectName || 'My Website' };
-      if (editFiles) requestBody.existingFiles = editFiles;
-      // Attach system prompt if auto-attach is ON and prompt is not empty
-      if (autoAttachPrompt && systemPromptText && systemPromptText.trim().length > 50) {
-        requestBody.customSystemPrompt = systemPromptText;
+      if (editFiles) {
+        requestBody.existingFiles = editFiles;
+        requestBody.isEditing = true;
+        // NEVER send customSystemPrompt during edits — backend MUST use EDIT_PROMPT
+        // This was the #1 bug: customSystemPrompt (often GEN_PROMPT) was overriding EDIT_PROMPT
+      } else {
+        // Only attach custom system prompt for NEW website generation
+        if (autoAttachPrompt && systemPromptText && systemPromptText.trim().length > 50) {
+          requestBody.customSystemPrompt = systemPromptText;
+        }
       }
       const response = await fetch(`${API_URL}/api/build/generate-with-progress`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` }, body: JSON.stringify(requestBody), signal: controller.signal });
       if (!response.ok) { let msg = `Server error ${response.status}`; try { msg = (await response.json()).error || msg; } catch {} throw new Error(msg); }
@@ -361,6 +367,29 @@ export default function Build() {
 
   const showProgress = generating || (genResult && progressMessages.length > 0);
   const pColor = genResult === 'error' ? '#ef4444' : genResult === 'done' ? '#22c55e' : genResult === 'stopped' ? '#f59e0b' : '#6366f1';
+
+  // ── Edit mode detection ──
+  const isEditMode = files.length > 0 || editingDeployedSite;
+  const existingCodeSize = files.reduce((sum, f) => sum + (f.content?.length || 0), 0);
+  const groqTooSmallForEdit = isEditMode && effectiveModel === 'groq' && existingCodeSize > 5000;
+
+  // ── Edit Mode Banner ──
+  const EditModeBanner = () => {
+    if (!isEditMode || tab !== 'build') return null;
+    return (
+      <div style={{ padding: '8px 12px', borderRadius: 8, marginBottom: 10, border: '1px solid rgba(99,102,241,.3)', background: 'rgba(99,102,241,.08)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: groqTooSmallForEdit ? 6 : 0 }}>
+          <span style={{ fontSize: 13, fontWeight: 700, color: '#6366f1' }}>✏️ Edit Mode</span>
+          <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>— AI will modify your existing website, not create a new one</span>
+        </div>
+        {groqTooSmallForEdit && (
+          <div style={{ fontSize: 11, color: '#f59e0b', background: 'rgba(245,158,11,.1)', padding: '4px 8px', borderRadius: 4 }}>
+            ⚠️ Groq can't handle files this large ({Math.round(existingCodeSize / 1000)}K chars). Use Gemini Flash or higher for better edits.
+          </div>
+        )}
+      </div>
+    );
+  };
 
   // ── System Prompt Editor Panel ──
   const SystemPromptPanel = () => (
@@ -492,6 +521,7 @@ export default function Build() {
                 <>
                   {/* Progress inline on mobile */}
                   <ProgressPanel />
+                  <EditModeBanner />
 
                   {/* Model selector */}
                   <div style={{ marginBottom: 10 }}>
@@ -558,12 +588,12 @@ export default function Build() {
             {/* Mobile Input Area — sticky bottom */}
             {tab === 'build' && (
               <div style={{ padding: 12, borderTop: '1px solid var(--border)', background: 'var(--bg-card)' }}>
-                <textarea style={{ width: '100%', padding: 10, borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg-elevated)', color: 'var(--text-primary)', fontSize: 13, resize: 'none', height: 60, fontFamily: 'inherit', boxSizing: 'border-box' }} placeholder="Describe what you want to build..." value={prompt} onChange={e => setPrompt(e.target.value)} />
+                <textarea style={{ width: '100%', padding: 10, borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg-elevated)', color: 'var(--text-primary)', fontSize: 13, resize: 'none', height: 60, fontFamily: 'inherit', boxSizing: 'border-box' }} placeholder={isEditMode ? "Describe what changes you want..." : "Describe what you want to build..."} value={prompt} onChange={e => setPrompt(e.target.value)} />
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 6, gap: 8 }}>
                   <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>Cost: <strong style={{ color: '#f59e0b' }}>{cost.toLocaleString()} BL</strong></span>
                   {generating
                     ? <button style={{ padding: '10px 16px', borderRadius: 8, border: '2px solid #ef4444', background: 'rgba(239,68,68,.1)', color: '#ef4444', cursor: 'pointer', fontWeight: 700, fontSize: 13 }} onClick={handleStop}>⛔ Stop</button>
-                    : <button style={{ padding: '10px 20px', borderRadius: 8, border: 'none', cursor: balance < cost ? 'not-allowed' : 'pointer', fontWeight: 700, fontSize: 13, background: balance < cost ? 'var(--bg-elevated)' : 'linear-gradient(135deg, #6366f1, #8b5cf6)', color: balance < cost ? 'var(--text-muted)' : '#fff', opacity: balance < cost ? 0.5 : 1, flex: 1 }} onClick={handleGenerate} disabled={balance < cost}>Generate</button>
+                    : <button style={{ padding: '10px 20px', borderRadius: 8, border: 'none', cursor: balance < cost ? 'not-allowed' : 'pointer', fontWeight: 700, fontSize: 13, background: balance < cost ? 'var(--bg-elevated)' : 'linear-gradient(135deg, #6366f1, #8b5cf6)', color: balance < cost ? 'var(--text-muted)' : '#fff', opacity: balance < cost ? 0.5 : 1, flex: 1 }} onClick={handleGenerate} disabled={balance < cost}>{isEditMode ? 'Apply Changes' : 'Generate'}</button>
                   }
                 </div>
               </div>
@@ -664,7 +694,8 @@ export default function Build() {
           {tab === 'build' && (
             <>
               <div style={s.chatArea}>
-                <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--text-primary)', marginBottom: 12 }}>Describe your website</div>
+                <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--text-primary)', marginBottom: 12 }}>{isEditMode ? '✏️ Edit your website' : 'Describe your website'}</div>
+                <EditModeBanner />
                 <div style={{ marginBottom: 12 }}>
                   <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 6 }}>AI Model:</div>
                   <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
@@ -700,11 +731,11 @@ export default function Build() {
                 )}
               </div>
               <div style={s.inputArea}>
-                <textarea style={s.textarea} placeholder="Describe the website you want to build..." value={prompt} onChange={e => setPrompt(e.target.value)} maxLength={isUnlimited(maxChars) ? undefined : maxChars + 100} />
+                <textarea style={s.textarea} placeholder={isEditMode ? "Describe what changes you want (e.g. 'add a booking form', 'change hero text to...')" : "Describe the website you want to build..."} value={prompt} onChange={e => setPrompt(e.target.value)} maxLength={isUnlimited(maxChars) ? undefined : maxChars + 100} />
                 <div style={{ fontSize: 11, textAlign: 'right', marginTop: 4, color: charPct > 100 ? '#ef4444' : 'var(--text-muted)' }}>{isUnlimited(maxChars) ? `${charsUsed} chars` : `${charsUsed}/${maxChars}`}</div>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 8, fontSize: 13, gap: 8 }}>
                   <span style={{ color: 'var(--text-muted)' }}>Cost: <strong style={{ color: '#f59e0b' }}>{cost.toLocaleString()} BL</strong> {balance < cost && <span style={{ color: '#ef4444', fontSize: 11 }}>(insufficient)</span>}</span>
-                  {generating ? <button style={s.stopBtn} onClick={handleStop}>⛔ Stop</button> : <button style={s.genBtn(generating || balance < cost)} onClick={handleGenerate} disabled={generating || balance < cost}>Generate ({cost.toLocaleString()} BL)</button>}
+                  {generating ? <button style={s.stopBtn} onClick={handleStop}>⛔ Stop</button> : <button style={s.genBtn(generating || balance < cost)} onClick={handleGenerate} disabled={generating || balance < cost}>{isEditMode ? `Apply Changes (${cost.toLocaleString()} BL)` : `Generate (${cost.toLocaleString()} BL)`}</button>}
                 </div>
               </div>
             </>
