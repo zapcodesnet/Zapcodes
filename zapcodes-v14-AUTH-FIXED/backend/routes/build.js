@@ -2,7 +2,6 @@ const express = require('express');
 const router = express.Router();
 const { auth } = require('../middleware/auth');
 const { callAI, parseFilesFromResponse, generateProjectMultiStep, verifyAndFix } = require('../services/ai');
-const { analyzeAndMatch, buildCustomizationUserPrompt, CUSTOMIZE_SYSTEM_PROMPT } = require('../services/prebuiltTemplates');
 const User = require('../models/User');
 const axios = require('axios');
 
@@ -201,6 +200,130 @@ function generatePreviewHTML(files) {
 
 const BADGE_SCRIPT = `<div id="zc-badge" style="position:fixed;bottom:10px;right:10px;z-index:99999;background:linear-gradient(135deg,#6366f1,#8b5cf6);color:#fff;padding:6px 14px;border-radius:20px;font-family:-apple-system,sans-serif;font-size:12px;font-weight:600;box-shadow:0 2px 10px rgba(99,102,241,.3);cursor:pointer;text-decoration:none;display:flex;align-items:center;gap:4px" onclick="window.open('https://zapcodes.net?ref=badge','_blank')">⚡ Made with ZapCodes</div>`;
 
+// ══════════ SMART PROGRESS MESSAGES — Plain English updates while AI generates ══════════
+function getProgressMessages(prompt, template, projectName) {
+  const name = projectName || 'your website';
+  const lower = (prompt || '').toLowerCase();
+
+  // Base messages that always apply
+  const base = [
+    `🧠 AI is reading your description and planning the structure for ${name}...`,
+    `📐 Designing the page layout — deciding where each section goes...`,
+    `🎨 Choosing colors, fonts, and visual style for your design...`,
+    `📱 Making sure everything looks great on phones, tablets, and desktops...`,
+  ];
+
+  // Template-specific messages
+  const templateMsgs = {
+    portfolio: [
+      `👤 Building your hero section with an eye-catching introduction...`,
+      `💼 Creating the projects showcase with image cards and hover effects...`,
+      `📊 Adding your skills section with animated progress bars...`,
+      `✉️ Setting up the contact form with validation...`,
+      `🎯 Writing smooth scroll navigation with active link highlighting...`,
+    ],
+    landing: [
+      `🚀 Creating an attention-grabbing hero section with call-to-action...`,
+      `✨ Building the features showcase with icons and descriptions...`,
+      `💰 Designing the pricing table with tier comparison...`,
+      `💬 Adding testimonials carousel and trust badges...`,
+      `📝 Setting up the FAQ accordion section...`,
+    ],
+    blog: [
+      `📰 Creating the featured post hero section...`,
+      `🗂️ Building the article grid with category filters...`,
+      `🔍 Adding search functionality and sidebar...`,
+      `📖 Designing individual article view layout...`,
+    ],
+    ecommerce: [
+      `🛍️ Building the product grid with images and prices...`,
+      `🛒 Creating the shopping cart with add/remove functionality...`,
+      `🔎 Adding product filters — categories, price range, sorting...`,
+      `💳 Designing the checkout form with input validation...`,
+    ],
+    dashboard: [
+      `📊 Creating the stat cards with key metrics...`,
+      `📈 Building charts and data visualizations...`,
+      `📋 Designing the data table with sorting and search...`,
+      `🔔 Adding the sidebar navigation and notification panel...`,
+    ],
+    saas: [
+      `🏠 Creating the landing page with product features...`,
+      `🔐 Building the login and registration system...`,
+      `📊 Designing the app dashboard with CRUD operations...`,
+      `⚙️ Adding settings and profile management...`,
+    ],
+    webapp: [
+      `🔐 Creating the authentication screens...`,
+      `📊 Building the main dashboard view...`,
+      `💾 Setting up data management with local storage...`,
+      `🧭 Adding navigation and routing between pages...`,
+    ],
+  };
+
+  // Prompt-keyword messages (detected from user's description)
+  const contextual = [];
+  if (lower.includes('restaurant') || lower.includes('food') || lower.includes('menu') || lower.includes('dining')) {
+    contextual.push(`🍽️ Designing the menu section with dishes and prices...`);
+    contextual.push(`📍 Adding location map and reservation section...`);
+    contextual.push(`📸 Creating a food gallery with beautiful images...`);
+  }
+  if (lower.includes('hotel') || lower.includes('resort') || lower.includes('booking')) {
+    contextual.push(`🏨 Building room showcase with amenities and pricing...`);
+    contextual.push(`📅 Creating the booking and availability section...`);
+  }
+  if (lower.includes('gym') || lower.includes('fitness') || lower.includes('workout')) {
+    contextual.push(`💪 Designing class schedule and membership options...`);
+    contextual.push(`🏋️ Building the trainer profiles section...`);
+  }
+  if (lower.includes('school') || lower.includes('education') || lower.includes('course') || lower.includes('academy')) {
+    contextual.push(`📚 Creating the course catalog and enrollment section...`);
+    contextual.push(`👨‍🏫 Building the instructor profiles...`);
+  }
+  if (lower.includes('salon') || lower.includes('spa') || lower.includes('beauty')) {
+    contextual.push(`💇 Designing the services menu with pricing...`);
+    contextual.push(`📅 Adding the appointment booking section...`);
+  }
+  if (lower.includes('shop') || lower.includes('store') || lower.includes('product') || lower.includes('buy')) {
+    contextual.push(`🛒 Building the product catalog with cart functionality...`);
+    contextual.push(`💳 Adding the checkout flow...`);
+  }
+  if (lower.includes('game') || lower.includes('play') || lower.includes('interactive')) {
+    contextual.push(`🎮 Building the game mechanics and user interactions...`);
+    contextual.push(`🏆 Adding scoring system and game state management...`);
+  }
+  if (lower.includes('gallery') || lower.includes('photo') || lower.includes('image')) {
+    contextual.push(`🖼️ Creating the image gallery with lightbox viewer...`);
+  }
+  if (lower.includes('form') || lower.includes('contact') || lower.includes('email')) {
+    contextual.push(`✉️ Building the contact form with email validation...`);
+  }
+  if (lower.includes('animation') || lower.includes('animate') || lower.includes('motion')) {
+    contextual.push(`✨ Adding scroll animations and micro-interactions...`);
+  }
+  if (lower.includes('dark') || lower.includes('theme') || lower.includes('mode')) {
+    contextual.push(`🌙 Applying dark theme with accent color highlights...`);
+  }
+  if (lower.includes('mobile app') || lower.includes('react native') || lower.includes('app')) {
+    contextual.push(`📱 Setting up the mobile app navigation structure...`);
+    contextual.push(`🔧 Building screen components and state management...`);
+  }
+
+  // Finishing messages (always at the end)
+  const finish = [
+    `⚡ Adding interactive JavaScript — buttons, animations, and events...`,
+    `🔧 Writing form validation and error handling...`,
+    `📱 Fine-tuning responsive design for all screen sizes...`,
+    `🎨 Polishing final styles — shadows, gradients, and transitions...`,
+    `✅ Running final quality checks on all code...`,
+    `📦 Packaging everything into a single file...`,
+  ];
+
+  // Combine: base → template → contextual → finish
+  const tpl = templateMsgs[template] || [];
+  return [...base, ...tpl, ...contextual, ...finish];
+}
+
 // ══════════ GET /api/build/costs ══════════
 router.get('/costs', (req, res) => res.json({ costs: BL_COSTS }));
 
@@ -277,6 +400,7 @@ router.get('/available-models', auth, (req, res) => {
 router.post('/generate-with-progress', auth, async (req, res) => {
   const sessionId = `gen-${req.user._id}-${Date.now()}`;
   let keepaliveInterval = null;
+  let progressTicker = null;
   let connectionAlive = true;
 
   try {
@@ -347,58 +471,34 @@ router.post('/generate-with-progress', auth, async (req, res) => {
       catch { clearInterval(keepaliveInterval); connectionAlive = false; }
     }, 10000);
 
+    // ── Smart Progress Ticker — shows what AI is building in plain English ──
+    const progressMsgs = getProgressMessages(prompt || description || '', template, projectName);
+    let progressIdx = 0;
+    progressTicker = setInterval(() => {
+      if (!connectionAlive || aborted || progressIdx >= progressMsgs.length) {
+        clearInterval(progressTicker);
+        return;
+      }
+      sendProgress('building', progressMsgs[progressIdx]);
+      progressIdx++;
+    }, 6000); // New message every 6 seconds
+
     const aiOpts = { onProgress: (msg) => { if (!aborted && connectionAlive) sendProgress('generating', msg); } };
 
-    // ══════════ SMART TEMPLATE MATCHING + AI CUSTOMIZATION ══════════
     let files;
     if (template && template !== 'custom') {
-      // User explicitly picked a template category (portfolio, blog, etc.)
       sendProgress('generating_html', `Building ${template} project: "${projectName || 'My Project'}"...`);
       files = await generateProjectMultiStep(template, projectName || 'My Project', description || prompt, colorScheme, features, model, aiOpts);
     } else {
-      // DEFAULT: Smart template matching — user just typed a prompt
-      sendProgress('analyzing', 'Finding the perfect template for your project...');
-
-      const matchResult = analyzeAndMatch(inputText);
-
-      if (matchResult.matched) {
-        // ✅ Found a good template match — customize instead of generating from scratch
-        const missingCount = matchResult.missingFeatures?.length || 0;
-
-        sendProgress('template_matched',
-          `Found perfect base template (${matchResult.score}% match)` +
-          (missingCount > 0 ? ` — will add ${missingCount} extra feature(s)` : '') +
-          (matchResult.detectedColor ? ` — applying custom colors` : '') +
-          (matchResult.detectedTheme && matchResult.detectedTheme !== matchResult.colorScheme ? ` — switching to ${matchResult.detectedTheme} theme` : '')
-        );
-
-        sendProgress('generating_html', `Customizing your website with ${modelLabel}...`);
-
-        // Build the customization prompt with the full template HTML embedded
-        const customizeUserPrompt = buildCustomizationUserPrompt(matchResult, inputText, projectName || 'My Website');
-
-        // Use the customization system prompt instead of the generic generation prompt
-        const result = await callAI(CUSTOMIZE_SYSTEM_PROMPT, customizeUserPrompt, model, undefined, aiOpts);
-        files = result ? parseFilesFromResponse(result) : [];
-
-        // If customization produced no files, fall back to from-scratch generation
-        if (!files || files.length === 0) {
-          sendProgress('fallback', 'Retrying with full generation...');
-          const fallbackPrompt = `Create a complete, production-ready website: ${inputText}\n\nProject name: ${projectName || 'My Website'}\nColor scheme: ${colorScheme || 'modern dark theme'}\n${features ? `Features: ${features.join(', ')}` : ''}\n\nIMPORTANT: index.html must be self-contained with ALL CSS inside <style> and ALL JS inside <script>.`;
-          const fallbackResult = await callAI(GEN_PROMPT, fallbackPrompt, model, undefined, aiOpts);
-          files = fallbackResult ? parseFilesFromResponse(fallbackResult) : [];
-        }
-      } else {
-        // ❌ No good template match — generate from scratch (original behavior)
-        sendProgress('generating_html', `Generating website from scratch with ${modelLabel}...`);
-        const userPrompt = `Create a complete, production-ready website: ${inputText}\n\nProject name: ${projectName || 'My Website'}\nColor scheme: ${colorScheme || 'modern dark theme'}\n${features ? `Features: ${features.join(', ')}` : ''}\n\nIMPORTANT: index.html must be self-contained with ALL CSS inside <style> and ALL JS inside <script>.`;
-        const result = await callAI(GEN_PROMPT, userPrompt, model, undefined, aiOpts);
-        files = result ? parseFilesFromResponse(result) : [];
-      }
+      sendProgress('generating_html', `Generating website using ${modelLabel}...`);
+      const userPrompt = `Create a complete, production-ready website: ${prompt}\n\nProject name: ${projectName || 'My Website'}\nColor scheme: ${colorScheme || 'modern dark theme'}\n${features ? `Features: ${features.join(', ')}` : ''}\n\nIMPORTANT: index.html must be self-contained with ALL CSS inside <style> and ALL JS inside <script>.`;
+      const result = await callAI(GEN_PROMPT, userPrompt, model, undefined, aiOpts);
+      files = result ? parseFilesFromResponse(result) : [];
     }
 
     if (aborted || !connectionAlive) {
       if (keepaliveInterval) clearInterval(keepaliveInterval);
+      clearInterval(progressTicker);
       user.creditCoins(cost, 'generation', 'Refund: stopped by user');
       user.decrementMonthlyUsage(model, 'generation');
       await user.save();
@@ -408,6 +508,7 @@ router.post('/generate-with-progress', auth, async (req, res) => {
 
     if (!files || files.length === 0) {
       if (keepaliveInterval) clearInterval(keepaliveInterval);
+      clearInterval(progressTicker);
       user.creditCoins(cost, 'generation', `Refund: generation failed (${model})`);
       user.decrementMonthlyUsage(model, 'generation');
       await user.save();
@@ -424,10 +525,12 @@ router.post('/generate-with-progress', auth, async (req, res) => {
     safeSend(res, { type: 'complete', files, preview, model, blSpent: cost, balanceRemaining: user.bl_coins, monthlyUsage: user.getMonthlyUsage(), fileCount: files.length });
 
     if (keepaliveInterval) clearInterval(keepaliveInterval);
+    clearInterval(progressTicker);
     res.end();
     activeSessions.delete(sessionId);
   } catch (err) {
     if (keepaliveInterval) clearInterval(keepaliveInterval);
+    if (progressTicker) clearInterval(progressTicker);
     console.error('[Build] Error:', err.message);
     if (connectionAlive) {
       try {
@@ -464,32 +567,13 @@ router.post('/generate', auth, async (req, res) => {
     user.incrementMonthlyUsage(model, 'generation');
     if (config.trialModels && config.trialModels.includes(model)) user.incrementTrial(model);
     await user.save();
-
     let files;
-    if (template && template !== 'custom') {
-      files = await generateProjectMultiStep(template, projectName || 'My Project', description || prompt, colorScheme, features, model);
-    } else {
-      // Smart template matching (same logic as SSE endpoint)
-      const matchResult = analyzeAndMatch(inputText);
-
-      if (matchResult.matched) {
-        const customizeUserPrompt = buildCustomizationUserPrompt(matchResult, inputText, projectName || 'My Website');
-        const result = await callAI(CUSTOMIZE_SYSTEM_PROMPT, customizeUserPrompt, model);
-        files = result ? parseFilesFromResponse(result) : [];
-
-        // Fallback to from-scratch if customization fails
-        if (!files || files.length === 0) {
-          const fallbackPrompt = `Create a complete, production-ready website: ${inputText}\n\nProject name: ${projectName || 'My Website'}\nColor scheme: ${colorScheme || 'modern dark theme'}\n${features ? `Features: ${features.join(', ')}` : ''}\n\nIMPORTANT: index.html must be self-contained with ALL CSS inside <style> and ALL JS inside <script>.`;
-          const fallbackResult = await callAI(GEN_PROMPT, fallbackPrompt, model);
-          files = fallbackResult ? parseFilesFromResponse(fallbackResult) : [];
-        }
-      } else {
-        const userPrompt = `Create a complete, production-ready website: ${inputText}\n\nProject name: ${projectName || 'My Website'}\nColor scheme: ${colorScheme || 'modern dark theme'}\n${features ? `Features: ${features.join(', ')}` : ''}\n\nIMPORTANT: index.html must be self-contained with ALL CSS inside <style> and ALL JS inside <script>.`;
-        const result = await callAI(GEN_PROMPT, userPrompt, model);
-        files = result ? parseFilesFromResponse(result) : [];
-      }
+    if (template && template !== 'custom') { files = await generateProjectMultiStep(template, projectName || 'My Project', description || prompt, colorScheme, features, model); }
+    else {
+      const userPrompt = `Create a complete, production-ready website: ${prompt}\n\nProject name: ${projectName || 'My Website'}\nColor scheme: ${colorScheme || 'modern dark theme'}\n${features ? `Features: ${features.join(', ')}` : ''}\n\nIMPORTANT: index.html must be self-contained with ALL CSS in <style> and ALL JS in <script>.`;
+      const result = await callAI(GEN_PROMPT, userPrompt, model);
+      files = result ? parseFilesFromResponse(result) : [];
     }
-
     if (!files || !files.length) { user.creditCoins(cost, 'generation', 'Refund: failed'); user.decrementMonthlyUsage(model, 'generation'); await user.save(); return res.status(500).json({ error: 'Generation failed. Coins refunded.' }); }
     const preview = generatePreviewHTML(files);
     res.json({ files, preview, model, blSpent: cost, balanceRemaining: user.bl_coins, monthlyUsage: user.getMonthlyUsage(), fileCount: files.length });
