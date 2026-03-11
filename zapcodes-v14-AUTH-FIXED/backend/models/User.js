@@ -153,6 +153,23 @@ const userSchema = new mongoose.Schema({
     updatedAt: { type: Date, default: Date.now },
   }],
 
+  // ══════════ Zapcodes: Form Submissions ══════════
+  form_submissions: [{
+    subdomain: { type: String },
+    formType: { type: String },
+    data: { type: mongoose.Schema.Types.Mixed },
+    emailSent: { type: Boolean, default: false },
+    createdAt: { type: Date, default: Date.now },
+  }],
+
+  // ══════════ ZapCodes Help AI — Persistent Chat History ══════════
+  help_chat_history: [{
+    role: { type: String },
+    content: { type: String },
+    model: { type: String },
+    timestamp: { type: Date, default: Date.now },
+  }],
+
   // Legacy usage
   scansUsed: { type: Number, default: 0 },
   scansLimit: { type: Number, default: 5 },
