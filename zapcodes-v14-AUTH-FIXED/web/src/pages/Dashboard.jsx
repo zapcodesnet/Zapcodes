@@ -241,7 +241,7 @@ export default function Dashboard() {
           <div>
             {sites.map(site => (
               <div key={site.subdomain} style={s.siteCard}>
-                <div>
+                <div style={{ flex: 1 }}>
                   <a href={`https://${site.subdomain}.zapcodes.net`} target="_blank" rel="noreferrer" style={s.siteUrl}>
                     {site.subdomain}.zapcodes.net
                   </a>
@@ -250,6 +250,12 @@ export default function Dashboard() {
                     {site.hasBadge ? ' · Badge' : ' · No badge'}
                     {site.isPWA ? ' · PWA' : ''}
                     {site.lastUpdated ? ` · Updated ${new Date(site.lastUpdated).toLocaleDateString()}` : ''}
+                  </div>
+                  <div style={{ display: 'flex', gap: 6, marginTop: 8, flexWrap: 'wrap' }}>
+                    <a href={`/build?site=${site.subdomain}&action=edit`} style={s.siteActionBtn('#6366f1')}>✏️ Edit</a>
+                    <a href={`/build?site=${site.subdomain}&action=fix`} style={s.siteActionBtn('#8b5cf6')}>🔧 Fix</a>
+                    <a href={`/build?site=${site.subdomain}&action=feature`} style={s.siteActionBtn('#f59e0b')}>✨ Add Feature</a>
+                    <a href={`/build?site=${site.subdomain}&action=redesign`} style={s.siteActionBtn('#06b6d4')}>🎨 Redesign</a>
                   </div>
                 </div>
                 <button style={s.miniBtn} onClick={() => handleDeleteSite(site.subdomain)}>Delete</button>
@@ -337,6 +343,11 @@ const s = {
     display: 'flex', justifyContent: 'space-between', alignItems: 'center',
   },
   siteUrl: { color: '#6366f1', fontSize: 13, fontWeight: 600, textDecoration: 'none' },
+  siteActionBtn: (color) => ({
+    padding: '4px 10px', borderRadius: 6, fontSize: 11, fontWeight: 600,
+    color, border: `1px solid ${color}33`, background: `${color}11`,
+    textDecoration: 'none', cursor: 'pointer', display: 'inline-block',
+  }),
   miniBtn: {
     padding: '5px 12px', borderRadius: 6, border: 'none', background: '#ef4444',
     color: '#fff', cursor: 'pointer', fontSize: 12, fontWeight: 600,
