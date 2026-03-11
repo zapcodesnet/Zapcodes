@@ -12,12 +12,12 @@ const MODELS = {
   'gemini-flash': { model: 'gemini-2.5-flash', maxOutput: 65536, contextLimit: 1000000 },
   'gemini-pro': { model: 'gemini-3.1-pro-preview', maxOutput: 16384, contextLimit: 1000000 },
   haiku: { model: 'claude-haiku-4-5-20251001', maxOutput: 16384, contextLimit: 180000 },
-  sonnet: { model: 'claude-sonnet-4-6', maxOutput: 16384, contextLimit: 200000 },
+  sonnet: { model: 'claude-sonnet-4-6', maxOutput: 32768, contextLimit: 200000 },
   // New key aliases
   'gemini-2.5-flash': { model: 'gemini-2.5-flash', maxOutput: 65536, contextLimit: 1000000 },
   'gemini-3.1-pro': { model: 'gemini-3.1-pro-preview', maxOutput: 16384, contextLimit: 1000000 },
   'haiku-4.5': { model: 'claude-haiku-4-5-20251001', maxOutput: 16384, contextLimit: 180000 },
-  'sonnet-4.6': { model: 'claude-sonnet-4-6', maxOutput: 16384, contextLimit: 200000 },
+  'sonnet-4.6': { model: 'claude-sonnet-4-6', maxOutput: 32768, contextLimit: 200000 },
 };
 const GROQ_MAX_OUTPUT = MODELS.groq.maxOutput;
 const GROQ_MODELS = MODELS.groq.models;
@@ -162,7 +162,7 @@ async function callGemini(systemPrompt, userPrompt, options = {}) {
         contents: [{ role: 'user', parts: [{ text: userPrompt.slice(0, 900000) }] }],
         systemInstruction: { parts: [{ text: systemPromptToString(systemPrompt) }] },
         generationConfig: { maxOutputTokens: maxTokens, temperature: 0.2 },
-      }, { headers: { 'Content-Type': 'application/json' }, timeout: 180000 });
+      }, { headers: { 'Content-Type': 'application/json' }, timeout: 300000 });
       const candidate = r.data?.candidates?.[0];
       if (!candidate) throw new Error('No candidates in Gemini response');
       if (candidate.finishReason === 'SAFETY') throw new Error('Content blocked by safety filter');
@@ -196,20 +196,22 @@ async function callClaude(systemPrompt, userPrompt, options = {}) {
   const label = options.label || 'Claude';
   const onProgress = options.onProgress;
   const signal = options.signal;
+  // All models get maximum timeout (300s = Render's connection limit)
+  const timeoutMs = 300000;
   try {
     const result = await withRetry(async (attempt) => {
       if (signal?.aborted) throw new Error('Generation cancelled');
       if (attempt > 0 && onProgress) onProgress(`Retrying ${label} (attempt ${attempt + 1})...`);
-      console.log(`[Claude] ${label} -> ${modelId} (max_tokens=${maxTokens})${attempt > 0 ? ' retry #' + attempt : ''}`);
+      console.log(`[Claude] ${label} -> ${modelId} (max_tokens=${maxTokens}, timeout=${timeoutMs/1000}s)${attempt > 0 ? ' retry #' + attempt : ''}`);
       const r = await axios.post(ANTHROPIC_API_URL, {
         model: modelId, max_tokens: maxTokens,
         system: [{ type: 'text', text: systemPromptToString(systemPrompt), cache_control: { type: 'ephemeral' } }],
         messages: [{ role: 'user', content: userPrompt.slice(0, 180000) }],
-      }, { headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'Content-Type': 'application/json' }, timeout: 120000 });
+      }, { headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'Content-Type': 'application/json' }, timeout: timeoutMs });
       const c = extractClaudeText(r.data);
       if (c) { console.log(`[Claude] OK ${label} (${c.length} chars, ${r.data.usage?.input_tokens || 0} in / ${r.data.usage?.output_tokens || 0} out)`); return c; }
       throw new Error('Empty response from Claude');
-    }, { maxRetries: 1, onRetry: (a, m, d) => { console.log(`[Claude] Retry ${a}/${m} in ${Math.round(d)}ms`); if (onProgress) onProgress(`${label} retry ${a}/${m}...`); } });
+    }, { maxRetries: 0, onRetry: (a, m, d) => { console.log(`[Claude] Retry ${a}/${m} in ${Math.round(d)}ms`); if (onProgress) onProgress(`${label} retry ${a}/${m}...`); } });
     return result;
   } catch (err) {
     if (err.message === 'Generation cancelled') throw err;
@@ -227,7 +229,7 @@ async function callClaudeWithImages(systemPrompt, userPrompt, images = [], optio
   try {
     const blocks = images.map(img => ({ type: 'image', source: { type: 'base64', media_type: img.mimeType || 'image/png', data: img.base64 } }));
     blocks.push({ type: 'text', text: userPrompt });
-    const r = await axios.post(ANTHROPIC_API_URL, { model: options.model || MODELS['haiku-4.5'].model, max_tokens: options.maxTokens || 16384, system: [{ type: 'text', text: systemPromptToString(systemPrompt), cache_control: { type: 'ephemeral' } }], messages: [{ role: 'user', content: blocks }] }, { headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'Content-Type': 'application/json' }, timeout: 120000 });
+    const r = await axios.post(ANTHROPIC_API_URL, { model: options.model || MODELS['haiku-4.5'].model, max_tokens: options.maxTokens || 16384, system: [{ type: 'text', text: systemPromptToString(systemPrompt), cache_control: { type: 'ephemeral' } }], messages: [{ role: 'user', content: blocks }] }, { headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'Content-Type': 'application/json' }, timeout: 300000 });
     return extractClaudeText(r.data);
   } catch (err) { console.error(`[Claude+Image] X ${err.response?.data?.error?.message || err.message}`); return null; }
 }
@@ -249,7 +251,7 @@ async function callGroq(systemPrompt, userPrompt, options = {}) {
       const result = await withRetry(async (attempt) => {
         if (signal?.aborted) throw new Error('Generation cancelled');
         if (attempt > 0 && onProgress) onProgress(`Retrying Groq ${model} (attempt ${attempt + 1})...`);
-        const r = await axios.post(GROQ_API_URL, { model, messages: [{ role: 'system', content: sysText }, { role: 'user', content: userPrompt.slice(0, MODELS.groq.contextLimit) }], temperature: 0.2, max_tokens: maxTokens }, { headers: { 'Authorization': `Bearer ${key}`, 'Content-Type': 'application/json' }, timeout: 120000 });
+        const r = await axios.post(GROQ_API_URL, { model, messages: [{ role: 'system', content: sysText }, { role: 'user', content: userPrompt.slice(0, MODELS.groq.contextLimit) }], temperature: 0.2, max_tokens: maxTokens }, { headers: { 'Authorization': `Bearer ${key}`, 'Content-Type': 'application/json' }, timeout: 300000 });
         const c = r.data.choices?.[0]?.message?.content;
         if (c) { console.log(`[GROQ] OK ${model} (${c.length} chars)`); return c; }
         throw new Error('Empty Groq response');
