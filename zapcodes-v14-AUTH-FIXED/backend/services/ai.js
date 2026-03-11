@@ -10,14 +10,14 @@ const GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1beta/models'
 const MODELS = {
   groq: { models: ['llama-3.3-70b-versatile', 'llama3-70b-8192', 'deepseek-r1-distill-llama-70b', 'mixtral-8x7b-32768'], maxOutput: 8192, contextLimit: 30000 },
   'gemini-flash': { model: 'gemini-2.5-flash', maxOutput: 65536, contextLimit: 1000000 },
-  'gemini-pro': { model: 'gemini-3.1-pro-preview', maxOutput: 16384, contextLimit: 1000000 },
+  'gemini-pro': { model: 'gemini-3.1-pro-preview', maxOutput: 65536, contextLimit: 1000000 },
   haiku: { model: 'claude-haiku-4-5-20251001', maxOutput: 16384, contextLimit: 180000 },
-  sonnet: { model: 'claude-sonnet-4-6', maxOutput: 32768, contextLimit: 200000 },
+  sonnet: { model: 'claude-sonnet-4-6', maxOutput: 64000, contextLimit: 200000 },
   // New key aliases
   'gemini-2.5-flash': { model: 'gemini-2.5-flash', maxOutput: 65536, contextLimit: 1000000 },
-  'gemini-3.1-pro': { model: 'gemini-3.1-pro-preview', maxOutput: 16384, contextLimit: 1000000 },
+  'gemini-3.1-pro': { model: 'gemini-3.1-pro-preview', maxOutput: 65536, contextLimit: 1000000 },
   'haiku-4.5': { model: 'claude-haiku-4-5-20251001', maxOutput: 16384, contextLimit: 180000 },
-  'sonnet-4.6': { model: 'claude-sonnet-4-6', maxOutput: 32768, contextLimit: 200000 },
+  'sonnet-4.6': { model: 'claude-sonnet-4-6', maxOutput: 64000, contextLimit: 200000 },
 };
 const GROQ_MAX_OUTPUT = MODELS.groq.maxOutput;
 const GROQ_MODELS = MODELS.groq.models;
@@ -311,21 +311,69 @@ async function generateProjectMultiStep(template, projectName, description, colo
 
 function parseFilesFromResponse(response) {
   const files = []; let m;
+
+  // Pattern 1: ```filepath:filename.ext ... ```
   const p1 = /```filepath:([^\n]+)\n([\s\S]*?)```/g;
   while ((m = p1.exec(response))) { if (m[1].trim() && m[2].trim().length > 10) files.push({ name: m[1].trim(), content: m[2].trim() }); }
   if (files.length) return dedup(files);
+
+  // Pattern 2: ```html filename.ext ... ```
   const p2 = /```(?:javascript|jsx|tsx|typescript|json|html|css|js|ts|bash|sh|text|markdown|md)?\s+([^\n`]+\.[a-z]{1,6})\n([\s\S]*?)```/g;
   while ((m = p2.exec(response))) { if (m[1].trim() && m[2].trim().length > 10) files.push({ name: m[1].trim(), content: m[2].trim() }); }
   if (files.length) return dedup(files);
+
+  // Pattern 3: **File: name.ext** ... ```
   const p3 = /(?:\*\*|###?\s*)(?:File:?\s*)?`?([^\n`*]+\.[a-z]{1,6})`?\*{0,2}\s*\n+```[^\n]*\n([\s\S]*?)```/g;
   while ((m = p3.exec(response))) { if (m[2].trim().length > 10) files.push({ name: m[1].trim(), content: m[2].trim() }); }
   if (files.length) return dedup(files);
+
+  // Pattern 4: === FILE: name.ext ===
   const p4 = /===\s*(?:FILE:\s*)?([^\n=]+?)\s*===\n([\s\S]*?)(?=\n===|$)/g;
   while ((m = p4.exec(response))) { if (m[1].trim() && m[2].trim().length > 10) files.push({ name: m[1].trim(), content: m[2].trim() }); }
-  if (files.length === 0 && (response.includes('<!DOCTYPE') || response.includes('<html'))) {
-    const htmlMatch = response.match(/(<!DOCTYPE[\s\S]*<\/html>)/i);
-    if (htmlMatch && htmlMatch[1].length > 100) files.push({ name: 'index.html', content: htmlMatch[1].trim() });
+  if (files.length) return dedup(files);
+
+  // ── TRUNCATION RECOVERY ──
+  // When AI hits max tokens, the closing ``` is never written.
+  // Try to salvage truncated code blocks.
+
+  // Pattern 5: ```filepath:name.ext ... (no closing ```) — grab everything to end
+  const p5 = /```filepath:([^\n]+)\n([\s\S]+)/g;
+  while ((m = p5.exec(response))) {
+    let content = m[2].trim();
+    // Remove any trailing incomplete ``` if present
+    content = content.replace(/`{1,2}$/, '');
+    if (m[1].trim() && content.length > 100) files.push({ name: m[1].trim(), content });
   }
+  if (files.length) { console.log(`[Parser] Recovered ${files.length} file(s) from truncated output`); return dedup(files); }
+
+  // Pattern 6: ```html\n... (no closing ```) — common for single-file websites
+  const p6 = /```(?:html|htm)\s*\n([\s\S]+)/g;
+  while ((m = p6.exec(response))) {
+    let content = m[1].trim().replace(/`{1,2}$/, '');
+    if (content.length > 100) files.push({ name: 'index.html', content });
+  }
+  if (files.length) { console.log(`[Parser] Recovered ${files.length} file(s) from truncated HTML block`); return dedup(files); }
+
+  // Pattern 7: Raw HTML in response (complete or truncated)
+  if (response.includes('<!DOCTYPE') || response.includes('<html')) {
+    // Try complete HTML first
+    const htmlComplete = response.match(/(<!DOCTYPE[\s\S]*<\/html>)/i);
+    if (htmlComplete && htmlComplete[1].length > 100) {
+      files.push({ name: 'index.html', content: htmlComplete[1].trim() });
+    } else {
+      // Truncated HTML — grab from <!DOCTYPE to end of response
+      const htmlStart = response.match(/(<!DOCTYPE[\s\S]+)/i) || response.match(/(<html[\s\S]+)/i);
+      if (htmlStart && htmlStart[1].length > 500) {
+        let content = htmlStart[1].trim();
+        // Try to close any open tags for a valid-ish HTML
+        if (!content.includes('</html>')) content += '\n</body>\n</html>';
+        if (!content.includes('</body>')) content = content.replace('</html>', '</body>\n</html>');
+        files.push({ name: 'index.html', content });
+        console.log(`[Parser] Recovered truncated HTML (${content.length} chars) — auto-closed tags`);
+      }
+    }
+  }
+
   return dedup(files);
 }
 
