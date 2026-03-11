@@ -20,11 +20,8 @@ const TEMPLATES = [
   { id: 'webapp', name: 'Web App', icon: '⚡' },
   { id: 'saas', name: 'SaaS', icon: '💎' },
 ];
-const MODEL_TIMEOUTS = {
-  'gemini-3.1-pro': 360000, 'gemini-2.5-flash': 360000,
-  'haiku-4.5': 360000, 'sonnet-4.6': 360000, 'groq': 360000,
-  'gemini-pro': 360000, 'gemini-flash': 360000, 'haiku': 360000, 'sonnet': 360000,
-};
+// No artificial timeouts — let every AI completely finish its work.
+// Users can click "Stop" anytime. Backend keepalive detects dead connections.
 const UNLIMITED = 999999999;
 function isUnlimited(n) { return n >= UNLIMITED || n === Infinity; }
 function formatBL(n) {
@@ -82,8 +79,8 @@ export default function Build() {
   const [availableModels, setAvailableModels] = useState([]);
   const iframeRef = useRef(null);
   const fileInputRef = useRef(null);
-  const genTimeoutRef = useRef(null);
   const abortControllerRef = useRef(null);
+  const progressEndRef = useRef(null);
 
   useEffect(() => { api.get('/api/coins/balance').then(r => setCoinData(r.data)).catch(() => {}); }, []);
   useEffect(() => {
@@ -93,6 +90,13 @@ export default function Build() {
     }).catch(() => {});
   }, [coinData?.balance]);
   useEffect(() => { const h = () => setIsMobile(window.innerWidth < 768); window.addEventListener('resize', h); return () => window.removeEventListener('resize', h); }, []);
+
+  // Auto-scroll progress messages to latest
+  useEffect(() => {
+    if (progressEndRef.current) {
+      progressEndRef.current.scrollIntoView({ behavior: 'smooth', block: 'end' });
+    }
+  }, [progressMessages]);
 
   useEffect(() => {
     const projId = searchParams.get('project');
@@ -130,8 +134,6 @@ export default function Build() {
     const controller = new AbortController(); abortControllerRef.current = controller;
     try {
       const token = localStorage.getItem('token');
-      const timeoutMs = MODEL_TIMEOUTS[effectiveModel] || 300000;
-      genTimeoutRef.current = setTimeout(() => { controller.abort(); setProgressStep('error'); setProgressMessages(p => [...p, { step: 'error', message: `Timed out after ${Math.round(timeoutMs/60000)} min. Try again or switch models.`, time: new Date() }]); setGenResult('error'); setGenerating(false); }, timeoutMs);
       const response = await fetch(`${API_URL}/api/build/generate-with-progress`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` }, body: JSON.stringify({ prompt, model: effectiveModel, template, projectName: projectName || 'My Website' }), signal: controller.signal });
       if (!response.ok) { let msg = `Server error ${response.status}`; try { msg = (await response.json()).error || msg; } catch {} throw new Error(msg); }
       const reader = response.body.getReader(); const decoder = new TextDecoder(); let buffer = '';
@@ -161,10 +163,10 @@ export default function Build() {
     } catch (err) {
       if (err.name === 'AbortError') { if (!genResult) { setProgressStep('stopped'); setGenResult('stopped'); } }
       else { setProgressStep('error'); setGenResult('error'); setProgressMessages(p => [...p, { step: 'error', message: err.message || 'Connection failed', time: new Date() }]); }
-    } finally { if (genTimeoutRef.current) clearTimeout(genTimeoutRef.current); abortControllerRef.current = null; setGenerating(false); setSessionId(null); }
+    } finally { abortControllerRef.current = null; setGenerating(false); setSessionId(null); }
   }, [prompt, effectiveModel, template, projectName, isMobile]);
 
-  const handleStop = async () => { if (abortControllerRef.current) abortControllerRef.current.abort(); if (genTimeoutRef.current) clearTimeout(genTimeoutRef.current); try { await api.post('/api/build/stop', { sessionId }); } catch {} setProgressStep('stopped'); setGenResult('stopped'); setProgressMessages(p => [...p, { step: 'stopped', message: 'Stopped. Coins refunded.', time: new Date() }]); setGenerating(false); };
+  const handleStop = async () => { if (abortControllerRef.current) abortControllerRef.current.abort(); try { await api.post('/api/build/stop', { sessionId }); } catch {} setProgressStep('stopped'); setGenResult('stopped'); setProgressMessages(p => [...p, { step: 'stopped', message: 'Stopped. Coins refunded.', time: new Date() }]); setGenerating(false); };
   const handleDismissProgress = () => { setGenResult(null); setProgressMessages([]); setProgressStep(''); };
   const handleSaveProject = async () => { if (!files.length) return alert('No files'); try { const { data } = await api.post('/api/build/save-project', { projectId: currentProjectId, name: projectName || 'Untitled', files, preview, template, description: prompt }); setCurrentProjectId(data.project.projectId); alert(`Saved! (v${data.project.version})`); } catch (e) { alert(e.response?.data?.error || 'Save failed'); } };
   const handleDeploy = async () => { if (!subdomain.trim() || !files.length) return alert('Enter subdomain & generate first'); setDeploying(true); try { const { data } = await api.post('/api/build/deploy', { subdomain: subdomain.toLowerCase(), files, title: projectName || subdomain }); setDeployUrl(data.url); alert(`Deployed to ${data.url}`); } catch (e) { alert(e.response?.data?.error || 'Deploy failed'); } finally { setDeploying(false); } };
@@ -197,13 +199,14 @@ export default function Build() {
           {!generating && genResult && <button style={{ padding: '5px 12px', fontSize: 11, borderRadius: 8, border: '1px solid var(--border)', background: 'transparent', color: 'var(--text-secondary)', cursor: 'pointer', fontWeight: 600 }} onClick={handleDismissProgress}>✕</button>}
         </div>
       </div>
-      <div style={{ maxHeight: isMobile ? 150 : 180, overflowY: 'auto' }}>
-        {progressMessages.slice(isMobile ? -6 : -10).map((m, i) => (
-          <div key={i} style={{ padding: '4px 0', fontSize: 12, color: m.step === 'error' ? '#ef4444' : 'var(--text-secondary)', display: 'flex', gap: 6, alignItems: 'flex-start' }}>
+      <div style={{ maxHeight: isMobile ? 200 : 250, overflowY: 'auto' }}>
+        {progressMessages.map((m, i) => (
+          <div key={i} style={{ padding: '4px 0', fontSize: 12, color: m.step === 'error' ? '#ef4444' : m.step === 'building' ? '#06b6d4' : 'var(--text-secondary)', display: 'flex', gap: 6, alignItems: 'flex-start' }}>
             <div style={{ width: 7, height: 7, borderRadius: 4, marginTop: 4, flexShrink: 0, background: m.step === 'error' ? '#ef4444' : m.step === 'done' ? '#22c55e' : m.step === 'stopped' ? '#f59e0b' : m.step === 'building' ? '#06b6d4' : '#6366f1' }} />
             <span>{m.message}</span>
           </div>
         ))}
+        <div ref={progressEndRef} />
       </div>
       {genResult === 'error' && !generating && <button style={{ marginTop: 8, padding: '7px 14px', borderRadius: 8, border: 'none', background: '#6366f1', color: '#fff', cursor: 'pointer', fontWeight: 600, fontSize: 12 }} onClick={() => { handleDismissProgress(); handleGenerate(); }}>🔄 Retry</button>}
       {/* Mobile: show "View Preview" button after generation completes */}
