@@ -15,16 +15,16 @@ const HELP_AI_CONFIG = {
   bronze:  { primary: 'groq',             fallback: 'gemini-2.5-flash', maxFileSize: 2 * 1024 * 1024,  canUpload: true,  maxHistory: 30,  maxStored: 300 },
   silver:  { primary: 'gemini-2.5-flash', fallback: 'gemini-3.1-pro',   maxFileSize: 5 * 1024 * 1024,  canUpload: true,  maxHistory: 40,  maxStored: 400 },
   gold:    { primary: 'gemini-2.5-flash', fallback: 'gemini-3.1-pro',   maxFileSize: 10 * 1024 * 1024, canUpload: true,  maxHistory: 40,  maxStored: 500 },
-  diamond: { primary: 'gemini-3.1-pro',   fallback: 'opus-4.6',         maxFileSize: 25 * 1024 * 1024, canUpload: true,  maxHistory: 50,  maxStored: 1000 },
+  diamond: { primary: 'gemini-3.1-pro',   fallback: 'sonnet-4.6',        maxFileSize: 25 * 1024 * 1024, canUpload: true,  maxHistory: 50,  maxStored: 1000 },
 };
 
 const MODEL_DISPLAY = {
   'groq': 'Groq AI', 'gemini-2.5-flash': 'Gemini 2.5 Flash',
-  'gemini-3.1-pro': 'Gemini 3.1 Pro', 'opus-4.6': 'Claude Opus 4.6',
-  'sonnet-4.6': 'Sonnet 4.6', 'haiku-4.5': 'Haiku 4.5',
+  'gemini-3.1-pro': 'Gemini 3.1 Pro', 'sonnet-4.6': 'Sonnet 4.6',
+  'haiku-4.5': 'Haiku 4.5', 'opus-4.6': 'Claude Opus 4.6',
 };
 
-// Admin gets all models to choose from
+// Admin gets all models including Opus 4.6 (Opus is ONLY available to admin)
 const ADMIN_MODELS = ['groq', 'gemini-2.5-flash', 'gemini-3.1-pro', 'haiku-4.5', 'sonnet-4.6', 'opus-4.6'];
 
 // ── System Prompts ──
@@ -181,18 +181,22 @@ router.post('/chat', auth, async (req, res) => {
     }
 
     // ── Call AI with fallback ──
+    // Opus 4.6 is admin-only and not in callAI() — needs direct callClaude
+    async function callHelpModel(model, sys, prompt) {
+      if (model === 'opus-4.6') {
+        return await callClaude(sys, prompt, {
+          model: 'claude-opus-4-0-20250514', maxTokens: 4096,
+          label: 'Opus 4.6', noFallback: true,
+        });
+      }
+      return await callAI(sys, prompt, model, 4096);
+    }
+
     let response = null;
     let usedModel = primaryModel;
 
     try {
-      if (primaryModel === 'opus-4.6') {
-        response = await callClaude(systemPrompt, contextPrompt, {
-          model: 'claude-opus-4-0-20250514', maxTokens: 4096,
-          label: 'Opus 4.6', noFallback: true,
-        });
-      } else {
-        response = await callAI(systemPrompt, contextPrompt, primaryModel, 4096);
-      }
+      response = await callHelpModel(primaryModel, systemPrompt, contextPrompt);
     } catch (err) {
       console.error(`[HelpAI] Primary ${primaryModel} failed: ${err.message}`);
     }
@@ -201,14 +205,7 @@ router.post('/chat', auth, async (req, res) => {
       usedModel = fallbackModel;
       console.log(`[HelpAI] Falling back ${primaryModel} → ${fallbackModel}`);
       try {
-        if (fallbackModel === 'opus-4.6') {
-          response = await callClaude(systemPrompt, contextPrompt, {
-            model: 'claude-opus-4-0-20250514', maxTokens: 4096,
-            label: 'Opus 4.6', noFallback: true,
-          });
-        } else {
-          response = await callAI(systemPrompt, contextPrompt, fallbackModel, 4096);
-        }
+        response = await callHelpModel(fallbackModel, systemPrompt, contextPrompt);
       } catch (err) {
         console.error(`[HelpAI] Fallback ${fallbackModel} also failed: ${err.message}`);
       }
