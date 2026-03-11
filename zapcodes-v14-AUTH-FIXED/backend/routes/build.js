@@ -200,128 +200,56 @@ function generatePreviewHTML(files) {
 
 const BADGE_SCRIPT = `<div id="zc-badge" style="position:fixed;bottom:10px;right:10px;z-index:99999;background:linear-gradient(135deg,#6366f1,#8b5cf6);color:#fff;padding:6px 14px;border-radius:20px;font-family:-apple-system,sans-serif;font-size:12px;font-weight:600;box-shadow:0 2px 10px rgba(99,102,241,.3);cursor:pointer;text-decoration:none;display:flex;align-items:center;gap:4px" onclick="window.open('https://zapcodes.net?ref=badge','_blank')">⚡ Made with ZapCodes</div>`;
 
-// ══════════ SMART PROGRESS MESSAGES — Plain English updates while AI generates ══════════
-function getProgressMessages(prompt, template, projectName) {
+// ══════════ AI-POWERED PROGRESS MESSAGES — Sounds like a real person talking ══════════
+async function generateProgressMessages(prompt, template, projectName, modelLabel) {
   const name = projectName || 'your website';
-  const lower = (prompt || '').toLowerCase();
+  try {
+    const result = await callAI(
+      `You are ZapCodes AI assistant giving live build updates to a user. Write exactly 25 short progress messages (one per line) that describe what you're doing while building their website/app. 
 
-  // Base messages that always apply
-  const base = [
-    `🧠 AI is reading your description and planning the structure for ${name}...`,
-    `📐 Designing the page layout — deciding where each section goes...`,
-    `🎨 Choosing colors, fonts, and visual style for your design...`,
-    `📱 Making sure everything looks great on phones, tablets, and desktops...`,
+RULES:
+- Sound like a friendly, enthusiastic human developer talking directly to the user
+- Be specific to what THEY asked for — reference their project by name, mention specific features from their description
+- Each message should be different and describe a NEW thing you're working on
+- Use casual, warm language like "Alright, working on..." or "This is going to look great — adding..." or "Almost there! Just polishing..."
+- Include relevant emojis naturally (not at the start of every line)
+- Mix technical details with excitement: "The navigation is coming together nicely — added smooth scroll and a slick hamburger menu for mobile"
+- Progress from planning → structure → design → features → polish → final checks
+- Never say "Step 1" or number them
+- Keep each message under 120 characters
+- Don't use generic filler — every message should feel like real progress
+- Reference the AI model: "${modelLabel}"
+
+OUTPUT: Return ONLY the 25 messages, one per line. No numbering, no quotes, no extra text.`,
+      `Building: "${name}" — User's description: "${(prompt || '').slice(0, 500)}" — Template: ${template || 'custom'}`,
+      'groq',
+      1500
+    );
+    if (result) {
+      const lines = result.split('\n').map(l => l.trim()).filter(l => l.length > 10 && l.length < 200);
+      if (lines.length >= 8) return lines;
+    }
+  } catch (err) {
+    console.log(`[ProgressMsgs] AI generation failed, using fallback: ${err.message}`);
+  }
+
+  // Fallback if Groq is unavailable — still conversational
+  return [
+    `Alright, let me take a look at what you want for ${name}... 🧠`,
+    `Got it! I can see exactly what you're going for. Let me start building this out.`,
+    `First things first — I'm setting up the overall page structure and layout.`,
+    `Working on the design system now — picking the right colors, fonts, and spacing to match your vision.`,
+    `${modelLabel} is doing some heavy lifting here — writing all the HTML structure from scratch.`,
+    `The header and navigation are taking shape. Added smooth scrolling between sections.`,
+    `Making this fully responsive — it needs to look perfect on phones, tablets, and desktop.`,
+    `Adding the main content sections now. This is where ${name} really starts to come alive.`,
+    `Writing the CSS — gradients, shadows, hover effects, the works. Going for that premium feel.`,
+    `The interactive parts are next — JavaScript for animations, form validation, and user interactions.`,
+    `Almost there! Just polishing the micro-interactions and making sure everything flows smoothly.`,
+    `Running through a final check — making sure no styles are missing and all buttons actually work.`,
+    `Looking good! Wrapping everything into a clean, single-file package for you.`,
+    `Just about done — doing one last pass to make sure it's production-ready. Hang tight!`,
   ];
-
-  // Template-specific messages
-  const templateMsgs = {
-    portfolio: [
-      `👤 Building your hero section with an eye-catching introduction...`,
-      `💼 Creating the projects showcase with image cards and hover effects...`,
-      `📊 Adding your skills section with animated progress bars...`,
-      `✉️ Setting up the contact form with validation...`,
-      `🎯 Writing smooth scroll navigation with active link highlighting...`,
-    ],
-    landing: [
-      `🚀 Creating an attention-grabbing hero section with call-to-action...`,
-      `✨ Building the features showcase with icons and descriptions...`,
-      `💰 Designing the pricing table with tier comparison...`,
-      `💬 Adding testimonials carousel and trust badges...`,
-      `📝 Setting up the FAQ accordion section...`,
-    ],
-    blog: [
-      `📰 Creating the featured post hero section...`,
-      `🗂️ Building the article grid with category filters...`,
-      `🔍 Adding search functionality and sidebar...`,
-      `📖 Designing individual article view layout...`,
-    ],
-    ecommerce: [
-      `🛍️ Building the product grid with images and prices...`,
-      `🛒 Creating the shopping cart with add/remove functionality...`,
-      `🔎 Adding product filters — categories, price range, sorting...`,
-      `💳 Designing the checkout form with input validation...`,
-    ],
-    dashboard: [
-      `📊 Creating the stat cards with key metrics...`,
-      `📈 Building charts and data visualizations...`,
-      `📋 Designing the data table with sorting and search...`,
-      `🔔 Adding the sidebar navigation and notification panel...`,
-    ],
-    saas: [
-      `🏠 Creating the landing page with product features...`,
-      `🔐 Building the login and registration system...`,
-      `📊 Designing the app dashboard with CRUD operations...`,
-      `⚙️ Adding settings and profile management...`,
-    ],
-    webapp: [
-      `🔐 Creating the authentication screens...`,
-      `📊 Building the main dashboard view...`,
-      `💾 Setting up data management with local storage...`,
-      `🧭 Adding navigation and routing between pages...`,
-    ],
-  };
-
-  // Prompt-keyword messages (detected from user's description)
-  const contextual = [];
-  if (lower.includes('restaurant') || lower.includes('food') || lower.includes('menu') || lower.includes('dining')) {
-    contextual.push(`🍽️ Designing the menu section with dishes and prices...`);
-    contextual.push(`📍 Adding location map and reservation section...`);
-    contextual.push(`📸 Creating a food gallery with beautiful images...`);
-  }
-  if (lower.includes('hotel') || lower.includes('resort') || lower.includes('booking')) {
-    contextual.push(`🏨 Building room showcase with amenities and pricing...`);
-    contextual.push(`📅 Creating the booking and availability section...`);
-  }
-  if (lower.includes('gym') || lower.includes('fitness') || lower.includes('workout')) {
-    contextual.push(`💪 Designing class schedule and membership options...`);
-    contextual.push(`🏋️ Building the trainer profiles section...`);
-  }
-  if (lower.includes('school') || lower.includes('education') || lower.includes('course') || lower.includes('academy')) {
-    contextual.push(`📚 Creating the course catalog and enrollment section...`);
-    contextual.push(`👨‍🏫 Building the instructor profiles...`);
-  }
-  if (lower.includes('salon') || lower.includes('spa') || lower.includes('beauty')) {
-    contextual.push(`💇 Designing the services menu with pricing...`);
-    contextual.push(`📅 Adding the appointment booking section...`);
-  }
-  if (lower.includes('shop') || lower.includes('store') || lower.includes('product') || lower.includes('buy')) {
-    contextual.push(`🛒 Building the product catalog with cart functionality...`);
-    contextual.push(`💳 Adding the checkout flow...`);
-  }
-  if (lower.includes('game') || lower.includes('play') || lower.includes('interactive')) {
-    contextual.push(`🎮 Building the game mechanics and user interactions...`);
-    contextual.push(`🏆 Adding scoring system and game state management...`);
-  }
-  if (lower.includes('gallery') || lower.includes('photo') || lower.includes('image')) {
-    contextual.push(`🖼️ Creating the image gallery with lightbox viewer...`);
-  }
-  if (lower.includes('form') || lower.includes('contact') || lower.includes('email')) {
-    contextual.push(`✉️ Building the contact form with email validation...`);
-  }
-  if (lower.includes('animation') || lower.includes('animate') || lower.includes('motion')) {
-    contextual.push(`✨ Adding scroll animations and micro-interactions...`);
-  }
-  if (lower.includes('dark') || lower.includes('theme') || lower.includes('mode')) {
-    contextual.push(`🌙 Applying dark theme with accent color highlights...`);
-  }
-  if (lower.includes('mobile app') || lower.includes('react native') || lower.includes('app')) {
-    contextual.push(`📱 Setting up the mobile app navigation structure...`);
-    contextual.push(`🔧 Building screen components and state management...`);
-  }
-
-  // Finishing messages (always at the end)
-  const finish = [
-    `⚡ Adding interactive JavaScript — buttons, animations, and events...`,
-    `🔧 Writing form validation and error handling...`,
-    `📱 Fine-tuning responsive design for all screen sizes...`,
-    `🎨 Polishing final styles — shadows, gradients, and transitions...`,
-    `✅ Running final quality checks on all code...`,
-    `📦 Packaging everything into a single file...`,
-  ];
-
-  // Combine: base → template → contextual → finish
-  const tpl = templateMsgs[template] || [];
-  return [...base, ...tpl, ...contextual, ...finish];
 }
 
 // ══════════ GET /api/build/costs ══════════
@@ -471,8 +399,9 @@ router.post('/generate-with-progress', auth, async (req, res) => {
       catch { clearInterval(keepaliveInterval); connectionAlive = false; }
     }, 10000);
 
-    // ── Smart Progress Ticker — shows what AI is building in plain English ──
-    const progressMsgs = getProgressMessages(prompt || description || '', template, projectName);
+    // ── AI-Powered Progress Messages — sounds like a real person talking ──
+    sendProgress('building', `Hey! Let me take a look at what you want to build... 🧠`);
+    const progressMsgs = await generateProgressMessages(prompt || description || '', template, projectName, modelLabel);
     let progressIdx = 0;
     progressTicker = setInterval(() => {
       if (!connectionAlive || aborted || progressIdx >= progressMsgs.length) {
@@ -481,11 +410,12 @@ router.post('/generate-with-progress', auth, async (req, res) => {
       }
       sendProgress('building', progressMsgs[progressIdx]);
       progressIdx++;
-    }, 6000); // New message every 6 seconds
+    }, 8000); // New message every 8 seconds — feels more natural, like someone typing
 
     const aiOpts = { onProgress: (msg) => { if (!aborted && connectionAlive) sendProgress('generating', msg); } };
 
     let files;
+    let usedModel = model; // Track which model actually generated the files
     if (template && template !== 'custom') {
       sendProgress('generating_html', `Building ${template} project: "${projectName || 'My Project'}"...`);
       files = await generateProjectMultiStep(template, projectName || 'My Project', description || prompt, colorScheme, features, model, aiOpts);
@@ -507,22 +437,68 @@ router.post('/generate-with-progress', auth, async (req, res) => {
     }
 
     if (!files || files.length === 0) {
-      if (keepaliveInterval) clearInterval(keepaliveInterval);
-      clearInterval(progressTicker);
-      user.creditCoins(cost, 'generation', `Refund: generation failed (${model})`);
-      user.decrementMonthlyUsage(model, 'generation');
-      await user.save();
-      sendProgress('error', `${modelLabel} produced no files. Coins refunded. Try again or use a different prompt.`);
-      safeSend(res, { type: 'error', error: 'Generation failed. Coins refunded.', suggestion: 'Try a simpler prompt.' });
-      return res.end();
+      // ── FALLBACK: Try next model when current model's output couldn't be parsed ──
+      const FALLBACK_ORDER = ['sonnet-4.6', 'gemini-3.1-pro', 'haiku-4.5', 'gemini-2.5-flash', 'groq'];
+      const currentIdx = FALLBACK_ORDER.indexOf(normalizeModelKey(model));
+      let fallbackFiles = null;
+      let fallbackModel = null;
+
+      for (let fi = currentIdx + 1; fi < FALLBACK_ORDER.length; fi++) {
+        if (aborted || !connectionAlive) break;
+        const nextModel = FALLBACK_ORDER[fi];
+        const nextLabel = getModelDisplayName(nextModel);
+        const nextCost = BL_COSTS.generation[nextModel] || 5000;
+
+        // Check if user has enough BL for fallback model
+        if (user.role !== 'super-admin' && user.bl_coins < nextCost) continue;
+
+        sendProgress('generating', `${modelLabel} output couldn't be processed. Trying ${nextLabel}...`);
+        console.log(`[Build Fallback] ${model} produced 0 parseable files → trying ${nextModel}`);
+
+        try {
+          const fbPrompt = `Create a complete, production-ready website: ${prompt}\n\nProject name: ${projectName || 'My Website'}\nColor scheme: ${colorScheme || 'modern dark theme'}\n${features ? `Features: ${features.join(', ')}` : ''}\n\nIMPORTANT: index.html must be self-contained with ALL CSS inside <style> and ALL JS inside <script>.`;
+          const fbResult = await callAI(GEN_PROMPT, fbPrompt, nextModel, undefined, aiOpts);
+          fallbackFiles = fbResult ? parseFilesFromResponse(fbResult) : [];
+          if (fallbackFiles && fallbackFiles.length > 0) {
+            fallbackModel = nextModel;
+            // Refund original model, charge fallback model
+            user.creditCoins(cost, 'generation', `Refund: ${modelLabel} output failed, used ${nextLabel}`);
+            user.spendCoins(nextCost, 'generation', `Website generation fallback (${nextLabel})`, nextModel);
+            await user.save();
+            files = fallbackFiles;
+            usedModel = nextModel;
+            sendProgress('generating', `${nextLabel} generated ${files.length} file(s) successfully!`);
+            break;
+          }
+        } catch (fbErr) {
+          console.error(`[Build Fallback] ${nextModel} also failed: ${fbErr.message}`);
+          continue;
+        }
+      }
+
+      // If all fallbacks failed too
+      if (!files || files.length === 0) {
+        if (keepaliveInterval) clearInterval(keepaliveInterval);
+        clearInterval(progressTicker);
+        user.creditCoins(cost, 'generation', `Refund: generation failed (${model})`);
+        user.decrementMonthlyUsage(model, 'generation');
+        await user.save();
+        sendProgress('error', `All AI models couldn't generate parseable code. Coins refunded. Try a simpler or shorter prompt.`);
+        safeSend(res, { type: 'error', error: 'Generation failed. Coins refunded.', suggestion: 'Try a simpler prompt or different template.' });
+        return res.end();
+      }
     }
 
     sendProgress('preview', 'Building live preview...');
     const preview = generatePreviewHTML(files);
 
-    sendProgress('done', `Done! ${files.length} file(s) generated using ${modelLabel}.`);
+    const actualModel = usedModel;
+    const actualLabel = getModelDisplayName(actualModel);
+    const actualCost = BL_COSTS.generation[actualModel] || cost;
 
-    safeSend(res, { type: 'complete', files, preview, model, blSpent: cost, balanceRemaining: user.bl_coins, monthlyUsage: user.getMonthlyUsage(), fileCount: files.length });
+    sendProgress('done', `Done! ${files.length} file(s) generated using ${actualLabel}.`);
+
+    safeSend(res, { type: 'complete', files, preview, model: actualModel, blSpent: actualCost, balanceRemaining: user.bl_coins, monthlyUsage: user.getMonthlyUsage(), fileCount: files.length });
 
     if (keepaliveInterval) clearInterval(keepaliveInterval);
     clearInterval(progressTicker);
