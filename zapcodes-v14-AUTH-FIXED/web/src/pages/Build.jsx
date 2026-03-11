@@ -81,6 +81,8 @@ export default function Build() {
   const [systemPromptText, setSystemPromptText] = useState('');
   const [autoAttachPrompt, setAutoAttachPrompt] = useState(true);
   const [defaultPrompts, setDefaultPrompts] = useState({ gen: '', edit: '', fix: '' });
+  const [activePromptMode, setActivePromptMode] = useState('gen'); // 'gen', 'edit', 'fix'
+  const [editingDeployedSite, setEditingDeployedSite] = useState(null); // subdomain string or null
   const iframeRef = useRef(null);
   const fileInputRef = useRef(null);
   const abortControllerRef = useRef(null);
@@ -104,14 +106,22 @@ export default function Build() {
     } catch {}
     // Fetch default prompts from backend
     api.get('/api/build/system-prompts').then(r => {
-      setDefaultPrompts({ gen: r.data.gen_prompt || '', edit: r.data.edit_prompt || '', fix: r.data.fix_prompt || '' });
-      // If no saved prompt, use the appropriate default
+      const prompts = { gen: r.data.gen_prompt || '', edit: r.data.edit_prompt || '', fix: r.data.fix_prompt || '' };
+      setDefaultPrompts(prompts);
+      // If no saved custom prompt, auto-select based on mode
       if (!localStorage.getItem('zc_system_prompt')) {
-        setSystemPromptText(r.data.edit_prompt || r.data.gen_prompt || '');
+        setSystemPromptText(prompts.gen);
       }
     }).catch(() => {});
   }, []);
   useEffect(() => { const h = () => setIsMobile(window.innerWidth < 768); window.addEventListener('resize', h); return () => window.removeEventListener('resize', h); }, []);
+
+  // Auto-select system prompt when mode changes (unless user has a custom saved prompt)
+  useEffect(() => {
+    if (!localStorage.getItem('zc_system_prompt') && defaultPrompts[activePromptMode]) {
+      setSystemPromptText(defaultPrompts[activePromptMode]);
+    }
+  }, [activePromptMode, defaultPrompts]);
 
   // Auto-scroll progress messages to latest
   useEffect(() => {
@@ -120,19 +130,70 @@ export default function Build() {
     }
   }, [progressMessages]);
 
+  // Auto-refresh preview whenever files change
+  useEffect(() => {
+    if (files.length > 0) {
+      const htmlFile = files.find(f => f.name === 'index.html') || files.find(f => f.name?.endsWith('.html'));
+      if (htmlFile?.content) {
+        setPreview(htmlFile.content);
+        if (iframeRef.current) iframeRef.current.srcdoc = htmlFile.content;
+      }
+    }
+  }, [files]);
+
+  // Auto-set prompt mode to 'gen' when no files loaded
+  useEffect(() => {
+    if (!searchParams.get('project') && !searchParams.get('site') && files.length === 0 && !editingDeployedSite) {
+      setActivePromptMode('gen');
+    }
+  }, [files, searchParams, editingDeployedSite]);
+
   useEffect(() => {
     const projId = searchParams.get('project');
+    const action = searchParams.get('action') || 'edit';
+    const linkedSub = searchParams.get('subdomain'); // For redeploy
+
     if (projId) {
       api.get(`/api/build/project/${projId}`).then(({ data }) => {
-        const p = data.project; setCurrentProjectId(p.projectId); setProjectName(p.name || ''); setPrompt(p.description || '');
-        if (p.files?.length) { setFiles(p.files); setPreview(p.preview || ''); }
-        const action = searchParams.get('action');
-        if (action === 'fix') { setTab('fix'); setFixFiles(p.files || []); }
-        else if (action === 'feature') setPrompt(`Existing project: ${p.name}\n\nAdd new feature: `);
+        const p = data.project;
+        setCurrentProjectId(p.projectId);
+        setProjectName(p.name || '');
+        if (p.files?.length) setFiles(p.files);
+
+        // If project is linked to a deployed site, lock subdomain
+        const sub = p.linkedSubdomain || linkedSub;
+        if (sub) {
+          setSubdomain(sub);
+          setEditingDeployedSite(sub);
+        }
+
+        if (action === 'fix') {
+          setTab('fix');
+          setFixFiles(p.files || []);
+          setFixDescription('');
+          setActivePromptMode('fix');
+          setPrompt('');
+        } else if (action === 'redeploy') {
+          // Re-deploy mode — load files, show preview, user can deploy directly
+          setTab('build');
+          setPrompt('');
+          setActivePromptMode('edit');
+        } else if (action === 'deploy') {
+          // Fresh deploy — no locked subdomain
+          setTab('build');
+          setPrompt('');
+          setActivePromptMode('gen');
+        } else {
+          // Edit mode (default)
+          setTab('build');
+          setActivePromptMode('edit');
+          setPrompt(`Here is my existing project "${p.name}".\n\nPlease make these changes:\n\n`);
+        }
       }).catch(() => {});
+      return; // Don't also try to load from 'site' param
     }
 
-    // ── Load deployed site for editing ──
+    // Legacy: Load from deployed site directly (backward compatibility)
     const siteSubdomain = searchParams.get('site');
     if (siteSubdomain) {
       api.get(`/api/build/site-content/${siteSubdomain}`).then(({ data }) => {
@@ -140,23 +201,12 @@ export default function Build() {
           setFiles(data.files);
           setProjectName(data.title || siteSubdomain);
           setSubdomain(siteSubdomain);
-          // Generate preview from loaded files
-          const htmlFile = data.files.find(f => f.name === 'index.html' || f.name.endsWith('.html'));
-          if (htmlFile) setPreview(htmlFile.content);
-
-          const action = searchParams.get('action') || 'edit';
+          setEditingDeployedSite(siteSubdomain);
+          setActivePromptMode(action === 'fix' ? 'fix' : 'edit');
           if (action === 'fix') {
             setTab('fix');
             setFixFiles(data.files);
-            setFixDescription('');
-          } else if (action === 'feature') {
-            setTab('build');
-            setPrompt(`Here is my existing website "${data.title || siteSubdomain}" deployed at ${siteSubdomain}.zapcodes.net.\n\nPlease keep ALL existing content, design, and functionality, and ADD this new feature:\n\n`);
-          } else if (action === 'redesign') {
-            setTab('build');
-            setPrompt(`Here is my existing website "${data.title || siteSubdomain}" deployed at ${siteSubdomain}.zapcodes.net.\n\nPlease COMPLETELY REDESIGN this website with a fresh new look while keeping the same content and functionality. Make it more modern, visually stunning, and professional:\n\n`);
           } else {
-            // Default: edit mode
             setTab('build');
             setPrompt(`Here is my existing website "${data.title || siteSubdomain}" deployed at ${siteSubdomain}.zapcodes.net.\n\nPlease make these changes:\n\n`);
           }
@@ -182,16 +232,12 @@ export default function Build() {
   const charPct = isUnlimited(maxChars) ? 0 : (charsUsed / maxChars) * 100;
 
   // ── System Prompt Management ──
-  const isEditMode = files.length > 0 || searchParams.get('site');
-  const activeDefaultPrompt = isEditMode ? defaultPrompts.edit : defaultPrompts.gen;
-
   const saveSystemPrompt = () => {
     try { localStorage.setItem('zc_system_prompt', systemPromptText); } catch {}
     alert('System prompt saved!');
   };
   const resetSystemPrompt = () => {
-    const def = isEditMode ? defaultPrompts.edit : defaultPrompts.gen;
-    setSystemPromptText(def);
+    setSystemPromptText(defaultPrompts[activePromptMode] || defaultPrompts.gen || '');
     try { localStorage.removeItem('zc_system_prompt'); } catch {}
   };
   const deleteSystemPrompt = () => {
@@ -204,15 +250,21 @@ export default function Build() {
     try { localStorage.setItem('zc_auto_attach_prompt', String(next)); } catch {}
   };
   const loadDefaultForMode = (mode) => {
-    if (mode === 'gen') setSystemPromptText(defaultPrompts.gen);
-    else if (mode === 'edit') setSystemPromptText(defaultPrompts.edit);
-    else if (mode === 'fix') setSystemPromptText(defaultPrompts.fix);
+    setActivePromptMode(mode);
+    setSystemPromptText(defaultPrompts[mode] || '');
+    try { localStorage.removeItem('zc_system_prompt'); } catch {} // Clear custom so auto-select works
   };
 
   const handleGenerate = useCallback(async () => {
     if (!prompt.trim()) return alert('Enter a description');
     const editFiles = files.length > 0 ? [...files] : null;
-    setGenerating(true); setGenResult(null); setFiles([]); setPreview(''); setDeployUrl(''); setProgressMessages([]); setProgressStep('validating');
+    // When editing: keep preview visible. When new: clear everything.
+    if (editFiles) {
+      setGenerating(true); setGenResult(null); setDeployUrl(''); setProgressMessages([]); setProgressStep('validating');
+    } else {
+      setActivePromptMode('gen');
+      setGenerating(true); setGenResult(null); setFiles([]); setPreview(''); setDeployUrl(''); setProgressMessages([]); setProgressStep('validating');
+    }
     if (isMobile) setMobileView('build');
     const controller = new AbortController(); abortControllerRef.current = controller;
     try {
@@ -257,8 +309,40 @@ export default function Build() {
 
   const handleStop = async () => { if (abortControllerRef.current) abortControllerRef.current.abort(); try { await api.post('/api/build/stop', { sessionId }); } catch {} setProgressStep('stopped'); setGenResult('stopped'); setProgressMessages(p => [...p, { step: 'stopped', message: 'Stopped. Coins refunded.', time: new Date() }]); setGenerating(false); };
   const handleDismissProgress = () => { setGenResult(null); setProgressMessages([]); setProgressStep(''); };
-  const handleSaveProject = async () => { if (!files.length) return alert('No files'); try { const { data } = await api.post('/api/build/save-project', { projectId: currentProjectId, name: projectName || 'Untitled', files, preview, template, description: prompt }); setCurrentProjectId(data.project.projectId); alert(`Saved! (v${data.project.version})`); } catch (e) { alert(e.response?.data?.error || 'Save failed'); } };
-  const handleDeploy = async () => { if (!subdomain.trim() || !files.length) return alert('Enter subdomain & generate first'); setDeploying(true); try { const { data } = await api.post('/api/build/deploy', { subdomain: subdomain.toLowerCase(), files, title: projectName || subdomain }); setDeployUrl(data.url); alert(`Deployed to ${data.url}`); } catch (e) { alert(e.response?.data?.error || 'Deploy failed'); } finally { setDeploying(false); } };
+  const handleSaveProject = async () => {
+    if (!files.length) return alert('No files');
+    try {
+      const payload = { projectId: currentProjectId, name: projectName || 'Untitled', files, preview, template, description: prompt };
+      // Preserve linked subdomain if editing a deployed site's project
+      if (editingDeployedSite) payload.subdomain = editingDeployedSite;
+      const { data } = await api.post('/api/build/save-project', payload);
+      setCurrentProjectId(data.project.projectId);
+      alert(`Saved! (v${data.project.version})`);
+    } catch (e) { alert(e.response?.data?.error || 'Save failed'); }
+  };
+
+  const handleDeploy = async () => {
+    if (!files.length) return alert('Generate or load files first');
+    setDeploying(true);
+    try {
+      if (editingDeployedSite && currentProjectId) {
+        // Re-deploy from project — save project first, then push to live
+        await api.post('/api/build/save-project', { projectId: currentProjectId, name: projectName || 'Untitled', files, preview, template, description: prompt });
+        const { data } = await api.post('/api/build/redeploy-from-project', { projectId: currentProjectId });
+        setDeployUrl(data.url);
+        alert(`Re-deployed to ${data.url}!`);
+      } else {
+        // Normal deploy — backend auto-saves to project
+        if (!subdomain.trim()) return alert('Enter a subdomain');
+        const { data } = await api.post('/api/build/deploy', { subdomain: subdomain.toLowerCase(), files, title: projectName || subdomain });
+        setDeployUrl(data.url);
+        if (data.linkedProjectId) setCurrentProjectId(data.linkedProjectId);
+        setEditingDeployedSite(data.subdomain);
+        alert(`Deployed to ${data.url}!`);
+      }
+    } catch (e) { alert(e.response?.data?.error || 'Deploy failed'); }
+    finally { setDeploying(false); }
+  };
   const handleCloneAnalyze = async () => { if (!cloneUrl.trim()) return; setAnalyzing(true); try { const { data } = await api.post('/api/build/clone-analyze', { url: cloneUrl }); setCloneAnalysis(data.analysis); } catch (e) { alert(e.response?.data?.error || 'Failed'); } finally { setAnalyzing(false); } };
   const handleFileUpload = (fileList) => { const uploaded = Array.from(fileList); const zips = uploaded.filter(f => f.name.endsWith('.zip')); const texts = uploaded.filter(f => !f.name.endsWith('.zip')); if (zips.length) { const fd = new FormData(); zips.forEach(f => fd.append('files', f)); api.post('/api/files/upload', fd, { headers: { 'Content-Type': 'multipart/form-data' } }).then(({ data }) => { setFixFiles(p => [...p, ...data.files]); alert(`${data.totalFiles} files extracted`); }).catch(e => alert(e.response?.data?.error || 'ZIP failed')); } if (texts.length) Promise.all(texts.map(f => new Promise(r => { const rd = new FileReader(); rd.onload = e => r({ name: f.name, content: e.target.result }); rd.readAsText(f); }))).then(p => setFixFiles(prev => [...prev, ...p])); };
   const handleCodeFix = async () => { if (!fixFiles.length) return alert('Upload files first'); setFixing(true); try { const { data } = await api.post('/api/build/code-fix', { files: fixFiles, description: fixDescription, model: effectiveModel }); setFiles(data.files || []); setPreview(data.preview || ''); setCoinData(p => ({ ...p, balance: data.balanceRemaining })); if (iframeRef.current && data.preview) iframeRef.current.srcdoc = data.preview; setTab('build'); if (isMobile) setMobileView('preview'); } catch (e) { alert(e.response?.data?.error || 'Fix failed'); } finally { setFixing(false); } };
@@ -301,11 +385,20 @@ export default function Build() {
       {/* Editor (expanded) */}
       {showSystemPrompt && (
         <div style={{ border: '1px solid var(--border)', borderRadius: 10, padding: 10, background: 'var(--bg-card)' }}>
-          {/* Mode buttons */}
+          {/* Mode buttons — active mode is green */}
           <div style={{ display: 'flex', gap: 4, marginBottom: 8, flexWrap: 'wrap' }}>
-            <button style={{ padding: '4px 8px', borderRadius: 6, border: '1px solid var(--border)', background: 'transparent', color: 'var(--text-secondary)', cursor: 'pointer', fontSize: 10, fontWeight: 600 }} onClick={() => loadDefaultForMode('gen')}>Load: New Website</button>
-            <button style={{ padding: '4px 8px', borderRadius: 6, border: '1px solid var(--border)', background: 'transparent', color: 'var(--text-secondary)', cursor: 'pointer', fontSize: 10, fontWeight: 600 }} onClick={() => loadDefaultForMode('edit')}>Load: Edit Website</button>
-            <button style={{ padding: '4px 8px', borderRadius: 6, border: '1px solid var(--border)', background: 'transparent', color: 'var(--text-secondary)', cursor: 'pointer', fontSize: 10, fontWeight: 600 }} onClick={() => loadDefaultForMode('fix')}>Load: Fix Code</button>
+            {[
+              { id: 'gen', label: 'New Website' },
+              { id: 'edit', label: 'Edit Website' },
+              { id: 'fix', label: 'Fix Bugs' },
+            ].map(m => (
+              <button key={m.id} style={{
+                padding: '4px 8px', borderRadius: 6, cursor: 'pointer', fontSize: 10, fontWeight: 700,
+                border: activePromptMode === m.id ? '1px solid #22c55e' : '1px solid var(--border)',
+                background: activePromptMode === m.id ? 'rgba(34,197,94,.15)' : 'transparent',
+                color: activePromptMode === m.id ? '#22c55e' : 'var(--text-secondary)',
+              }} onClick={() => loadDefaultForMode(m.id)}>{m.label}</button>
+            ))}
           </div>
 
           {/* Textarea */}
@@ -485,8 +578,9 @@ export default function Build() {
               <>
                 <iframe ref={iframeRef} srcDoc={preview} style={{ flex: 1, width: '100%', border: 'none', background: '#fff' }} title="Preview" sandbox="allow-scripts allow-same-origin" />
                 <div style={{ padding: '12px 16px', borderTop: '1px solid var(--border)', background: 'var(--bg-card)', display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-                  <input style={{ flex: 1, minWidth: '100%', padding: '10px 12px', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg-elevated)', color: 'var(--text-primary)', fontSize: 14, boxSizing: 'border-box' }} placeholder="Enter subdomain (.zapcodes.net)" value={subdomain} onChange={e => setSubdomain(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, ''))} />
-                  <button style={{ padding: '12px 20px', borderRadius: 8, border: 'none', cursor: deploying ? 'not-allowed' : 'pointer', fontWeight: 700, fontSize: 14, background: deploying ? 'var(--bg-elevated)' : '#22c55e', color: '#fff', opacity: deploying ? .5 : 1, width: '100%' }} onClick={handleDeploy} disabled={deploying}>{deploying ? 'Deploying...' : '🚀 Deploy to .zapcodes.net'}</button>
+                  <input style={{ flex: 1, minWidth: '100%', padding: '10px 12px', borderRadius: 8, border: editingDeployedSite ? '1px solid #22c55e' : '1px solid var(--border)', background: editingDeployedSite ? 'rgba(34,197,94,.08)' : 'var(--bg-elevated)', color: 'var(--text-primary)', fontSize: 14, boxSizing: 'border-box' }} placeholder="Enter subdomain (.zapcodes.net)" value={subdomain} onChange={e => { if (!editingDeployedSite) setSubdomain(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, '')); }} readOnly={!!editingDeployedSite} />
+                  {editingDeployedSite && <div style={{ fontSize: 10, color: '#22c55e', padding: '2px 0' }}>🔒 Subdomain locked — editing deployed site</div>}
+                  <button style={{ padding: '12px 20px', borderRadius: 8, border: 'none', cursor: deploying ? 'not-allowed' : 'pointer', fontWeight: 700, fontSize: 14, background: deploying ? 'var(--bg-elevated)' : '#22c55e', color: '#fff', opacity: deploying ? .5 : 1, width: '100%' }} onClick={handleDeploy} disabled={deploying}>{deploying ? 'Deploying...' : editingDeployedSite ? '🚀 Re-deploy to .zapcodes.net' : '🚀 Deploy to .zapcodes.net'}</button>
                 </div>
                 {deployUrl && <div style={{ padding: '8px 12px', background: 'rgba(34,197,94,.1)', fontSize: 12 }}>✅ Live at <a href={deployUrl} target="_blank" rel="noreferrer" style={{ color: '#22c55e', fontWeight: 600 }}>{deployUrl}</a></div>}
                 <button style={{ padding: '10px', borderTop: '1px solid var(--border)', background: 'var(--bg-card)', color: 'var(--text-secondary)', fontSize: 13, fontWeight: 600, border: 'none', cursor: 'pointer' }} onClick={() => setMobileView('build')}>← Back to Builder</button>
@@ -643,10 +737,13 @@ export default function Build() {
           {preview ? (
             <>
               <iframe ref={iframeRef} srcDoc={preview} style={s.iframe} title="Preview" sandbox="allow-scripts allow-same-origin" />
-              <div style={{ padding: '12px 16px', borderTop: '1px solid var(--border)', background: 'var(--bg-card)', display: 'flex', gap: 8, alignItems: 'center' }}>
-                <input style={{ flex: 1, padding: '8px 12px', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg-elevated)', color: 'var(--text-primary)', fontSize: 13 }} placeholder="subdomain" value={subdomain} onChange={e => setSubdomain(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, ''))} />
-                <span style={{ color: 'var(--text-muted)', fontSize: 13 }}>.zapcodes.net</span>
-                <button style={{ padding: '8px 20px', borderRadius: 8, border: 'none', cursor: deploying ? 'not-allowed' : 'pointer', fontWeight: 700, fontSize: 13, background: deploying ? 'var(--bg-elevated)' : '#22c55e', color: '#fff', opacity: deploying ? .5 : 1 }} onClick={handleDeploy} disabled={deploying}>{deploying ? 'Deploying...' : '🚀 Deploy (Free)'}</button>
+              <div style={{ padding: '12px 16px', borderTop: '1px solid var(--border)', background: 'var(--bg-card)' }}>
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                  <input style={{ flex: 1, padding: '8px 12px', borderRadius: 8, border: editingDeployedSite ? '1px solid #22c55e' : '1px solid var(--border)', background: editingDeployedSite ? 'rgba(34,197,94,.08)' : 'var(--bg-elevated)', color: 'var(--text-primary)', fontSize: 13 }} placeholder="subdomain" value={subdomain} onChange={e => { if (!editingDeployedSite) setSubdomain(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, '')); }} readOnly={!!editingDeployedSite} />
+                  <span style={{ color: 'var(--text-muted)', fontSize: 13 }}>.zapcodes.net</span>
+                  <button style={{ padding: '8px 20px', borderRadius: 8, border: 'none', cursor: deploying ? 'not-allowed' : 'pointer', fontWeight: 700, fontSize: 13, background: deploying ? 'var(--bg-elevated)' : '#22c55e', color: '#fff', opacity: deploying ? .5 : 1 }} onClick={handleDeploy} disabled={deploying}>{deploying ? 'Deploying...' : editingDeployedSite ? '🚀 Re-deploy' : '🚀 Deploy'}</button>
+                </div>
+                {editingDeployedSite && <div style={{ fontSize: 10, color: '#22c55e', marginTop: 4 }}>🔒 Subdomain locked — editing deployed site</div>}
               </div>
               {deployUrl && <div style={{ padding: '8px 16px', background: 'rgba(34,197,94,.1)', fontSize: 13 }}>✅ Live at <a href={deployUrl} target="_blank" rel="noreferrer" style={{ color: '#22c55e', fontWeight: 600 }}>{deployUrl}</a></div>}
             </>
