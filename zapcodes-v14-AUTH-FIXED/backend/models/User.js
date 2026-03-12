@@ -164,6 +164,7 @@ const userSchema = new mongoose.Schema({
 
   // ══════════ ZapCodes Help AI — Persistent Chat History ══════════
   help_chat_history: [{
+    help_chat_histories: { type: mongoose.Schema.Types.Mixed, default: {} },
     role: { type: String },
     content: { type: String },
     model: { type: String },
