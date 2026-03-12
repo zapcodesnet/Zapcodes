@@ -1,16 +1,23 @@
 const express = require('express');
 const router = express.Router();
+const crypto = require('crypto');
 const { auth } = require('../middleware/auth');
-const { callAI } = require('../services/ai');
+const { callAI, generateImageImagen3 } = require('../services/ai');
 const User = require('../models/User');
 
 // ══════════════════════════════════════════════════════════════
 // ZapCodes Help AI — Tier-based chat + code file delivery
 // - Persistent conversations in MongoDB
 // - AI returns downloadable complete code files
-// - Real-time sync via Socket.IO (web ↔ mobile)
-// - Admin default: Claude Opus 4.6
+// - AI generates images via Gemini Imagen 3 when helpful
+// - Real-time sync via Socket.IO (web ↔ mobile) with msgId dedup
+// - Admin default: Claude Opus 4.6 (NEVER Sonnet)
 // ══════════════════════════════════════════════════════════════
+
+// ── Generate unique message ID for dedup across devices ──
+function genMsgId() {
+  return crypto.randomBytes(12).toString('hex');
+}
 
 const HELP_AI_CONFIG = {
   free:    { primary: 'groq',             fallback: 'gemini-2.5-flash', maxFileSize: 0,                canUpload: false, maxHistory: 20,  maxStored: 200,  maxOut: 2048 },
@@ -20,6 +27,7 @@ const HELP_AI_CONFIG = {
   diamond: { primary: 'gemini-3.1-pro',   fallback: 'sonnet-4.6',       maxFileSize: 25 * 1024 * 1024, canUpload: true,  maxHistory: 50,  maxStored: 1000, maxOut: 16384 },
 };
 
+// ── Admin config: Opus 4.6 is the ONLY default. NOT Sonnet. ──
 const ADMIN_CONFIG = {
   primary: 'opus-4.6', fallback: 'sonnet-4.6',
   maxFileSize: 100 * 1024 * 1024, canUpload: true,
@@ -62,6 +70,20 @@ Code file rules:
 5. After code blocks, briefly explain what changed and why
 6. For normal questions — just answer in plain text, NO code blocks with filepath`;
 
+// ── Image generation instructions ──
+const IMAGE_RULES = `
+AI IMAGE GENERATION:
+You can generate images to help users understand concepts visually!
+When the user seems confused, is asking "what does X look like", or would benefit from a visual:
+- Include an image tag in your response: [GENERATE_IMAGE: detailed description of what to generate]
+- The system will automatically generate the image using Gemini Imagen 3 and attach it
+- Use descriptive prompts: colors, layout, style, what to show
+- Great for: UI mockups, diagrams, visual explanations, design concepts, layouts, workflows
+- Example: [GENERATE_IMAGE: A modern dark-themed dashboard layout with a sidebar navigation on the left, stat cards across the top showing revenue and users, and a line chart in the center, purple and indigo accent colors]
+- You can include multiple [GENERATE_IMAGE: ...] tags if multiple visuals would help
+- Always pair images with text explanation — images complement your answer, not replace it
+- Do NOT generate images for simple text questions that don't need visuals`;
+
 const HELP_SYSTEM_PROMPT = `You are ZapCodes Help AI — a friendly support assistant and coding partner for ZapCodes.net (AI website builder) and BlendLink.net (social commerce platform).
 
 Personality: Warm, helpful, conversational. Explain simply. Use emojis sparingly. Remember past conversations.
@@ -76,6 +98,8 @@ You help with:
 
 ${CODE_RULES}
 
+${IMAGE_RULES}
+
 Stay focused on ZapCodes/BlendLink help. For unrelated topics, briefly answer then redirect.`;
 
 const ADMIN_SYSTEM_PROMPT = `You are ZapCodes Admin AI — the admin's senior development partner. You work as a team. No restrictions on topics.
@@ -89,6 +113,8 @@ Your approach:
 - Recommend external tools/services when appropriate
 
 ${CODE_RULES}
+
+${IMAGE_RULES}
 
 Platform knowledge:
 - Stack: Node.js/Express backend, React 19/Vite frontend, MongoDB Atlas, Render + Cloudflare Pages
@@ -121,6 +147,26 @@ function stripCodeBlocks(text) {
     .trim();
 }
 
+// ── Extract image generation prompts from AI response ──
+function extractImagePrompts(text) {
+  const prompts = [];
+  const regex = /\[GENERATE_IMAGE:\s*([\s\S]*?)\]/g;
+  let match;
+  while ((match = regex.exec(text)) !== null) {
+    const prompt = match[1].trim();
+    if (prompt.length > 5) prompts.push(prompt);
+  }
+  return prompts;
+}
+
+// ── Strip image tags from text (replaced with placeholder after images generated) ──
+function stripImageTags(text) {
+  return text
+    .replace(/\[GENERATE_IMAGE:\s*[\s\S]*?\]/g, '[🖼️ Image attached below]')
+    .replace(/\[🖼️ Image attached below\](\s*\[🖼️ Image attached below\])+/g, '[🖼️ Images attached below]')
+    .trim();
+}
+
 // ══════════ GET /api/help/config ══════════
 router.get('/config', auth, (req, res) => {
   const tier = req.user.subscription_tier || 'free';
@@ -132,8 +178,10 @@ router.get('/config', auth, (req, res) => {
     maxFileSize: config.maxFileSize,
     maxFileSizeMB: Math.round(config.maxFileSize / (1024 * 1024)),
     primaryModel: MODEL_DISPLAY[config.primary] || config.primary,
+    // Admin ALWAYS defaults to opus-4.6 — never sonnet
     defaultModel: isAdmin ? 'opus-4.6' : null,
     availableModels: isAdmin ? ADMIN_MODELS.map(m => ({ id: m, name: MODEL_DISPLAY[m] || m })) : null,
+    supportsImages: true,
   });
 });
 
@@ -145,7 +193,7 @@ router.get('/history', auth, (req, res) => {
 // ══════════ DELETE /api/help/history ══════════
 router.delete('/history', auth, async (req, res) => {
   try { req.user.help_chat_history = []; await req.user.save(); res.json({ success: true }); }
-  catch { res.status(500).json({ error: 'Failed to clear history' }); }
+  catch (e) { res.status(500).json({ error: 'Failed to clear history' }); }
 });
 
 // ══════════ POST /api/help/chat ══════════
@@ -155,16 +203,27 @@ router.post('/chat', auth, async (req, res) => {
     const isAdmin = user.role === 'super-admin';
     const tier = user.subscription_tier || 'free';
     const config = isAdmin ? ADMIN_CONFIG : (HELP_AI_CONFIG[tier] || HELP_AI_CONFIG.free);
-    const { message, model: requestedModel, fileData, fileType, fileName } = req.body;
+    const { message, model: requestedModel, fileData, fileType, fileName, socketId } = req.body;
 
     if (!message || !message.trim()) return res.status(400).json({ error: 'Message is required' });
 
-    // ── Model selection (admin defaults to Opus 4.6) ──
+    // ── Generate unique IDs for this exchange (prevents duplicate messages) ──
+    const userMsgId = genMsgId();
+    const assistantMsgId = genMsgId();
+
+    // ── Model selection ──
+    // Admin ALWAYS defaults to opus-4.6. Only override if admin explicitly picks a different model.
     let primaryModel = config.primary;
     let fallbackModel = config.fallback;
-    if (isAdmin && requestedModel && ADMIN_MODELS.includes(requestedModel)) {
-      primaryModel = requestedModel;
-      fallbackModel = null;
+    if (isAdmin) {
+      // Default is opus-4.6 (from ADMIN_CONFIG.primary)
+      // Only change if admin explicitly selected a different model
+      if (requestedModel && ADMIN_MODELS.includes(requestedModel)) {
+        primaryModel = requestedModel;
+        // If admin explicitly picked a model, no fallback — use exactly what they chose
+        fallbackModel = requestedModel === 'opus-4.6' ? 'sonnet-4.6' : null;
+      }
+      // If no model requested, stays opus-4.6 with sonnet-4.6 fallback
     }
 
     const maxTokens = config.maxOut || 4096;
@@ -187,7 +246,7 @@ router.post('/chat', auth, async (req, res) => {
         try {
           const text = Buffer.from(fileData, 'base64').toString('utf-8');
           userMessage = `[User uploaded file: ${fileName}]\n\nFile contents:\n\`\`\`\n${text.slice(0, 80000)}\n\`\`\`\n\nUser's request: ${message}`;
-        } catch { userMessage = `[User uploaded file: ${fileName} — could not read]\n\n${message}`; }
+        } catch (e) { userMessage = `[User uploaded file: ${fileName} — could not read]\n\n${message}`; }
       }
     }
 
@@ -219,12 +278,60 @@ router.post('/chat', auth, async (req, res) => {
 
     // ── Extract code files ──
     const codeFiles = extractCodeFiles(response);
-    const textReply = codeFiles.length > 0 ? stripCodeBlocks(response) : response;
 
-    // ── Save history ──
+    // ── Extract and generate images via Imagen 3 ──
+    const imagePrompts = extractImagePrompts(response);
+    const generatedImages = [];
+
+    if (imagePrompts.length > 0) {
+      console.log(`[HelpAI] Generating ${imagePrompts.length} image(s) via Imagen 3...`);
+      // Generate images in parallel (max 3 to avoid rate limits)
+      const imagePromises = imagePrompts.slice(0, 3).map(async (prompt) => {
+        try {
+          const images = await generateImageImagen3(prompt, { aspectRatio: '16:9', numberOfImages: 1 });
+          if (images && images.length > 0) {
+            return { prompt: prompt.slice(0, 100), base64: images[0].base64, mimeType: images[0].mimeType };
+          }
+        } catch (err) {
+          console.error(`[HelpAI] Image gen failed: ${err.message}`);
+        }
+        return null;
+      });
+
+      const results = await Promise.allSettled(imagePromises);
+      for (const r of results) {
+        if (r.status === 'fulfilled' && r.value) generatedImages.push(r.value);
+      }
+      console.log(`[HelpAI] Generated ${generatedImages.length}/${imagePrompts.length} image(s)`);
+    }
+
+    // ── Build clean text reply (strip code blocks and image tags) ──
+    let textReply = response;
+    if (codeFiles.length > 0) textReply = stripCodeBlocks(textReply);
+    if (imagePrompts.length > 0) textReply = stripImageTags(textReply);
+
+    // ── Save to history ──
     if (!user.help_chat_history) user.help_chat_history = [];
-    user.help_chat_history.push({ role: 'user', content: message + (fileName ? ` [📎 ${fileName}]` : ''), timestamp: new Date() });
-    user.help_chat_history.push({ role: 'assistant', content: response, model: MODEL_DISPLAY[usedModel] || usedModel, timestamp: new Date() });
+
+    const userHistoryEntry = {
+      role: 'user',
+      content: message + (fileName ? ` [📎 ${fileName}]` : ''),
+      msgId: userMsgId,
+      timestamp: new Date(),
+    };
+
+    const assistantHistoryEntry = {
+      role: 'assistant',
+      content: response,
+      model: MODEL_DISPLAY[usedModel] || usedModel,
+      msgId: assistantMsgId,
+      // Store image count (not full base64) in history to keep DB small
+      imageCount: generatedImages.length,
+      timestamp: new Date(),
+    };
+
+    user.help_chat_history.push(userHistoryEntry);
+    user.help_chat_history.push(assistantHistoryEntry);
 
     const maxStored = isAdmin ? Infinity : (config.maxStored || 200);
     if (maxStored !== Infinity && user.help_chat_history.length > maxStored) {
@@ -232,27 +339,82 @@ router.post('/chat', auth, async (req, res) => {
     }
     await user.save();
 
-    // ── Real-time sync to all user devices via Socket.IO ──
+    // ── Real-time sync to OTHER devices via Socket.IO ──
+    // KEY FIX: Emit to all sockets in the user room EXCEPT the sender's socketId
+    // This prevents the duplicate: sender gets response via HTTP, other devices get it via socket
     try {
       const io = req.app.get('io');
       if (io) {
-        io.to(`user-${user._id}`).emit('help-ai-message', {
-          role: 'assistant', content: textReply,
+        const room = `user-${user._id}`;
+
+        // Emit the user message to OTHER devices (so they see it appear)
+        const userSyncPayload = {
+          role: 'user',
+          content: message + (fileName ? ` [📎 ${fileName}]` : ''),
+          msgId: userMsgId,
+          timestamp: new Date(),
+        };
+
+        // Emit the assistant message to OTHER devices
+        const assistantSyncPayload = {
+          role: 'assistant',
+          content: textReply,
           model: MODEL_DISPLAY[usedModel] || usedModel,
-          files: codeFiles, timestamp: new Date(),
-        });
+          files: codeFiles,
+          images: generatedImages,
+          msgId: assistantMsgId,
+          timestamp: new Date(),
+        };
+
+        if (socketId) {
+          // Sender provided their socketId — broadcast to everyone EXCEPT them
+          io.to(room).except(socketId).emit('help-ai-user-message', userSyncPayload);
+          io.to(room).except(socketId).emit('help-ai-message', assistantSyncPayload);
+        } else {
+          // No socketId provided (e.g. old client) — broadcast to everyone
+          // The frontend msgId dedup will prevent duplicates
+          io.to(room).emit('help-ai-user-message', userSyncPayload);
+          io.to(room).emit('help-ai-message', assistantSyncPayload);
+        }
       }
-    } catch {}
+    } catch (e) { console.error('[HelpAI] Socket emit error:', e.message); }
 
     res.json({
       reply: textReply,
       fullReply: response,
       model: MODEL_DISPLAY[usedModel] || usedModel,
       files: codeFiles,
+      images: generatedImages,
+      userMsgId,
+      assistantMsgId,
     });
   } catch (err) {
     console.error('[HelpAI] Error:', err.message);
     res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// ══════════ POST /api/help/generate-image ══════════
+// Standalone image generation endpoint (for manual "generate image" requests)
+router.post('/generate-image', auth, async (req, res) => {
+  try {
+    const { prompt, aspectRatio } = req.body;
+    if (!prompt || !prompt.trim()) return res.status(400).json({ error: 'Image prompt is required' });
+
+    console.log(`[HelpAI] Manual image gen: "${prompt.slice(0, 80)}..."`);
+    const images = await generateImageImagen3(prompt.trim(), {
+      aspectRatio: aspectRatio || '16:9',
+      numberOfImages: 1,
+    });
+
+    if (!images || images.length === 0) {
+      return res.status(500).json({ error: 'Image generation failed. Please try again.' });
+    }
+
+    res.json({ images });
+  } catch (err) {
+    console.error('[HelpAI] Image gen error:', err.message);
+    res.status(500).json({ error: 'Image generation failed.' });
   }
 });
 
