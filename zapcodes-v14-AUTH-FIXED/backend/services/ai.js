@@ -6,259 +6,484 @@ const GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1beta/models'
 
 const MODELS = {
   groq: { models: ['llama-3.3-70b-versatile', 'llama3-70b-8192', 'deepseek-r1-distill-llama-70b', 'mixtral-8x7b-32768'], maxOutput: 8192, contextLimit: 30000 },
-  'gemini-2.5-flash': { model: 'gemini-2.5-flash', maxOutput: 65536, contextLimit: 1000000 },
-  'gemini-3.1-pro': { model: 'gemini-2.5-pro-preview-06-05', maxOutput: 16384, contextLimit: 1000000 },
-  'haiku-4.5': { model: 'claude-haiku-4-5-20251001', maxOutput: 16384, contextLimit: 180000 },
-  'sonnet-4.6': { model: 'claude-sonnet-4-6-20260217', maxOutput: 16384, contextLimit: 200000 },
-  'opus-4.6': { model: 'claude-opus-4-6', maxOutput: 128000, contextLimit: 200000 },
-  // Legacy aliases
   'gemini-flash': { model: 'gemini-2.5-flash', maxOutput: 65536, contextLimit: 1000000 },
   'gemini-pro': { model: 'gemini-2.5-pro-preview-06-05', maxOutput: 16384, contextLimit: 1000000 },
   haiku: { model: 'claude-haiku-4-5-20251001', maxOutput: 16384, contextLimit: 180000 },
   sonnet: { model: 'claude-sonnet-4-6-20260217', maxOutput: 16384, contextLimit: 200000 },
+  opus: { model: 'claude-opus-4-6-20260312', maxOutput: 32768, contextLimit: 200000 }
 };
-const GROQ_MAX_OUTPUT = MODELS.groq.maxOutput;
-const GROQ_MODELS = MODELS.groq.models;
-const GROQ_VISION_MODELS = ['llama-3.2-90b-vision-preview', 'llama-3.2-11b-vision-preview'];
 
-async function withRetry(fn, { maxRetries = 1, baseDelay = 1000 } = {}) {
-  let lastErr;
-  for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    try { return await fn(attempt); } catch (err) {
-      lastErr = err; if (err.message === 'Generation cancelled') throw err;
-      const s = err.response?.status;
-      if (s && s !== 429 && s !== 503 && s !== 529 && s < 500) throw err;
-      if (attempt < maxRetries) await new Promise(r => setTimeout(r, baseDelay * Math.pow(2, attempt) + Math.random() * 500));
+// ══════════════════════════════════════════════════════════════
+// callAI — Main text generation for all models
+// ══════════════════════════════════════════════════════════════
+async function callAI(provider, messages, maxTokens = 4096, options = {}) {
+  const { temperature = 0.7, systemPrompt } = options;
+
+  // ── GROQ ──
+  if (provider === 'groq') {
+    const models = MODELS.groq.models;
+    let lastError = null;
+    for (const model of models) {
+      try {
+        const msgs = systemPrompt ? [{ role: 'system', content: systemPrompt }, ...messages] : messages;
+        const res = await axios.post(GROQ_API_URL, {
+          model,
+          messages: msgs,
+          max_tokens: Math.min(maxTokens, MODELS.groq.maxOutput),
+          temperature
+        }, {
+          headers: { 'Authorization': `Bearer ${process.env.GROQ_API_KEY}`, 'Content-Type': 'application/json' },
+          timeout: 60000
+        });
+        const content = res.data?.choices?.[0]?.message?.content;
+        if (content) return content;
+      } catch (err) {
+        lastError = err;
+        console.error(`[Groq] ${model} failed:`, err.response?.data?.error?.message || err.message);
+      }
+    }
+    throw lastError || new Error('All Groq models failed');
+  }
+
+  // ── GEMINI (Flash & Pro) ──
+  if (provider === 'gemini-flash' || provider === 'gemini-pro') {
+    const cfg = MODELS[provider];
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey) throw new Error('GEMINI_API_KEY not set');
+
+    const contents = [];
+    let sysInstruction = systemPrompt || '';
+
+    for (const m of messages) {
+      if (m.role === 'system') {
+        sysInstruction = m.content;
+      } else {
+        contents.push({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: m.content }] });
+      }
+    }
+
+    const body = {
+      contents,
+      generationConfig: {
+        maxOutputTokens: Math.min(maxTokens, cfg.maxOutput),
+        temperature
+      }
+    };
+    if (sysInstruction) body.systemInstruction = { parts: [{ text: sysInstruction }] };
+
+    // Try with thinking budget for capable models
+    if (provider === 'gemini-flash' || provider === 'gemini-pro') {
+      body.generationConfig.thinkingConfig = { thinkingBudget: provider === 'gemini-pro' ? 8192 : 4096 };
+    }
+
+    try {
+      const res = await axios.post(
+        `${GEMINI_API_URL}/${cfg.model}:generateContent?key=${apiKey}`,
+        body,
+        { headers: { 'Content-Type': 'application/json' }, timeout: 120000 }
+      );
+
+      const parts = res.data?.candidates?.[0]?.content?.parts || [];
+      let text = '';
+      for (const p of parts) {
+        if (p.text && !p.thought) text += p.text;
+      }
+      if (text) return text;
+      throw new Error('Empty Gemini response');
+    } catch (err) {
+      // Retry without thinking config if it fails
+      if (body.generationConfig.thinkingConfig) {
+        delete body.generationConfig.thinkingConfig;
+        try {
+          const res = await axios.post(
+            `${GEMINI_API_URL}/${cfg.model}:generateContent?key=${apiKey}`,
+            body,
+            { headers: { 'Content-Type': 'application/json' }, timeout: 120000 }
+          );
+          const parts = res.data?.candidates?.[0]?.content?.parts || [];
+          let text = '';
+          for (const p of parts) {
+            if (p.text) text += p.text;
+          }
+          if (text) return text;
+        } catch (e) { /* fall through */ }
+      }
+      throw err;
     }
   }
-  throw lastErr;
-}
 
-function extractClaudeText(data) { if (!data?.content) return ''; return data.content.filter(b => b.type === 'text').map(b => b.text).join('\n') || ''; }
-function systemPromptToString(sp) { if (typeof sp === 'string') return sp; if (Array.isArray(sp)) return sp.map(b => b.text || '').join('\n'); return String(sp); }
-
-// ================================================================
-// callAI — Text-only (no images)
-// ================================================================
-async function callAI(systemPrompt, userPrompt, model = 'groq', maxTokens, opts = {}) {
-  if (opts.signal?.aborted) throw new Error('Generation cancelled');
-  switch (model) {
-    case 'gemini-pro': case 'gemini-3.1-pro': return callGemini(systemPrompt, userPrompt, { model: MODELS['gemini-3.1-pro'].model, maxTokens: maxTokens || MODELS['gemini-3.1-pro'].maxOutput, label: 'Gemini 3.1 Pro', signal: opts.signal });
-    case 'gemini-flash': case 'gemini-2.5-flash': return callGemini(systemPrompt, userPrompt, { model: MODELS['gemini-2.5-flash'].model, maxTokens: maxTokens || MODELS['gemini-2.5-flash'].maxOutput, label: 'Gemini 2.5 Flash', signal: opts.signal });
-    case 'haiku': case 'haiku-4.5': return callClaude(systemPrompt, userPrompt, { model: MODELS['haiku-4.5'].model, maxTokens: maxTokens || MODELS['haiku-4.5'].maxOutput, label: 'Haiku 4.5', signal: opts.signal });
-    case 'sonnet': case 'sonnet-4.6': return callClaude(systemPrompt, userPrompt, { model: MODELS['sonnet-4.6'].model, maxTokens: maxTokens || MODELS['sonnet-4.6'].maxOutput, label: 'Sonnet 4.6', signal: opts.signal });
-    case 'opus': case 'opus-4.6': return callClaude(systemPrompt, userPrompt, { model: MODELS['opus-4.6'].model, maxTokens: maxTokens || 4096, label: 'Opus 4.6', signal: opts.signal });
-    case 'groq': default: return callGroq(systemPrompt, userPrompt, { maxTokens: maxTokens || GROQ_MAX_OUTPUT, signal: opts.signal });
-  }
-}
-
-// ================================================================
-// callAIWithImage — Send image + text to ANY AI model's vision API
-// images = [{ base64, mimeType }]
-// ================================================================
-async function callAIWithImage(systemPrompt, userPrompt, images, model = 'groq', maxTokens, opts = {}) {
-  if (!images || images.length === 0) return callAI(systemPrompt, userPrompt, model, maxTokens, opts);
-  const sysText = systemPromptToString(systemPrompt);
-
-  // ── CLAUDE vision (Opus, Sonnet, Haiku) ──
-  if (['opus', 'opus-4.6', 'sonnet', 'sonnet-4.6', 'haiku', 'haiku-4.5'].includes(model)) {
+  // ── ANTHROPIC (Haiku, Sonnet, Opus) ──
+  if (['haiku', 'sonnet', 'opus'].includes(provider)) {
+    const cfg = MODELS[provider];
     const apiKey = process.env.ANTHROPIC_API_KEY;
-    if (!apiKey) return callGroqWithImage(sysText, userPrompt, images, { maxTokens: maxTokens || GROQ_MAX_OUTPUT });
-    let modelId; switch (model) { case 'opus': case 'opus-4.6': modelId = MODELS['opus-4.6'].model; break; case 'sonnet': case 'sonnet-4.6': modelId = MODELS['sonnet-4.6'].model; break; default: modelId = MODELS['haiku-4.5'].model; }
-    try {
-      console.log(`[Claude+Vision] ${model} -> ${modelId} (${images.length} img)`);
-      const blocks = []; for (const img of images) blocks.push({ type: 'image', source: { type: 'base64', media_type: img.mimeType || 'image/png', data: img.base64 } }); blocks.push({ type: 'text', text: userPrompt });
-      const r = await axios.post(ANTHROPIC_API_URL, { model: modelId, max_tokens: maxTokens || 4096, system: [{ type: 'text', text: sysText, cache_control: { type: 'ephemeral' } }], messages: [{ role: 'user', content: blocks }] }, { headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'Content-Type': 'application/json' }, timeout: 120000 });
-      const c = extractClaudeText(r.data); if (c) { console.log(`[Claude+Vision] OK (${c.length}c)`); return c; } throw new Error('Empty');
-    } catch (err) { if (err.message === 'Generation cancelled') throw err; console.error(`[Claude+Vision] X: ${err.response?.data?.error?.message || err.message}`); throw err; }
+    if (!apiKey) throw new Error('ANTHROPIC_API_KEY not set');
+
+    const filtered = messages.filter(m => m.role !== 'system');
+    const body = {
+      model: cfg.model,
+      max_tokens: Math.min(maxTokens, cfg.maxOutput),
+      temperature,
+      messages: filtered
+    };
+    if (systemPrompt) body.system = systemPrompt;
+
+    // Extended thinking for Opus
+    if (provider === 'opus') {
+      body.temperature = 1;
+      body.thinking = { type: 'enabled', budget_tokens: Math.min(10000, cfg.maxOutput - 1000) };
+    }
+
+    const res = await axios.post(ANTHROPIC_API_URL, body, {
+      headers: {
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+        'content-type': 'application/json'
+      },
+      timeout: 180000
+    });
+
+    const blocks = res.data?.content || [];
+    let text = '';
+    for (const b of blocks) {
+      if (b.type === 'text') text += b.text;
+    }
+    if (text) return text;
+    throw new Error('Empty Anthropic response');
   }
 
-  // ── GEMINI vision (Flash, Pro) ──
-  if (['gemini-flash', 'gemini-2.5-flash', 'gemini-pro', 'gemini-3.1-pro'].includes(model)) {
-    const apiKey = process.env.GEMINI_API_KEY; if (!apiKey) return callGroqWithImage(sysText, userPrompt, images, { maxTokens: maxTokens || GROQ_MAX_OUTPUT });
-    let modelId; switch (model) { case 'gemini-pro': case 'gemini-3.1-pro': modelId = MODELS['gemini-3.1-pro'].model; break; default: modelId = MODELS['gemini-2.5-flash'].model; }
-    try {
-      console.log(`[Gemini+Vision] ${model} -> ${modelId} (${images.length} img)`);
-      const parts = []; for (const img of images) parts.push({ inlineData: { mimeType: img.mimeType || 'image/png', data: img.base64 } }); parts.push({ text: userPrompt });
-      const r = await axios.post(`${GEMINI_API_URL}/${modelId}:generateContent?key=${apiKey}`, { contents: [{ role: 'user', parts }], systemInstruction: { parts: [{ text: sysText }] }, generationConfig: { maxOutputTokens: maxTokens || 65536, temperature: 0.2 } }, { headers: { 'Content-Type': 'application/json' }, timeout: 180000 });
-      const text = r.data?.candidates?.[0]?.content?.parts?.map(p => p.text || '').join('\n') || ''; if (text) { console.log(`[Gemini+Vision] OK (${text.length}c)`); return text; } throw new Error('Empty');
-    } catch (err) { if (err.message === 'Generation cancelled') throw err; console.error(`[Gemini+Vision] X: ${err.response?.data?.error?.message || err.message}`); throw err; }
+  throw new Error(`Unknown provider: ${provider}`);
+}
+
+// ══════════════════════════════════════════════════════════════
+// callAIWithImage — Vision: analyze uploaded images
+// ══════════════════════════════════════════════════════════════
+async function callAIWithImage(provider, messages, imageData, maxTokens = 4096, options = {}) {
+  const { temperature = 0.7, systemPrompt } = options;
+  const { base64, mimeType } = imageData;
+
+  // ── GROQ with vision ──
+  if (provider === 'groq') {
+    const visionModels = ['llama-3.3-70b-versatile', 'llama3-70b-8192'];
+    let lastError = null;
+    for (const model of visionModels) {
+      try {
+        const msgs = messages.map(m => {
+          if (m === messages[messages.length - 1]) {
+            return {
+              role: 'user',
+              content: [
+                { type: 'text', text: m.content },
+                { type: 'image_url', image_url: { url: `data:${mimeType};base64,${base64}` } }
+              ]
+            };
+          }
+          return m;
+        });
+        if (systemPrompt) msgs.unshift({ role: 'system', content: systemPrompt });
+
+        const res = await axios.post(GROQ_API_URL, {
+          model, messages: msgs,
+          max_tokens: Math.min(maxTokens, 4096),
+          temperature
+        }, {
+          headers: { 'Authorization': `Bearer ${process.env.GROQ_API_KEY}`, 'Content-Type': 'application/json' },
+          timeout: 60000
+        });
+        const content = res.data?.choices?.[0]?.message?.content;
+        if (content) return content;
+      } catch (err) {
+        lastError = err;
+        console.error(`[Groq Vision] ${model} failed:`, err.response?.data?.error?.message || err.message);
+      }
+    }
+    throw lastError || new Error('Groq vision failed');
   }
 
-  // ── GROQ vision (Llama 3.2 Vision) ──
-  return callGroqWithImage(sysText, userPrompt, images, { maxTokens: maxTokens || GROQ_MAX_OUTPUT, signal: opts.signal });
-}
+  // ── GEMINI with vision ──
+  if (provider === 'gemini-flash' || provider === 'gemini-pro') {
+    const cfg = MODELS[provider];
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey) throw new Error('GEMINI_API_KEY not set');
 
-async function callGroqWithImage(systemText, userPrompt, images, options = {}) {
-  const key = process.env.GROQ_API_KEY; if (!key) throw new Error('No GROQ_API_KEY');
-  const blocks = []; for (const img of images) blocks.push({ type: 'image_url', image_url: { url: `data:${img.mimeType || 'image/png'};base64,${img.base64}` } }); blocks.push({ type: 'text', text: userPrompt });
-  for (const vm of GROQ_VISION_MODELS) {
-    try { console.log(`[Groq+Vision] ${vm}`); const r = await axios.post(GROQ_API_URL, { model: vm, messages: [{ role: 'system', content: systemText }, { role: 'user', content: blocks }], temperature: 0.2, max_tokens: options.maxTokens || GROQ_MAX_OUTPUT }, { headers: { 'Authorization': `Bearer ${key}`, 'Content-Type': 'application/json' }, timeout: 120000 }); const c = r.data.choices?.[0]?.message?.content; if (c) { console.log(`[Groq+Vision] OK (${c.length}c)`); return c; } }
-    catch (err) { const s = err.response?.status; console.error(`[Groq+Vision] X ${vm}: ${s} ${err.response?.data?.error?.message || err.message}`); if (s === 401) break; }
+    const contents = [];
+    let sysInstruction = systemPrompt || '';
+
+    for (const m of messages) {
+      if (m.role === 'system') {
+        sysInstruction = m.content;
+      } else if (m === messages[messages.length - 1]) {
+        contents.push({
+          role: 'user',
+          parts: [
+            { text: m.content },
+            { inlineData: { mimeType, data: base64 } }
+          ]
+        });
+      } else {
+        contents.push({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: m.content }] });
+      }
+    }
+
+    const body = {
+      contents,
+      generationConfig: { maxOutputTokens: Math.min(maxTokens, cfg.maxOutput), temperature }
+    };
+    if (sysInstruction) body.systemInstruction = { parts: [{ text: sysInstruction }] };
+
+    const res = await axios.post(
+      `${GEMINI_API_URL}/${cfg.model}:generateContent?key=${apiKey}`,
+      body,
+      { headers: { 'Content-Type': 'application/json' }, timeout: 120000 }
+    );
+
+    const parts = res.data?.candidates?.[0]?.content?.parts || [];
+    let text = '';
+    for (const p of parts) {
+      if (p.text) text += p.text;
+    }
+    if (text) return text;
+    throw new Error('Empty Gemini vision response');
   }
-  throw new Error('All Groq vision models failed');
-}
 
-// ================================================================
-// Text-only model calls
-// ================================================================
-async function callGemini(systemPrompt, userPrompt, options = {}) {
-  const apiKey = process.env.GEMINI_API_KEY; if (!apiKey) return callGroq(systemPrompt, userPrompt, { maxTokens: GROQ_MAX_OUTPUT, signal: options.signal });
-  const modelId = options.model || MODELS['gemini-2.5-flash'].model; const maxTokens = options.maxTokens || 65536; const label = options.label || 'Gemini';
-  try {
-    return await withRetry(async (attempt) => {
-      if (options.signal?.aborted) throw new Error('Generation cancelled');
-      console.log(`[Gemini] ${label} -> ${modelId}${attempt > 0 ? ' retry#' + attempt : ''}`);
-      const r = await axios.post(`${GEMINI_API_URL}/${modelId}:generateContent?key=${apiKey}`, { contents: [{ role: 'user', parts: [{ text: userPrompt.slice(0, 900000) }] }], systemInstruction: { parts: [{ text: systemPromptToString(systemPrompt) }] }, generationConfig: { maxOutputTokens: maxTokens, temperature: 0.2 } }, { headers: { 'Content-Type': 'application/json' }, timeout: 180000 });
-      const c = r.data?.candidates?.[0]; if (!c) throw new Error('No candidates'); if (c.finishReason === 'SAFETY') throw new Error('Blocked');
-      const text = c.content?.parts?.map(p => p.text || '').join('\n') || ''; if (text) { console.log(`[Gemini] OK ${label} (${text.length}c)`); return text; } throw new Error('Empty');
-    }, { maxRetries: 1 });
-  } catch (err) { if (err.message === 'Generation cancelled') throw err; console.error(`[Gemini] X ${modelId}: ${err.message}`); throw err; }
-}
+  // ── ANTHROPIC with vision ──
+  if (['haiku', 'sonnet', 'opus'].includes(provider)) {
+    const cfg = MODELS[provider];
+    const apiKey = process.env.ANTHROPIC_API_KEY;
+    if (!apiKey) throw new Error('ANTHROPIC_API_KEY not set');
 
-async function callClaude(systemPrompt, userPrompt, options = {}) {
-  const apiKey = process.env.ANTHROPIC_API_KEY; if (!apiKey) return callGroq(systemPrompt, userPrompt, { maxTokens: GROQ_MAX_OUTPUT, signal: options.signal });
-  const modelId = options.model || MODELS['haiku-4.5'].model; const maxTokens = options.maxTokens || 16384; const label = options.label || 'Claude';
-  try {
-    return await withRetry(async (attempt) => {
-      if (options.signal?.aborted) throw new Error('Generation cancelled');
-      console.log(`[Claude] ${label} -> ${modelId}${attempt > 0 ? ' retry#' + attempt : ''}`);
-      const r = await axios.post(ANTHROPIC_API_URL, { model: modelId, max_tokens: maxTokens, system: [{ type: 'text', text: systemPromptToString(systemPrompt), cache_control: { type: 'ephemeral' } }], messages: [{ role: 'user', content: userPrompt.slice(0, 180000) }] }, { headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'Content-Type': 'application/json' }, timeout: 120000 });
-      const c = extractClaudeText(r.data); if (c) { console.log(`[Claude] OK ${label} (${c.length}c)`); return c; } throw new Error('Empty');
-    }, { maxRetries: 1 });
-  } catch (err) { if (err.message === 'Generation cancelled') throw err; console.error(`[Claude] X ${modelId}: ${err.message}`); throw err; }
-}
+    const filtered = messages.filter(m => m.role !== 'system').map(m => {
+      if (m === messages[messages.length - 1]) {
+        return {
+          role: 'user',
+          content: [
+            { type: 'image', source: { type: 'base64', media_type: mimeType, data: base64 } },
+            { type: 'text', text: m.content }
+          ]
+        };
+      }
+      return { role: m.role, content: m.content };
+    });
 
-async function callGroq(systemPrompt, userPrompt, options = {}) {
-  const key = process.env.GROQ_API_KEY; if (!key) return null;
-  const sysText = systemPromptToString(systemPrompt);
-  for (const model of GROQ_MODELS) {
-    try {
-      if (options.signal?.aborted) throw new Error('Generation cancelled');
-      const result = await withRetry(async () => {
-        const r = await axios.post(GROQ_API_URL, { model, messages: [{ role: 'system', content: sysText }, { role: 'user', content: userPrompt.slice(0, MODELS.groq.contextLimit) }], temperature: 0.2, max_tokens: options.maxTokens || GROQ_MAX_OUTPUT }, { headers: { 'Authorization': `Bearer ${key}`, 'Content-Type': 'application/json' }, timeout: 120000 });
-        const c = r.data.choices?.[0]?.message?.content; if (c) return c; throw new Error('Empty');
-      }, { maxRetries: 1 });
-      return result;
-    } catch (err) { if (err.message === 'Generation cancelled') throw err; const s = err.response?.status; if (s === 401) break; if (s === 429) continue; throw err; }
+    const body = {
+      model: cfg.model,
+      max_tokens: Math.min(maxTokens, cfg.maxOutput),
+      temperature,
+      messages: filtered
+    };
+    if (systemPrompt) body.system = systemPrompt;
+
+    if (provider === 'opus') {
+      body.temperature = 1;
+      body.thinking = { type: 'enabled', budget_tokens: Math.min(10000, cfg.maxOutput - 1000) };
+    }
+
+    const res = await axios.post(ANTHROPIC_API_URL, body, {
+      headers: {
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+        'content-type': 'application/json'
+      },
+      timeout: 180000
+    });
+
+    const blocks = res.data?.content || [];
+    let text = '';
+    for (const b of blocks) {
+      if (b.type === 'text') text += b.text;
+    }
+    if (text) return text;
+    throw new Error('Empty Anthropic vision response');
   }
-  return null;
+
+  throw new Error(`Unknown provider for vision: ${provider}`);
 }
 
-// ================================================================
-// IMAGE GENERATION — Uses VERTEX_AI_API_KEY (billing-enabled)
-// GEMINI_API_KEY = text only (no billing, no image gen)
-// VERTEX_AI_API_KEY = image generation (billing enabled)
-//
-// Strategy:
-//   1. Imagen 3 via VERTEX_AI_API_KEY (Vertex format)
-//   2. Imagen 3 via VERTEX_AI_API_KEY (Google AI format)
-//   3. Gemini Flash native image gen via VERTEX_AI_API_KEY
-//   4. Imagen 3 via GEMINI_API_KEY (fallback if billing added later)
-//   5. Return null
-// ================================================================
-async function generateImageImagen3(prompt, options = {}) {
-  const vertexKey = process.env.VERTEX_AI_API_KEY;
-  const geminiKey = process.env.GEMINI_API_KEY;
-  if (!vertexKey && !geminiKey) { console.warn('[Imagen3] No API keys'); return null; }
-
-  const cleanPrompt = prompt.slice(0, 1000);
+// ══════════════════════════════════════════════════════════════
+// generateImageImagen3 — Image generation with multi-tier fallback
+// Uses VERTEX_AI_API_KEY with gemini-3.1-flash-image-preview
+// ══════════════════════════════════════════════════════════════
+async function generateImageImagen3(prompt) {
   const errors = [];
 
-  // ══════ ATTEMPT 1: Imagen 3 via VERTEX_AI_API_KEY (Vertex body format) ══════
-  if (vertexKey) {
-    for (const mid of ['imagen-3.0-generate-002', 'imagen-3.0-generate-001']) {
-      try {
-        console.log(`[Imagen3] ${mid} + VERTEX_AI_API_KEY (vertex format)...`);
-        const r = await axios.post(`${GEMINI_API_URL}/${mid}:predict?key=${vertexKey}`, { instances: [{ prompt: cleanPrompt }], parameters: { sampleCount: options.numberOfImages || 1, aspectRatio: options.aspectRatio || '1:1', personGeneration: 'dont_allow' } }, { headers: { 'Content-Type': 'application/json' }, timeout: 90000 });
-        if (r.data?.predictions?.length) { const imgs = r.data.predictions.filter(p => p.bytesBase64Encoded).map(p => ({ base64: p.bytesBase64Encoded, mimeType: p.mimeType || 'image/png' })); if (imgs.length) { console.log(`[Imagen3] OK ${mid} vertex format`); return imgs; } }
-        errors.push({ model: mid, method: 'vertex-key-vertex-fmt', status: 200, note: 'Empty' });
-      } catch (err) { const s = err.response?.status; errors.push({ model: mid, method: 'vertex-key-vertex-fmt', status: s, error: (err.response?.data?.error?.message || err.message).slice(0, 150) }); console.error(`[Imagen3] X ${mid} vertex-fmt: ${s} ${(err.response?.data?.error?.message || err.message).slice(0, 100)}`); if (s === 429 || (s && s >= 500)) break; }
+  // ── Tier 1: Gemini 3.1 Flash Image Preview (PRIMARY — your activated model) ──
+  try {
+    const apiKey = process.env.VERTEX_AI_API_KEY || process.env.GEMINI_API_KEY;
+    if (apiKey) {
+      console.log('[ImageGen] Tier 1: gemini-3.1-flash-image-preview');
+      const res = await axios.post(
+        `${GEMINI_API_URL}/gemini-3.1-flash-image-preview:generateContent?key=${apiKey}`,
+        {
+          contents: [{ parts: [{ text: `Generate an image: ${prompt}` }] }],
+          generationConfig: {
+            responseModalities: ['TEXT', 'IMAGE'],
+            temperature: 0.8
+          }
+        },
+        { headers: { 'Content-Type': 'application/json' }, timeout: 60000 }
+      );
+
+      const parts = res.data?.candidates?.[0]?.content?.parts || [];
+      for (const p of parts) {
+        if (p.inlineData && p.inlineData.data) {
+          console.log('[ImageGen] ✅ Tier 1 SUCCESS — gemini-3.1-flash-image-preview');
+          return { base64: p.inlineData.data, mimeType: p.inlineData.mimeType || 'image/png' };
+        }
+      }
+      errors.push('Tier 1: No image in response parts');
+    } else {
+      errors.push('Tier 1: No VERTEX_AI_API_KEY or GEMINI_API_KEY');
     }
+  } catch (err) {
+    const msg = err.response?.data?.error?.message || err.message;
+    errors.push(`Tier 1: ${msg}`);
+    console.error('[ImageGen] Tier 1 failed:', msg);
   }
 
-  // ══════ ATTEMPT 2: Imagen 3 via VERTEX_AI_API_KEY (Google AI body format) ══════
-  if (vertexKey) {
-    for (const mid of ['imagen-3.0-generate-002', 'imagen-3.0-generate-001']) {
-      try {
-        console.log(`[Imagen3] ${mid} + VERTEX_AI_API_KEY (google-ai format)...`);
-        const r = await axios.post(`${GEMINI_API_URL}/${mid}:predict?key=${vertexKey}`, { prompt: cleanPrompt, config: { numberOfImages: options.numberOfImages || 1, aspectRatio: options.aspectRatio || '1:1', personGeneration: 'DONT_ALLOW', outputOptions: { mimeType: 'image/png' } } }, { headers: { 'Content-Type': 'application/json' }, timeout: 90000 });
-        if (r.data?.predictions?.length) { const imgs = r.data.predictions.filter(p => p.bytesBase64Encoded).map(p => ({ base64: p.bytesBase64Encoded, mimeType: 'image/png' })); if (imgs.length) { console.log(`[Imagen3] OK ${mid} google-ai format`); return imgs; } }
-        if (r.data?.generatedImages?.length) { const imgs = r.data.generatedImages.filter(g => g.image?.imageBytes).map(g => ({ base64: g.image.imageBytes, mimeType: 'image/png' })); if (imgs.length) { console.log(`[Imagen3] OK ${mid} generatedImages`); return imgs; } }
-        errors.push({ model: mid, method: 'vertex-key-google-fmt', status: 200, note: 'Empty' });
-      } catch (err) { const s = err.response?.status; errors.push({ model: mid, method: 'vertex-key-google-fmt', status: s, error: (err.response?.data?.error?.message || err.message).slice(0, 150) }); if (s === 429 || (s && s >= 500)) break; }
+  // ── Tier 2: Gemini 2.5 Flash with image generation ──
+  try {
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (apiKey) {
+      console.log('[ImageGen] Tier 2: gemini-2.5-flash with responseModalities');
+      const res = await axios.post(
+        `${GEMINI_API_URL}/gemini-2.5-flash:generateContent?key=${apiKey}`,
+        {
+          contents: [{ parts: [{ text: `Generate an image: ${prompt}` }] }],
+          generationConfig: {
+            responseModalities: ['TEXT', 'IMAGE'],
+            temperature: 0.8
+          }
+        },
+        { headers: { 'Content-Type': 'application/json' }, timeout: 60000 }
+      );
+
+      const parts = res.data?.candidates?.[0]?.content?.parts || [];
+      for (const p of parts) {
+        if (p.inlineData && p.inlineData.data) {
+          console.log('[ImageGen] ✅ Tier 2 SUCCESS — gemini-2.5-flash');
+          return { base64: p.inlineData.data, mimeType: p.inlineData.mimeType || 'image/png' };
+        }
+      }
+      errors.push('Tier 2: No image in response');
     }
+  } catch (err) {
+    const msg = err.response?.data?.error?.message || err.message;
+    errors.push(`Tier 2: ${msg}`);
+    console.error('[ImageGen] Tier 2 failed:', msg);
   }
 
-  // ══════ ATTEMPT 3: Gemini Flash native image gen via VERTEX_AI_API_KEY ══════
-  if (vertexKey) {
-    for (const fm of ['gemini-2.0-flash-preview-image-generation', 'gemini-2.0-flash-exp', 'gemini-2.0-flash', 'gemini-2.5-flash']) {
-      try {
-        console.log(`[Imagen3] ${fm} + VERTEX_AI_API_KEY (TEXT+IMAGE)...`);
-        const r = await axios.post(`${GEMINI_API_URL}/${fm}:generateContent?key=${vertexKey}`, { contents: [{ role: 'user', parts: [{ text: `Generate an image with no text overlay: ${cleanPrompt}` }] }], generationConfig: { responseModalities: ['TEXT', 'IMAGE'] } }, { headers: { 'Content-Type': 'application/json' }, timeout: 90000 });
-        const parts = r.data?.candidates?.[0]?.content?.parts || [];
-        const imgParts = parts.filter(p => p.inlineData?.data);
-        if (imgParts.length) { console.log(`[Imagen3] OK ${fm} native`); return imgParts.map(p => ({ base64: p.inlineData.data, mimeType: p.inlineData.mimeType || 'image/png' })); }
-        errors.push({ model: fm, method: 'vertex-key-native', status: 200, note: `No image parts. Types: ${parts.map(p => p.text ? 'text' : 'other').join(',')}` });
-      } catch (err) { const s = err.response?.status; errors.push({ model: fm, method: 'vertex-key-native', status: s, error: (err.response?.data?.error?.message || err.message).slice(0, 150) }); if (s === 404 || s === 400) continue; break; }
+  // ── Tier 3: Imagen 3 via Gemini API ──
+  try {
+    const apiKey = process.env.GEMINI_API_KEY || process.env.VERTEX_AI_API_KEY;
+    if (apiKey) {
+      console.log('[ImageGen] Tier 3: imagen-3.0-generate-002');
+      const res = await axios.post(
+        `${GEMINI_API_URL}/imagen-3.0-generate-002:predict?key=${apiKey}`,
+        {
+          instances: [{ prompt }],
+          parameters: { sampleCount: 1, aspectRatio: '1:1' }
+        },
+        { headers: { 'Content-Type': 'application/json' }, timeout: 60000 }
+      );
+
+      const predictions = res.data?.predictions || [];
+      if (predictions.length > 0 && predictions[0].bytesBase64Encoded) {
+        console.log('[ImageGen] ✅ Tier 3 SUCCESS — imagen-3.0-generate-002');
+        return { base64: predictions[0].bytesBase64Encoded, mimeType: 'image/png' };
+      }
+      errors.push('Tier 3: No predictions');
     }
+  } catch (err) {
+    const msg = err.response?.data?.error?.message || err.message;
+    errors.push(`Tier 3: ${msg}`);
+    console.error('[ImageGen] Tier 3 failed:', msg);
   }
 
-  // ══════ ATTEMPT 4: Imagen 3 via GEMINI_API_KEY (if billing added later) ══════
-  if (geminiKey && geminiKey !== vertexKey) {
-    try {
-      console.log(`[Imagen3] imagen-3.0-generate-002 + GEMINI_API_KEY...`);
-      const r = await axios.post(`${GEMINI_API_URL}/imagen-3.0-generate-002:predict?key=${geminiKey}`, { instances: [{ prompt: cleanPrompt }], parameters: { sampleCount: 1 } }, { headers: { 'Content-Type': 'application/json' }, timeout: 60000 });
-      if (r.data?.predictions?.length) { const imgs = r.data.predictions.filter(p => p.bytesBase64Encoded).map(p => ({ base64: p.bytesBase64Encoded, mimeType: 'image/png' })); if (imgs.length) { console.log(`[Imagen3] OK gemini-key imagen`); return imgs; } }
-    } catch (err) { errors.push({ model: 'imagen-3.0-generate-002', method: 'gemini-key', status: err.response?.status, error: (err.response?.data?.error?.message || err.message).slice(0, 100) }); }
+  // ── Tier 4: Gemini 2.0 Flash experimental image gen ──
+  try {
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (apiKey) {
+      const expModels = ['gemini-2.0-flash-exp', 'gemini-2.0-flash'];
+      for (const model of expModels) {
+        try {
+          console.log(`[ImageGen] Tier 4: ${model}`);
+          const res = await axios.post(
+            `${GEMINI_API_URL}/${model}:generateContent?key=${apiKey}`,
+            {
+              contents: [{ parts: [{ text: `Generate an image: ${prompt}` }] }],
+              generationConfig: { responseModalities: ['IMAGE', 'TEXT'] }
+            },
+            { headers: { 'Content-Type': 'application/json' }, timeout: 60000 }
+          );
+
+          const parts = res.data?.candidates?.[0]?.content?.parts || [];
+          for (const p of parts) {
+            if (p.inlineData && p.inlineData.data) {
+              console.log(`[ImageGen] ✅ Tier 4 SUCCESS — ${model}`);
+              return { base64: p.inlineData.data, mimeType: p.inlineData.mimeType || 'image/png' };
+            }
+          }
+        } catch (e) {
+          errors.push(`Tier 4 ${model}: ${e.response?.data?.error?.message || e.message}`);
+        }
+      }
+    }
+  } catch (err) {
+    errors.push(`Tier 4: ${err.message}`);
   }
 
-  console.warn(`[Imagen3] ALL ${errors.length} attempts failed:`);
-  errors.forEach((e, i) => console.warn(`  ${i + 1}. ${e.model}/${e.method}: ${e.status || 'net'} — ${e.error || e.note}`));
-  return null;
+  // ── Tier 5: SVG placeholder fallback ──
+  console.log('[ImageGen] All tiers failed, generating SVG placeholder');
+  console.log('[ImageGen] Errors:', errors.join(' | '));
+
+  const svgContent = `<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+    <defs>
+      <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+        <stop offset="0%" style="stop-color:#667eea"/>
+        <stop offset="100%" style="stop-color:#764ba2"/>
+      </linearGradient>
+    </defs>
+    <rect width="512" height="512" fill="url(#bg)" rx="20"/>
+    <text x="256" y="200" text-anchor="middle" fill="white" font-size="28" font-family="Arial,sans-serif" font-weight="bold">🎨 Image Generation</text>
+    <text x="256" y="260" text-anchor="middle" fill="rgba(255,255,255,0.8)" font-size="16" font-family="Arial,sans-serif">Temporarily Unavailable</text>
+    <text x="256" y="300" text-anchor="middle" fill="rgba(255,255,255,0.6)" font-size="13" font-family="Arial,sans-serif">${prompt.substring(0, 60)}</text>
+    <text x="256" y="400" text-anchor="middle" fill="rgba(255,255,255,0.4)" font-size="11" font-family="Arial,sans-serif">ZapCodes AI • Retrying soon</text>
+  </svg>`;
+
+  const base64Svg = Buffer.from(svgContent).toString('base64');
+  return { base64: base64Svg, mimeType: 'image/svg+xml' };
 }
 
-// ── Diagnostic ──
+// ══════════════════════════════════════════════════════════════
+// testImageGeneration — Diagnostic function
+// ══════════════════════════════════════════════════════════════
 async function testImageGeneration() {
-  const vertexKey = process.env.VERTEX_AI_API_KEY;
-  const geminiKey = process.env.GEMINI_API_KEY;
-  const results = []; const tp = 'a blue circle on white background';
+  const results = {};
 
-  // Test Imagen with VERTEX_AI_API_KEY
-  if (vertexKey) {
-    try { const r = await axios.post(`${GEMINI_API_URL}/imagen-3.0-generate-002:predict?key=${vertexKey}`, { instances: [{ prompt: tp }], parameters: { sampleCount: 1 } }, { timeout: 30000 }); results.push({ method: 'imagen-vertex-key-vertex-fmt', status: 200, hasImage: !!r.data?.predictions?.length, keys: Object.keys(r.data || {}) }); } catch (e) { results.push({ method: 'imagen-vertex-key-vertex-fmt', status: e.response?.status, error: (e.response?.data?.error?.message || e.message).slice(0, 150) }); }
-    try { const r = await axios.post(`${GEMINI_API_URL}/imagen-3.0-generate-002:predict?key=${vertexKey}`, { prompt: tp, config: { numberOfImages: 1 } }, { timeout: 30000 }); results.push({ method: 'imagen-vertex-key-google-fmt', status: 200, hasImage: !!(r.data?.predictions?.length || r.data?.generatedImages?.length), keys: Object.keys(r.data || {}) }); } catch (e) { results.push({ method: 'imagen-vertex-key-google-fmt', status: e.response?.status, error: (e.response?.data?.error?.message || e.message).slice(0, 150) }); }
-    // Test Flash image gen with VERTEX_AI_API_KEY
-    for (const fm of ['gemini-2.0-flash-preview-image-generation', 'gemini-2.0-flash-exp', 'gemini-2.5-flash']) {
-      try { const r = await axios.post(`${GEMINI_API_URL}/${fm}:generateContent?key=${vertexKey}`, { contents: [{ role: 'user', parts: [{ text: `Generate image: ${tp}` }] }], generationConfig: { responseModalities: ['TEXT', 'IMAGE'] } }, { timeout: 30000 }); const parts = r.data?.candidates?.[0]?.content?.parts || []; results.push({ method: `${fm}-vertex-key`, status: 200, hasImage: parts.some(p => p.inlineData), partTypes: parts.map(p => p.text ? 'text' : p.inlineData ? 'image' : 'other') }); } catch (e) { results.push({ method: `${fm}-vertex-key`, status: e.response?.status, error: (e.response?.data?.error?.message || e.message).slice(0, 150) }); }
-    }
+  // Test which API keys are available
+  results.keys = {
+    VERTEX_AI_API_KEY: !!process.env.VERTEX_AI_API_KEY,
+    GEMINI_API_KEY: !!process.env.GEMINI_API_KEY,
+    GROQ_API_KEY: !!process.env.GROQ_API_KEY,
+    ANTHROPIC_API_KEY: !!process.env.ANTHROPIC_API_KEY
+  };
+
+  // Test Gemini 3.1 Flash Image Preview
+  try {
+    const apiKey = process.env.VERTEX_AI_API_KEY || process.env.GEMINI_API_KEY;
+    const res = await axios.post(
+      `${GEMINI_API_URL}/gemini-3.1-flash-image-preview:generateContent?key=${apiKey}`,
+      {
+        contents: [{ parts: [{ text: 'Generate a simple red circle on white background' }] }],
+        generationConfig: { responseModalities: ['TEXT', 'IMAGE'] }
+      },
+      { headers: { 'Content-Type': 'application/json' }, timeout: 30000 }
+    );
+    results.tier1 = { status: 'success', hasImage: !!(res.data?.candidates?.[0]?.content?.parts?.find(p => p.inlineData)) };
+  } catch (err) {
+    results.tier1 = { status: 'failed', error: err.response?.data?.error?.message || err.message };
   }
 
-  // Test Imagen with GEMINI_API_KEY
-  if (geminiKey) {
-    try { const r = await axios.post(`${GEMINI_API_URL}/imagen-3.0-generate-002:predict?key=${geminiKey}`, { instances: [{ prompt: tp }], parameters: { sampleCount: 1 } }, { timeout: 30000 }); results.push({ method: 'imagen-gemini-key', status: 200, hasImage: !!r.data?.predictions?.length }); } catch (e) { results.push({ method: 'imagen-gemini-key', status: e.response?.status, error: (e.response?.data?.error?.message || e.message).slice(0, 150) }); }
-  }
-
-  return { vertexKeyPresent: !!vertexKey, geminiKeyPresent: !!geminiKey, results };
+  return results;
 }
 
-// ── Utility exports ──
-async function streamAI(sp, up, model, res) { const r = await callAI(sp, up, model); if (r) res.write(`data: ${JSON.stringify({ type: 'content', text: r })}\n\n`); res.write(`data: ${JSON.stringify({ type: 'done' })}\n\n`); return r; }
-async function analyzeCode(files, engine = 'groq') { const fs = files.slice(0, 20).map(f => `--- ${f.path || f.name} ---\n${(f.content || '').slice(0, 4000)}`).join('\n\n'); const r = await callAI('Return ONLY valid JSON array of issues.', `Analyze:\n\n${fs}`, engine); if (r) { const m = r.match(/\[[\s\S]*\]/); if (m) try { return JSON.parse(m[0]); } catch {} } return []; }
-async function verifyAndFix(files, model, opts = {}) { if (model === 'groq' || !files.length) return files; try { const r = await callAI('Return ONLY complete fixed files.', `Fix:\n\n${files.map(f => `--- ${f.name} ---\n${f.content}`).join('\n\n')}`, model, undefined, opts); const f = r ? parseFilesFromResponse(r) : []; if (f.length) return f; } catch {} return files; }
-async function generateProjectMultiStep(template, projectName, desc, color, features, engine = 'groq', opts = {}) { const all = []; const spec = getTemplateSpec(template); for (let i = 0; i < spec.phases.length; i++) { if (opts.signal?.aborted) throw new Error('Generation cancelled'); const ph = spec.phases[i]; if (opts.onProgress) opts.onProgress(`Building ${ph.name}...`); const r = await callAI(`Project Builder. "${projectName}". ${spec.tech}. ${ph.instructions} COMPLETE files only.`, `Generate: ${ph.name}`, engine, undefined, opts); if (r) all.push(...parseFilesFromResponse(r)); } return all; }
-
-function parseFilesFromResponse(response) {
-  const files = []; let m;
-  const p1 = /```filepath:([^\n]+)\n([\s\S]*?)```/g; while ((m = p1.exec(response))) { if (m[1].trim() && m[2].trim().length > 10) files.push({ name: m[1].trim(), content: m[2].trim() }); } if (files.length) return dedup(files);
-  const p2 = /```(?:javascript|jsx|tsx|typescript|json|html|css|js|ts|bash|sh|text|markdown|md)?\s+([^\n`]+\.[a-z]{1,6})\n([\s\S]*?)```/g; while ((m = p2.exec(response))) { if (m[1].trim() && m[2].trim().length > 10) files.push({ name: m[1].trim(), content: m[2].trim() }); } if (files.length) return dedup(files);
-  if (response.includes('<!DOCTYPE') || response.includes('<html')) { const h = response.match(/(<!DOCTYPE[\s\S]*<\/html>)/i); if (h?.[1]?.length > 100) files.push({ name: 'index.html', content: h[1].trim() }); }
-  return dedup(files);
-}
-function dedup(files) { const s = new Map(); for (const f of files) { if (!s.has(f.name) || f.content.length > s.get(f.name).content.length) s.set(f.name, f); } return Array.from(s.values()); }
-
-async function verifyAIStatus() { return { groq: { available: !!process.env.GROQ_API_KEY }, 'gemini-2.5-flash': { available: !!process.env.GEMINI_API_KEY }, 'gemini-3.1-pro': { available: !!process.env.GEMINI_API_KEY }, 'haiku-4.5': { available: !!process.env.ANTHROPIC_API_KEY }, 'sonnet-4.6': { available: !!process.env.ANTHROPIC_API_KEY }, 'opus-4.6': { available: !!process.env.ANTHROPIC_API_KEY }, 'imagen-3': { available: !!process.env.VERTEX_AI_API_KEY } }; }
-async function generateTutorial(q) { const k = process.env.GROQ_API_KEY; if (!k) return '## ZapCodes Help'; for (const m of ['llama-3.1-8b-instant', 'gemma2-9b-it']) { try { const r = await axios.post(GROQ_API_URL, { model: m, messages: [{ role: 'system', content: 'Tutorial assistant.' }, { role: 'user', content: q }], temperature: 0.7, max_tokens: 1500 }, { headers: { 'Authorization': `Bearer ${k}` }, timeout: 15000 }); return r.data.choices[0].message.content; } catch {} } return '## ZapCodes Help'; }
-function getTemplateSpec(t) { const s = { portfolio: { name: 'Portfolio', tech: 'HTML+CSS+JS inlined', phases: [{ name: 'Site', instructions: 'Portfolio. ALL inlined.', fileList: '- index.html' }] }, landing: { name: 'Landing', tech: 'HTML+CSS+JS inlined', phases: [{ name: 'Page', instructions: 'Landing page. ALL inlined.', fileList: '- index.html' }] }, blog: { name: 'Blog', tech: 'HTML+CSS+JS inlined', phases: [{ name: 'Blog', instructions: 'Blog. ALL inlined.', fileList: '- index.html' }] }, ecommerce: { name: 'E-Commerce', tech: 'HTML+CSS+JS inlined', phases: [{ name: 'Store', instructions: 'Store. ALL inlined.', fileList: '- index.html' }] }, dashboard: { name: 'Dashboard', tech: 'HTML+CSS+JS inlined', phases: [{ name: 'Dashboard', instructions: 'Dashboard. ALL inlined.', fileList: '- index.html' }] } }; return s[t] || s.portfolio; }
-
-module.exports = { callAI, callAIWithImage, callGemini, callClaude, callGroq, callGroqWithImage, streamAI, analyzeCode, generateTutorial, generateProjectMultiStep, parseFilesFromResponse, verifyAndFix, verifyAIStatus, generateImageImagen3, testImageGeneration, MODELS, GROQ_MAX_OUTPUT, GROQ_MODELS };
+module.exports = { callAI, callAIWithImage, generateImageImagen3, testImageGeneration, MODELS };
