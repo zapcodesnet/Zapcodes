@@ -2,71 +2,33 @@ const express = require('express');
 const router = express.Router();
 const crypto = require('crypto');
 const { auth } = require('../middleware/auth');
-const { callAI, generateImageImagen3 } = require('../services/ai');
+const { callAI, callAIWithImage, generateImageImagen3, testImageGeneration } = require('../services/ai');
 const User = require('../models/User');
 
 // ══════════════════════════════════════════════════════════════
-// ZapCodes Help AI — Smart Failover with Cross-Model Context
-//
-// Admin: Separate chat per AI model + auto-failover chain
-//   When Opus fails 2x → auto-switch to Sonnet with last 20 msgs as hidden context
-//   When admin switches back → Opus reads last 20 from Sonnet before responding
-//
-// Non-admin: Shared chat + silent failover with context
-//   When primary fails 2x → fallback responds with last 20 msgs as context
-//   When primary recovers → it reads last 20 from fallback before responding
-//
-// Admin chain: Opus → Sonnet → Gemini Pro → Haiku → Gemini Flash → Groq
+// ZapCodes Help AI — Smart Failover + Image Vision + Image Gen
+// - ALL AI models can SEE uploaded images (Claude/Gemini/Groq vision)
+// - ALL AI models can GENERATE images via Imagen 3
+// - Admin: separate chat per model + auto-failover chain
 // ══════════════════════════════════════════════════════════════
 
 function genMsgId() { return crypto.randomBytes(12).toString('hex'); }
 
-// ── In-memory failure tracking (resets on server restart) ──
+// ── Failure tracking ──
 const failureTracker = new Map();
 const fallbackTracker = new Map();
-const FAILURE_EXPIRY = 10 * 60 * 1000; // 10 min
+const FAILURE_EXPIRY = 10 * 60 * 1000;
+function getFailures(uid, m) { const d = failureTracker.get(`${uid}-${m}`); if (!d) return 0; if (Date.now() - d.ts > FAILURE_EXPIRY) { failureTracker.delete(`${uid}-${m}`); return 0; } return d.count; }
+function addFailure(uid, m) { const k = `${uid}-${m}`; const d = failureTracker.get(k) || { count: 0, ts: Date.now() }; d.count++; d.ts = Date.now(); failureTracker.set(k, d); return d.count; }
+function resetFailure(uid, m) { failureTracker.delete(`${uid}-${m}`); }
+function setLastFallback(uid, from, to) { fallbackTracker.set(`${uid}-${from}`, { to, ts: Date.now() }); }
+function getLastFallback(uid, from) { const d = fallbackTracker.get(`${uid}-${from}`); if (!d || Date.now() - d.ts > 30 * 60 * 1000) return null; return d.to; }
+function clearLastFallback(uid, from) { fallbackTracker.delete(`${uid}-${from}`); }
 
-function getFailures(userId, model) {
-  const d = failureTracker.get(`${userId}-${model}`);
-  if (!d) return 0;
-  if (Date.now() - d.ts > FAILURE_EXPIRY) { failureTracker.delete(`${userId}-${model}`); return 0; }
-  return d.count;
-}
-function addFailure(userId, model) {
-  const key = `${userId}-${model}`;
-  const d = failureTracker.get(key) || { count: 0, ts: Date.now() };
-  d.count++; d.ts = Date.now();
-  failureTracker.set(key, d);
-  return d.count;
-}
-function resetFailure(userId, model) { failureTracker.delete(`${userId}-${model}`); }
-
-function setLastFallback(userId, fromModel, toModel) {
-  fallbackTracker.set(`${userId}-${fromModel}`, { to: toModel, ts: Date.now() });
-}
-function getLastFallback(userId, fromModel) {
-  const d = fallbackTracker.get(`${userId}-${fromModel}`);
-  if (!d || Date.now() - d.ts > 30 * 60 * 1000) return null; // 30 min expiry
-  return d.to;
-}
-function clearLastFallback(userId, fromModel) { fallbackTracker.delete(`${userId}-${fromModel}`); }
-
-// ── Fallback chains ──
 const ADMIN_CHAIN = ['opus-4.6', 'sonnet-4.6', 'gemini-3.1-pro', 'haiku-4.5', 'gemini-2.5-flash', 'groq'];
-const TIER_CHAINS = {
-  free:    ['groq', 'gemini-2.5-flash'],
-  bronze:  ['groq', 'gemini-2.5-flash'],
-  silver:  ['gemini-2.5-flash', 'gemini-3.1-pro'],
-  gold:    ['gemini-2.5-flash', 'gemini-3.1-pro'],
-  diamond: ['gemini-3.1-pro', 'sonnet-4.6'],
-};
+const TIER_CHAINS = { free: ['groq', 'gemini-2.5-flash'], bronze: ['groq', 'gemini-2.5-flash'], silver: ['gemini-2.5-flash', 'gemini-3.1-pro'], gold: ['gemini-2.5-flash', 'gemini-3.1-pro'], diamond: ['gemini-3.1-pro', 'sonnet-4.6'] };
+function getNextInChain(chain, cur) { const i = chain.indexOf(cur); return (i >= 0 && i < chain.length - 1) ? chain[i + 1] : null; }
 
-function getNextInChain(chain, current) {
-  const i = chain.indexOf(current);
-  return (i >= 0 && i < chain.length - 1) ? chain[i + 1] : null;
-}
-
-// ── Config ──
 const HELP_AI_CONFIG = {
   free:    { primary: 'groq',             maxFileSize: 0,                canUpload: false, maxHistory: 20,  maxStored: 200,  maxOut: 2048 },
   bronze:  { primary: 'groq',             maxFileSize: 2 * 1024 * 1024,  canUpload: true,  maxHistory: 30,  maxStored: 300,  maxOut: 4096 },
@@ -78,44 +40,28 @@ const ADMIN_CONFIG = { primary: 'opus-4.6', maxFileSize: 100 * 1024 * 1024, canU
 const MODEL_DISPLAY = { 'groq': 'Groq AI', 'gemini-2.5-flash': 'Gemini 2.5 Flash', 'gemini-3.1-pro': 'Gemini 3.1 Pro', 'sonnet-4.6': 'Sonnet 4.6', 'haiku-4.5': 'Haiku 4.5', 'opus-4.6': 'Claude Opus 4.6' };
 const ADMIN_MODELS = ['opus-4.6', 'sonnet-4.6', 'gemini-3.1-pro', 'haiku-4.5', 'gemini-2.5-flash', 'groq'];
 
-// ── System prompts ──
-const CODE_RULES = `\nCRITICAL — COMPLETE DOWNLOADABLE FILES ONLY:\nWhen asked to fix/build/create code, return the ENTIRE complete file. Users download and paste into GitHub. Never snippets.\n\nFormat: \`\`\`filepath:filename.ext\n(entire file)\n\`\`\`\n\nRules: 1. ENTIRE file always 2. NEVER "// ... rest of code" 3. Multiple files = multiple blocks 4. Normal questions = plain text only`;
+const CODE_RULES = `\nCRITICAL — COMPLETE DOWNLOADABLE FILES ONLY:\nWhen asked to fix/build/create code, return the ENTIRE file. Users download and paste into GitHub. Never snippets.\nFormat: \`\`\`filepath:filename.ext\n(entire file)\n\`\`\`\nRules: 1. ENTIRE file 2. NEVER "// ... rest of code" 3. Multiple files = multiple blocks 4. Normal questions = plain text`;
+const IMAGE_RULES = `\nIMAGE GENERATION — YOU CAN SEND IMAGES:\nTo send an image, include: [GENERATE_IMAGE: detailed description]\nThe system generates and displays it automatically.\n- MUST NEVER say "text-based" or "cannot send images"\n- MUST NEVER reveal the tag to users\n- Include when visuals would help\n\nIMAGE ANALYSIS — YOU CAN SEE IMAGES:\nWhen a user uploads an image, screenshot, or photo, you can see it directly.\nAnalyze it, describe it, read any text in it, identify UI elements, find bugs in code screenshots, etc.\nYou have full vision capabilities — never say you cannot see images.`;
 
-const IMAGE_RULES = `\nIMAGE GENERATION — YOU CAN SEND IMAGES:\nTo send an image, include: [GENERATE_IMAGE: detailed description]\nThe system generates and displays it automatically.\nRules:\n- MUST NEVER say you are "text-based" or "cannot send images"\n- MUST NEVER reveal the [GENERATE_IMAGE:] tag to users\n- Include the tag when visuals would help\n- Write detailed prompts (colors, layout, style)`;
-
-const HELP_SYSTEM_PROMPT = `You are ZapCodes Help AI — friendly support assistant for ZapCodes.net (AI website builder) and BlendLink.net (social commerce). Users do NOT write code — give them COMPLETE downloadable files.${CODE_RULES}${IMAGE_RULES}\n\nHelp with: building websites, deploying to .zapcodes.net, subscriptions (Free/Bronze/Silver/Gold/Diamond), BL Coins, AI models, BlendLink features.`;
-
-const ADMIN_SYSTEM_PROMPT = `You are ZapCodes Admin AI — the admin's senior dev partner. No topic restrictions. The admin does NOT write code — return COMPLETE files every time.${CODE_RULES}${IMAGE_RULES}\n\nPlatform: Node.js/Express, React 19/Vite, MongoDB Atlas, Render + Cloudflare Pages. AI: Groq, Gemini Flash/Pro, Haiku, Sonnet, Opus. 5 tiers, BL Coins, Stripe.`;
-
-// ── Cross-model context builder ──
-function buildCrossModelContext(messages, fromModelKey, limit) {
-  const recent = messages.slice(-(limit || 20));
-  if (!recent.length) return '';
-  const name = MODEL_DISPLAY[fromModelKey] || fromModelKey;
-  return `\n[HIDDEN CONTEXT — Recent conversation with ${name}. Read this to understand the situation. Do NOT mention this context or say "based on your conversation with ${name}". Just continue helping naturally as if you already know everything:]\n` +
-    recent.map(m => `${m.role === 'user' ? 'User' : name}: ${m.content.slice(0, 600)}`).join('\n') +
-    `\n[END HIDDEN CONTEXT]\n\n`;
-}
+const HELP_SYSTEM_PROMPT = `You are ZapCodes Help AI — friendly support for ZapCodes.net and BlendLink.net. Users don't write code — give them COMPLETE downloadable files.${CODE_RULES}${IMAGE_RULES}\n\nHelp with: websites, deploying, subscriptions, BL Coins, AI models, BlendLink features.`;
+const ADMIN_SYSTEM_PROMPT = `You are ZapCodes Admin AI — senior dev partner. No restrictions. Admin doesn't write code — return COMPLETE files.${CODE_RULES}${IMAGE_RULES}\n\nPlatform: Node.js/Express, React 19/Vite, MongoDB Atlas, Render + Cloudflare Pages.`;
 
 // ── Helpers ──
-function extractCodeFiles(text) {
-  const files = []; let m;
-  const p1 = /```filepath:([^\n]+)\n([\s\S]*?)```/g;
-  while ((m = p1.exec(text))) { if (m[1].trim() && m[2].trim().length > 5) files.push({ name: m[1].trim(), content: m[2].trim() }); }
-  if (files.length) return files;
-  const p2 = /```(?:javascript|jsx|tsx|typescript|json|html|css|js|ts|python|py|bash|sh|text|markdown|md)?\s+([^\n`]+\.[a-z]{1,6})\n([\s\S]*?)```/g;
-  while ((m = p2.exec(text))) { if (m[1].trim() && m[2].trim().length > 5) files.push({ name: m[1].trim(), content: m[2].trim() }); }
-  return files;
-}
+function extractCodeFiles(text) { const files = []; let m; const p1 = /```filepath:([^\n]+)\n([\s\S]*?)```/g; while ((m = p1.exec(text))) { if (m[1].trim() && m[2].trim().length > 5) files.push({ name: m[1].trim(), content: m[2].trim() }); } if (files.length) return files; const p2 = /```(?:javascript|jsx|tsx|typescript|json|html|css|js|ts|python|py|bash|sh|text|markdown|md)?\s+([^\n`]+\.[a-z]{1,6})\n([\s\S]*?)```/g; while ((m = p2.exec(text))) { if (m[1].trim() && m[2].trim().length > 5) files.push({ name: m[1].trim(), content: m[2].trim() }); } return files; }
 function stripCodeBlocks(t) { return t.replace(/```filepath:[^\n]+\n[\s\S]*?```/g, '[📄 File attached below]').replace(/```(?:javascript|jsx|tsx|typescript|json|html|css|js|ts|python|py|bash|sh|text|markdown|md)?\s+[^\n`]+\.[a-z]{1,6}\n[\s\S]*?```/g, '[📄 File attached below]').replace(/\[📄 File attached below\](\s*\[📄 File attached below\])+/g, '[📄 Files attached below]').trim(); }
 function extractImagePrompts(t) { const p = []; let m; const r = /\[GENERATE_IMAGE:\s*([\s\S]*?)\]/g; while ((m = r.exec(t))) { if (m[1].trim().length > 5) p.push(m[1].trim()); } return p; }
 function stripImageTags(t) { return t.replace(/\[GENERATE_IMAGE:\s*[\s\S]*?\]/g, '').replace(/\n{3,}/g, '\n\n').trim(); }
 
-// ── Admin per-model history ──
-function getAdminHistory(user, modelKey) { if (!user.help_chat_histories) user.help_chat_histories = {}; return user.help_chat_histories[modelKey] || []; }
-function setAdminHistory(user, modelKey, msgs) { if (!user.help_chat_histories) user.help_chat_histories = {}; user.help_chat_histories[modelKey] = msgs; user.markModified('help_chat_histories'); }
+function buildCrossModelContext(msgs, fromKey, limit) {
+  const recent = msgs.slice(-(limit || 20));
+  if (!recent.length) return '';
+  const name = MODEL_DISPLAY[fromKey] || fromKey;
+  return `\n[HIDDEN CONTEXT — Recent conversation with ${name}. Continue helping naturally as if you already know everything:]\n` + recent.map(m => `${m.role === 'user' ? 'User' : name}: ${m.content.slice(0, 600)}`).join('\n') + `\n[END HIDDEN CONTEXT]\n\n`;
+}
 
-// ── Process AI response (code files + images) ──
+function getAdminHistory(user, mk) { if (!user.help_chat_histories) user.help_chat_histories = {}; return user.help_chat_histories[mk] || []; }
+function setAdminHistory(user, mk, msgs) { if (!user.help_chat_histories) user.help_chat_histories = {}; user.help_chat_histories[mk] = msgs; user.markModified('help_chat_histories'); }
+
 async function processResponse(response) {
   const codeFiles = extractCodeFiles(response);
   const imagePrompts = extractImagePrompts(response);
@@ -143,25 +89,19 @@ router.get('/config', auth, (req, res) => {
 });
 
 router.get('/history', auth, (req, res) => {
-  if (req.user.role === 'super-admin') {
-    const mk = req.query.model || 'opus-4.6';
-    return res.json({ messages: getAdminHistory(req.user, mk), model: mk });
-  }
+  if (req.user.role === 'super-admin') { const mk = req.query.model || 'opus-4.6'; return res.json({ messages: getAdminHistory(req.user, mk), model: mk }); }
   res.json({ messages: req.user.help_chat_history || [] });
 });
 
 router.delete('/history', auth, async (req, res) => {
   try {
-    if (req.user.role === 'super-admin') {
-      const mk = req.query.model || 'all';
-      if (mk === 'all') { req.user.help_chat_histories = {}; req.user.markModified('help_chat_histories'); }
-      else setAdminHistory(req.user, mk, []);
-    } else { req.user.help_chat_history = []; }
+    if (req.user.role === 'super-admin') { const mk = req.query.model || 'all'; if (mk === 'all') { req.user.help_chat_histories = {}; req.user.markModified('help_chat_histories'); } else setAdminHistory(req.user, mk, []); }
+    else { req.user.help_chat_history = []; }
     await req.user.save(); res.json({ success: true });
-  } catch (e) { res.status(500).json({ error: 'Failed to clear' }); }
+  } catch (e) { res.status(500).json({ error: 'Failed' }); }
 });
 
-// ══════════ POST /api/help/chat — Main chat with smart failover ══════════
+// ══════════ POST /api/help/chat — Main chat ══════════
 router.post('/chat', auth, async (req, res) => {
   try {
     const user = req.user;
@@ -176,23 +116,34 @@ router.post('/chat', auth, async (req, res) => {
     const userMsgId = genMsgId();
     const assistantMsgId = genMsgId();
 
-    // ── Determine target model ──
     let targetModel = config.primary;
     if (isAdmin && requestedModel && ADMIN_MODELS.includes(requestedModel)) targetModel = requestedModel;
 
     const maxTokens = config.maxOut || 4096;
     const systemPrompt = isAdmin ? ADMIN_SYSTEM_PROMPT : HELP_SYSTEM_PROMPT;
 
-    // ── Build user message (with file if uploaded) ──
+    // ══════════════════════════════════════════════════════
+    // IMAGE UPLOAD — Send actual image data to AI vision API
+    // Previously this only sent text "[User uploaded image]"
+    // Now sends the real base64 image data so AI can SEE it
+    // ══════════════════════════════════════════════════════
     let userMessage = message;
+    let uploadedImages = []; // Array of { base64, mimeType } for vision API
+    let isImageUpload = false;
+
     if (fileData && fileType && fileName) {
       if (!config.canUpload) return res.status(403).json({ error: 'File uploads require Bronze+.' });
-      if (Math.round(fileData.length * 0.75) > config.maxFileSize) return res.status(413).json({ error: `File too large.` });
+      if (Math.round(fileData.length * 0.75) > config.maxFileSize) return res.status(413).json({ error: 'File too large.' });
+
       if (fileType.startsWith('image/')) {
-        if (targetModel === 'groq') targetModel = 'gemini-2.5-flash';
+        // ── IMAGE: Pass actual base64 to AI vision ──
+        isImageUpload = true;
+        uploadedImages = [{ base64: fileData, mimeType: fileType }];
         userMessage = `[User uploaded image: ${fileName}]\n\n${message}`;
+        console.log(`[HelpAI] Image upload: ${fileName} (${fileType}, ${Math.round(fileData.length * 0.75 / 1024)}KB) — sending to ${targetModel} vision`);
       } else {
-        try { const t = Buffer.from(fileData, 'base64').toString('utf-8'); userMessage = `[User uploaded file: ${fileName}]\n\`\`\`\n${t.slice(0, 80000)}\n\`\`\`\n\nRequest: ${message}`; }
+        // ── TEXT FILE: Read content as before ──
+        try { const text = Buffer.from(fileData, 'base64').toString('utf-8'); userMessage = `[User uploaded file: ${fileName}]\n\nFile contents:\n\`\`\`\n${text.slice(0, 80000)}\n\`\`\`\n\nUser's request: ${message}`; }
         catch (e) { userMessage = `[Uploaded: ${fileName}]\n\n${message}`; }
       }
     }
@@ -203,121 +154,90 @@ router.post('/chat', auth, async (req, res) => {
     else { ownHistory = user.help_chat_history || []; }
     const recentHistory = ownHistory.slice(-config.maxHistory);
 
-    // ── Check if another model was covering for this one (cross-model context) ──
+    // ── Cross-model context (if returning from fallback) ──
     let crossCtx = '';
     const lastFb = getLastFallback(userId, targetModel);
     if (lastFb) {
       let fbMsgs;
       if (isAdmin) { fbMsgs = getAdminHistory(user, lastFb); }
       else { fbMsgs = (user.help_chat_history || []).filter(m => m.usedModel === lastFb); }
-      if (fbMsgs.length > 0) {
-        crossCtx = buildCrossModelContext(fbMsgs, lastFb, 20);
-        console.log(`[HelpAI] Injecting ${lastFb} context into ${targetModel} (${Math.min(fbMsgs.length, 20)} msgs)`);
-      }
+      if (fbMsgs.length > 0) crossCtx = buildCrossModelContext(fbMsgs, lastFb, 20);
     }
 
-    // ── Build full context prompt ──
+    // ── Build context prompt ──
     let contextPrompt = '';
     if (recentHistory.length > 0) {
-      contextPrompt = 'Previous conversation:\n\n' +
-        recentHistory.map(m => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content.slice(0, 800)}`).join('\n\n') + '\n\n---\n';
+      contextPrompt = 'Previous conversation:\n\n' + recentHistory.map(m => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content.slice(0, 800)}`).join('\n\n') + '\n\n---\n';
     }
     contextPrompt += crossCtx + `Current message:\nUser: ${userMessage}`;
 
-    // ══════════ TRY TARGET MODEL ══════════
+    // ══════════ CALL AI — use vision API for images ══════════
     let response = null;
     let usedModel = targetModel;
 
-    try { response = await callAI(systemPrompt, contextPrompt, targetModel, maxTokens); }
-    catch (err) { console.error(`[HelpAI] ${targetModel} failed: ${err.message}`); }
+    try {
+      if (isImageUpload) {
+        // ── VISION CALL: Send actual image data to AI ──
+        response = await callAIWithImage(systemPrompt, contextPrompt, uploadedImages, targetModel, maxTokens);
+      } else {
+        response = await callAI(systemPrompt, contextPrompt, targetModel, maxTokens);
+      }
+    } catch (err) { console.error(`[HelpAI] ${targetModel} failed: ${err.message}`); }
 
     if (response) {
-      // ── SUCCESS: reset failures, clear fallback tracking ──
       resetFailure(userId, targetModel);
       if (lastFb) clearLastFallback(userId, targetModel);
     } else {
-      // ── FAIL: increment failure counter ──
+      // ── Failure handling with fallback chain ──
       const failCount = addFailure(userId, targetModel);
-      console.log(`[HelpAI] ${targetModel} failure #${failCount}`);
-
       if (failCount < 2) {
-        // 1st failure — tell user to try again
-        // Save the user message to history so it's not lost
         const userEntry = { role: 'user', content: message + (fileName ? ` [📎 ${fileName}]` : ''), msgId: userMsgId, timestamp: new Date(), usedModel: targetModel };
         if (isAdmin) { const h = getAdminHistory(user, targetModel); h.push(userEntry); setAdminHistory(user, targetModel, h); }
         else { if (!user.help_chat_history) user.help_chat_history = []; user.help_chat_history.push(userEntry); }
         await user.save();
-        return res.status(500).json({ error: `${MODEL_DISPLAY[targetModel] || targetModel} is having trouble. Send your message again and I'll switch to a backup AI automatically.`, failCount: 1, model: targetModel });
+        return res.status(500).json({ error: `${MODEL_DISPLAY[targetModel] || targetModel} is having trouble. Send again to auto-switch to backup.`, failCount: 1, model: targetModel });
       }
 
-      // ── 2nd+ failure — AUTO FALLBACK with context transfer ──
+      // Auto-fallback
       const chain = isAdmin ? ADMIN_CHAIN : (TIER_CHAINS[tier] || TIER_CHAINS.free);
       let fallbackModel = getNextInChain(chain, targetModel);
+      if (fallbackModel && getFailures(userId, fallbackModel) >= 2) fallbackModel = getNextInChain(chain, fallbackModel);
+      if (!fallbackModel) return res.status(500).json({ error: 'All AI models unavailable.' });
 
-      // If next in chain also recently failed, skip to the one after
-      if (fallbackModel && getFailures(userId, fallbackModel) >= 2) {
-        fallbackModel = getNextInChain(chain, fallbackModel);
-      }
+      console.log(`[HelpAI] Fallback: ${targetModel} → ${fallbackModel}`);
 
-      if (!fallbackModel) {
-        return res.status(500).json({ error: 'All AI models are currently unavailable. Please try again later.' });
-      }
-
-      console.log(`[HelpAI] Auto-fallback: ${targetModel} → ${fallbackModel}`);
-
-      // Get last 20 from target model's history for context transfer
-      let transferMsgs;
-      if (isAdmin) { transferMsgs = getAdminHistory(user, targetModel); }
-      else { transferMsgs = user.help_chat_history || []; }
+      let transferMsgs = isAdmin ? getAdminHistory(user, targetModel) : (user.help_chat_history || []);
       const transferCtx = buildCrossModelContext(transferMsgs, targetModel, 20);
 
-      // Build fallback context (fallback model's own history + transferred context)
-      let fbOwnHistory;
-      if (isAdmin) { fbOwnHistory = getAdminHistory(user, fallbackModel); }
-      else { fbOwnHistory = []; } // Non-admin: shared history already included
-      const fbRecent = fbOwnHistory.slice(-config.maxHistory);
-
+      let fbOwnHistory = isAdmin ? getAdminHistory(user, fallbackModel) : [];
       let fbContextPrompt = '';
-      if (isAdmin && fbRecent.length > 0) {
-        fbContextPrompt = 'Your previous conversation:\n\n' +
-          fbRecent.map(m => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content.slice(0, 800)}`).join('\n\n') + '\n\n---\n';
-      } else if (!isAdmin && recentHistory.length > 0) {
-        fbContextPrompt = 'Previous conversation:\n\n' +
-          recentHistory.map(m => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content.slice(0, 800)}`).join('\n\n') + '\n\n---\n';
-      }
+      if (isAdmin && fbOwnHistory.length > 0) fbContextPrompt = 'Your previous conversation:\n\n' + fbOwnHistory.slice(-config.maxHistory).map(m => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content.slice(0, 800)}`).join('\n\n') + '\n\n---\n';
+      else if (!isAdmin && recentHistory.length > 0) fbContextPrompt = 'Previous conversation:\n\n' + recentHistory.map(m => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content.slice(0, 800)}`).join('\n\n') + '\n\n---\n';
       fbContextPrompt += transferCtx + `Current message:\nUser: ${userMessage}`;
 
-      // Call fallback model
-      try { response = await callAI(systemPrompt, fbContextPrompt, fallbackModel, maxTokens); }
-      catch (err) { console.error(`[HelpAI] Fallback ${fallbackModel} also failed: ${err.message}`); }
+      try {
+        if (isImageUpload) { response = await callAIWithImage(systemPrompt, fbContextPrompt, uploadedImages, fallbackModel, maxTokens); }
+        else { response = await callAI(systemPrompt, fbContextPrompt, fallbackModel, maxTokens); }
+      } catch (err) { console.error(`[HelpAI] Fallback ${fallbackModel} failed: ${err.message}`); }
 
-      if (!response) {
-        return res.status(500).json({ error: 'AI models are currently unavailable. Please try again in a moment.' });
-      }
-
+      if (!response) return res.status(500).json({ error: 'AI models are currently unavailable.' });
       usedModel = fallbackModel;
-      // Record that targetModel fell back to fallbackModel
       setLastFallback(userId, targetModel, fallbackModel);
     }
 
-    // ══════════ PROCESS RESPONSE ══════════
+    // ── Process response (code files + image gen) ──
     const { textReply, codeFiles, generatedImages } = await processResponse(response);
 
-    // ── Save user message ──
+    // ── Save history ──
+    const autoSwitched = usedModel !== targetModel;
     const userEntry = { role: 'user', content: message + (fileName ? ` [📎 ${fileName}]` : ''), msgId: userMsgId, timestamp: new Date(), usedModel: targetModel };
     const aiEntry = { role: 'assistant', content: textReply, model: MODEL_DISPLAY[usedModel] || usedModel, msgId: assistantMsgId, imageCount: generatedImages.length, timestamp: new Date(), usedModel };
 
-    const autoSwitched = usedModel !== targetModel;
-
     if (isAdmin) {
       if (autoSwitched) {
-        // Save user msg in target model's history (so it knows what was asked)
         const th = getAdminHistory(user, targetModel); th.push(userEntry); setAdminHistory(user, targetModel, th.slice(-200));
-        // Save AI response in fallback model's history
         const fh = getAdminHistory(user, usedModel); fh.push(userEntry, aiEntry); setAdminHistory(user, usedModel, fh.slice(-200));
-      } else {
-        const h = getAdminHistory(user, targetModel); h.push(userEntry, aiEntry); setAdminHistory(user, targetModel, h.slice(-200));
-      }
+      } else { const h = getAdminHistory(user, targetModel); h.push(userEntry, aiEntry); setAdminHistory(user, targetModel, h.slice(-200)); }
     } else {
       if (!user.help_chat_history) user.help_chat_history = [];
       user.help_chat_history.push(userEntry, aiEntry);
@@ -340,9 +260,9 @@ router.post('/chat', auth, async (req, res) => {
     res.json({
       reply: textReply, fullReply: response, model: MODEL_DISPLAY[usedModel] || usedModel,
       files: codeFiles, images: generatedImages, userMsgId, assistantMsgId,
-      activeModel: usedModel,
-      autoSwitched, switchedFrom: autoSwitched ? targetModel : undefined,
-      switchReason: autoSwitched ? `${MODEL_DISPLAY[targetModel]} temporarily unavailable — ${MODEL_DISPLAY[usedModel]} is covering` : undefined,
+      activeModel: usedModel, autoSwitched,
+      switchedFrom: autoSwitched ? targetModel : undefined,
+      switchReason: autoSwitched ? `${MODEL_DISPLAY[targetModel]} unavailable — ${MODEL_DISPLAY[usedModel]} is covering` : undefined,
     });
   } catch (err) {
     console.error('[HelpAI] Error:', err.message);
@@ -358,6 +278,15 @@ router.post('/generate-image', auth, async (req, res) => {
     if (!imgs?.length) return res.status(500).json({ error: 'Image generation failed.' });
     res.json({ images: imgs });
   } catch (e) { res.status(500).json({ error: 'Image generation failed.' }); }
+});
+
+// ══════════ Diagnostic: test image generation ══════════
+router.get('/test-imagen', auth, async (req, res) => {
+  try {
+    if (req.user.role !== 'super-admin') return res.status(403).json({ error: 'Admin only' });
+    const results = await testImageGeneration();
+    res.json(results);
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 module.exports = router;
