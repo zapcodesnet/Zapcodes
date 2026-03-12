@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useContext, useCallback } from 'react';
 import { AuthContext } from '../context/AuthContext';
 import api, { API_URL } from '../api';
+
 export default function HelpAI() {
   const { user } = useContext(AuthContext);
   const [open, setOpen] = useState(false);
@@ -16,6 +17,7 @@ export default function HelpAI() {
   const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
   const [isMobile, setIsMobile] = useState(false);
   const [historyLoaded, setHistoryLoaded] = useState(false);
+  const [imageZoom, setImageZoom] = useState(null);
 
   const chatEndRef = useRef(null);
   const fileInputRef = useRef(null);
@@ -23,6 +25,20 @@ export default function HelpAI() {
   const dragStartTime = useRef(0);
   const dragMoved = useRef(false);
   const socketRef = useRef(null);
+  const socketIdRef = useRef(null);
+
+  // ── Track seen message IDs to prevent duplicates across HTTP + Socket.IO ──
+  const seenMsgIds = useRef(new Set());
+
+  // ── Helper: add message only if msgId not already seen ──
+  const addMessageIfNew = useCallback((msg) => {
+    if (msg.msgId) {
+      if (seenMsgIds.current.has(msg.msgId)) return false; // Already have this message
+      seenMsgIds.current.add(msg.msgId);
+    }
+    setMessages(prev => [...prev, msg]);
+    return true;
+  }, []);
 
   // ── Detect mobile ──
   useEffect(() => {
@@ -38,12 +54,13 @@ export default function HelpAI() {
       setConfig(r.data);
       // Admin ALWAYS defaults to Opus 4.6 — force it on every config load
       if (r.data.isAdmin && r.data.defaultModel) {
-        setSelectedModel(r.data.defaultModel);
+        setSelectedModel(r.data.defaultModel); // 'opus-4.6'
       }
     }).catch(() => {});
   }, [user?.subscription_tier]);
 
-  // ── Socket.IO real-time sync (optional — works if socket.io-client installed) ──
+  // ── Socket.IO real-time sync ──
+  // Receives messages from OTHER devices only (backend excludes sender's socketId)
   useEffect(() => {
     if (!user) return;
     let socket = null;
@@ -51,24 +68,71 @@ export default function HelpAI() {
       const io = mod.default || mod.io;
       socket = io(API_URL, { transports: ['websocket', 'polling'] });
       socketRef.current = socket;
-      socket.on('connect', () => { socket.emit('join-user-room', user._id || user.id); });
-      socket.on('help-ai-message', (msg) => {
-        setMessages(prev => {
-          const last = prev[prev.length - 1];
-          if (last?.role === 'assistant' && last?.content === msg.content) return prev;
-          return [...prev, { role: msg.role, content: msg.content, model: msg.model, files: msg.files, timestamp: msg.timestamp }];
+
+      socket.on('connect', () => {
+        socketIdRef.current = socket.id;
+        socket.emit('join-user-room', user._id || user.id);
+      });
+
+      // ── Receive user messages from OTHER devices (for sync) ──
+      socket.on('help-ai-user-message', (msg) => {
+        addMessageIfNew({
+          role: 'user',
+          content: msg.content,
+          msgId: msg.msgId,
+          timestamp: msg.timestamp,
         });
       });
+
+      // ── Receive assistant messages from OTHER devices (for sync) ──
+      socket.on('help-ai-message', (msg) => {
+        addMessageIfNew({
+          role: 'assistant',
+          content: msg.content,
+          model: msg.model,
+          files: msg.files || [],
+          images: msg.images || [],
+          msgId: msg.msgId,
+          timestamp: msg.timestamp,
+        });
+        // If we were showing loading on another device, clear it
+        setLoading(false);
+      });
+
+      // ── Sync: when another device starts typing, show loading ──
+      socket.on('help-ai-loading', () => {
+        setLoading(true);
+      });
+
     }).catch(() => {}); // socket.io-client not installed — sync disabled, chat still works
-    return () => { if (socket) socket.disconnect(); socketRef.current = null; };
-  }, [user]);
+
+    return () => {
+      if (socket) socket.disconnect();
+      socketRef.current = null;
+      socketIdRef.current = null;
+    };
+  }, [user, addMessageIfNew]);
 
   // ── Load history ──
   useEffect(() => {
     if (open && !historyLoaded && user) {
       api.get('/api/help/history').then(r => {
         const saved = r.data.messages || [];
-        if (saved.length > 0) setMessages(saved.map(m => ({ role: m.role, content: m.content, model: m.model || null, timestamp: m.timestamp })));
+        if (saved.length > 0) {
+          // Register all loaded msgIds as seen to prevent future duplicates
+          const loaded = saved.map(m => {
+            if (m.msgId) seenMsgIds.current.add(m.msgId);
+            return {
+              role: m.role,
+              content: m.content,
+              model: m.model || null,
+              msgId: m.msgId || null,
+              imageCount: m.imageCount || 0,
+              timestamp: m.timestamp,
+            };
+          });
+          setMessages(loaded);
+        }
         setHistoryLoaded(true);
       }).catch(() => setHistoryLoaded(true));
     }
@@ -78,35 +142,89 @@ export default function HelpAI() {
   useEffect(() => {
     if (open && historyLoaded && messages.length === 0 && user) {
       const name = user?.name || user?.email?.split('@')[0] || 'there';
-      setMessages([{ role: 'assistant', content: `Hey ${name}! 👋 I'm your ZapCodes Help AI.\n\nI can help you build websites, fix code, deploy sites, and answer questions about ZapCodes and BlendLink.\n\nNeed code fixed? Just upload your file and tell me what's wrong — I'll return a complete file you can paste right into GitHub.\n\nWhat can I help you with?`, model: config?.primaryModel || 'AI' }]);
+      setMessages([{
+        role: 'assistant',
+        content: `Hey ${name}! 👋 I'm your ZapCodes Help AI.\n\nI can help you build websites, fix code, deploy sites, and answer questions about ZapCodes and BlendLink.\n\nNeed code fixed? Just upload your file and tell me what's wrong — I'll return a complete file you can paste right into GitHub.\n\nI can also generate images to help explain things visually! 🎨\n\nWhat can I help you with?`,
+        model: config?.primaryModel || 'AI',
+      }]);
     }
-  }, [open, historyLoaded, messages.length, user]);
+  }, [open, historyLoaded, messages.length, user, config?.primaryModel]);
 
   // ── Auto-scroll ──
-  useEffect(() => { if (chatEndRef.current) chatEndRef.current.scrollIntoView({ behavior: 'smooth' }); }, [messages, loading]);
+  useEffect(() => {
+    if (chatEndRef.current) chatEndRef.current.scrollIntoView({ behavior: 'smooth' });
+  }, [messages, loading]);
 
   // ── Send message ──
   const sendMessage = useCallback(async () => {
     if (loading || (!input.trim() && !uploadFile)) return;
-    const userMsg = { role: 'user', content: input, file: uploadFile?.name || null };
+
+    const userMsgIdLocal = `local-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const userMsg = { role: 'user', content: input, file: uploadFile?.name || null, msgId: userMsgIdLocal };
+    seenMsgIds.current.add(userMsgIdLocal);
     setMessages(prev => [...prev, userMsg]);
+
     const currentInput = input;
     setInput('');
     setLoading(true);
+
+    // Notify other devices that we're loading
+    try {
+      const socket = socketRef.current;
+      if (socket) {
+        const room = `user-${user._id || user.id}`;
+        socket.emit('help-ai-loading', { room });
+      }
+    } catch (e) {}
 
     try {
       const body = { message: currentInput };
       if (selectedModel) body.model = selectedModel;
       if (uploadFile) { body.fileData = uploadFile.data; body.fileType = uploadFile.type; body.fileName = uploadFile.name; }
+      // Send our socketId so backend can exclude us from the Socket.IO broadcast
+      if (socketIdRef.current) body.socketId = socketIdRef.current;
 
       const { data } = await api.post('/api/help/chat', body);
-      setMessages(prev => [...prev, { role: 'assistant', content: data.reply, model: data.model, files: data.files || [] }]);
-    } catch (err) {
-      setMessages(prev => [...prev, { role: 'assistant', content: err.response?.data?.error || 'Something went wrong. Please try again.', isError: true }]);
-    } finally { setLoading(false); setUploadFile(null); }
-  }, [input, selectedModel, uploadFile, loading]);
 
-  const handleKeyDown = (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); } };
+      // Register server-assigned msgIds as seen
+      if (data.userMsgId) seenMsgIds.current.add(data.userMsgId);
+      if (data.assistantMsgId) seenMsgIds.current.add(data.assistantMsgId);
+
+      // Replace the local user message msgId with the server one
+      // (so history reload doesn't create duplicates)
+      setMessages(prev => {
+        const updated = [...prev];
+        const lastUserIdx = updated.findLastIndex(m => m.msgId === userMsgIdLocal);
+        if (lastUserIdx !== -1 && data.userMsgId) {
+          updated[lastUserIdx] = { ...updated[lastUserIdx], msgId: data.userMsgId };
+        }
+        return updated;
+      });
+
+      // Add assistant message (with server msgId — guaranteed unique)
+      const assistantMsg = {
+        role: 'assistant',
+        content: data.reply,
+        model: data.model,
+        files: data.files || [],
+        images: data.images || [],
+        msgId: data.assistantMsgId,
+      };
+      // Don't use addMessageIfNew here — we already registered the ID above
+      setMessages(prev => [...prev, assistantMsg]);
+
+    } catch (err) {
+      setMessages(prev => [...prev, {
+        role: 'assistant',
+        content: err.response?.data?.error || 'Something went wrong. Please try again.',
+        isError: true,
+      }]);
+    } finally { setLoading(false); setUploadFile(null); }
+  }, [input, selectedModel, uploadFile, loading, user, addMessageIfNew]);
+
+  const handleKeyDown = (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+  };
 
   // ── File upload ──
   const handleFileSelect = (e) => {
@@ -129,18 +247,40 @@ export default function HelpAI() {
     URL.revokeObjectURL(url);
   };
 
-  // ── Download all files as individual downloads ──
+  // ── Download all code files ──
   const downloadAllFiles = (files) => { files.forEach(f => downloadFile(f)); };
 
   // ── Copy file content ──
-  const copyFile = (file) => {
-    navigator.clipboard.writeText(file.content);
+  const copyFile = (file) => { navigator.clipboard.writeText(file.content); };
+
+  // ── Download AI-generated image ──
+  const downloadImage = (img, index) => {
+    try {
+      const ext = (img.mimeType || 'image/png').split('/')[1] || 'png';
+      const byteChars = atob(img.base64);
+      const byteArr = new Uint8Array(byteChars.length);
+      for (let i = 0; i < byteChars.length; i++) byteArr[i] = byteChars.charCodeAt(i);
+      const blob = new Blob([byteArr], { type: img.mimeType || 'image/png' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `zapcodes-ai-image-${index + 1}.${ext}`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error('Image download failed:', err);
+    }
   };
 
   // ── Clear history ──
   const clearHistory = async () => {
     if (!confirm('Clear all conversation history? This cannot be undone.')) return;
-    try { await api.delete('/api/help/history'); setMessages([]); setHistoryLoaded(false); } catch {}
+    try {
+      await api.delete('/api/help/history');
+      setMessages([]);
+      setHistoryLoaded(false);
+      seenMsgIds.current.clear();
+    } catch (e) {}
   };
 
   // ── Dragging ──
@@ -192,7 +332,7 @@ export default function HelpAI() {
 
       {/* ── Chat Window ── */}
       {open && (
-        <div style={{ position: 'fixed', ...(isFullView ? { inset: 0, borderRadius: 0 } : { bottom: 80, right: 20, width: 420, height: 580, borderRadius: 18, boxShadow: '0 20px 60px rgba(0,0,0,.6)' }), zIndex: 10001, display: 'flex', flexDirection: 'column', background: '#09091a', border: isFullView ? 'none' : '1px solid rgba(99,102,241,.25)', overflow: 'hidden' }}>
+        <div style={{ position: 'fixed', ...(isFullView ? { inset: 0, borderRadius: 0 } : { bottom: 80, right: 20, width: 420, height: 600, borderRadius: 18, boxShadow: '0 20px 60px rgba(0,0,0,.6)' }), zIndex: 10001, display: 'flex', flexDirection: 'column', background: '#09091a', border: isFullView ? 'none' : '1px solid rgba(99,102,241,.25)', overflow: 'hidden' }}>
 
           {/* Header */}
           <div style={{ padding: '12px 16px', background: 'linear-gradient(135deg, #6366f1, #7c3aed)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexShrink: 0 }}>
@@ -212,7 +352,7 @@ export default function HelpAI() {
             </div>
           </div>
 
-          {/* Admin model selector — Opus 4.6 selected by default */}
+          {/* Admin model selector — Opus 4.6 selected by default, NEVER Sonnet */}
           {config?.isAdmin && config?.availableModels && (
             <div style={{ padding: '6px 12px', background: 'rgba(99,102,241,.06)', borderBottom: '1px solid rgba(99,102,241,.15)', display: 'flex', gap: 4, flexWrap: 'wrap', alignItems: 'center' }}>
               <span style={{ fontSize: 10, color: '#6366f1', fontWeight: 700 }}>AI:</span>
@@ -229,7 +369,7 @@ export default function HelpAI() {
             )}
 
             {messages.map((m, i) => (
-              <div key={i}>
+              <div key={m.msgId || `msg-${i}`}>
                 <div style={{ display: 'flex', justifyContent: m.role === 'user' ? 'flex-end' : 'flex-start', gap: 8 }}>
                   {m.role === 'assistant' && <div style={{ width: 28, height: 28, borderRadius: 14, background: 'linear-gradient(135deg, #6366f1, #8b5cf6)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, marginTop: 2 }}><span style={{ fontSize: 12, fontWeight: 800, color: '#fff' }}>?</span></div>}
                   <div style={{ maxWidth: isFullView ? '70%' : '82%', padding: '10px 14px', borderRadius: m.role === 'user' ? '16px 16px 4px 16px' : '16px 16px 16px 4px', background: m.role === 'user' ? 'linear-gradient(135deg, #6366f1, #7c3aed)' : m.isError ? 'rgba(239,68,68,.12)' : 'rgba(255,255,255,.05)', color: m.isError ? '#f87171' : '#e0e0f0', fontSize: 13, lineHeight: 1.6, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
@@ -238,6 +378,28 @@ export default function HelpAI() {
                     {m.model && m.role === 'assistant' && !m.isError && <div style={{ fontSize: 9, color: 'rgba(255,255,255,.2)', marginTop: 4, textAlign: 'right' }}>{m.model}</div>}
                   </div>
                 </div>
+
+                {/* ── AI-generated images with download button ── */}
+                {m.images && m.images.length > 0 && (
+                  <div style={{ marginLeft: 36, marginTop: 6, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                    {m.images.map((img, ii) => (
+                      <div key={ii} style={{ position: 'relative', borderRadius: 12, overflow: 'hidden', border: '1px solid rgba(99,102,241,.25)', background: '#0a0a1a', maxWidth: isFullView ? '70%' : '82%' }}>
+                        <img
+                          src={`data:${img.mimeType || 'image/png'};base64,${img.base64}`}
+                          alt={img.prompt || 'AI generated image'}
+                          style={{ width: '100%', display: 'block', cursor: 'pointer', borderRadius: 12 }}
+                          onClick={() => setImageZoom(img)}
+                        />
+                        <div style={{ display: 'flex', gap: 4, padding: '6px 8px', background: 'rgba(0,0,0,.5)', position: 'absolute', bottom: 0, right: 0, borderTopLeftRadius: 10 }}>
+                          <button onClick={() => downloadImage(img, ii)} style={{ padding: '3px 10px', borderRadius: 6, border: 'none', background: '#6366f1', color: '#fff', cursor: 'pointer', fontSize: 10, fontWeight: 700, display: 'flex', alignItems: 'center', gap: 3 }}>
+                            ⬇ Save
+                          </button>
+                        </div>
+                        {img.prompt && <div style={{ padding: '4px 8px', fontSize: 9, color: 'rgba(255,255,255,.3)', background: 'rgba(0,0,0,.3)' }}>🎨 {img.prompt}</div>}
+                      </div>
+                    ))}
+                  </div>
+                )}
 
                 {/* ── Code files with download/copy buttons ── */}
                 {m.files && m.files.length > 0 && (
@@ -283,17 +445,62 @@ export default function HelpAI() {
             </div>
           )}
 
-          {/* Input */}
+          {/* Input — 4 rows default, expandable */}
           <div style={{ padding: '10px 12px', borderTop: '1px solid rgba(255,255,255,.06)', background: '#07071a', display: 'flex', gap: 8, alignItems: 'flex-end', flexShrink: 0 }}>
             {canUpload && (
               <><button onClick={() => fileInputRef.current?.click()} style={{ width: 36, height: 36, borderRadius: 18, border: '1px solid rgba(255,255,255,.1)', background: 'transparent', color: '#6366f1', cursor: 'pointer', fontSize: 16, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }} title={`Upload file (max ${config?.maxFileSizeMB || 0}MB)`}>📎</button>
               <input ref={fileInputRef} type="file" accept="image/*,.txt,.html,.css,.js,.jsx,.json,.py,.md,.csv,.pdf,.ts,.tsx" onChange={handleFileSelect} style={{ display: 'none' }} /></>
             )}
-            <textarea value={input} onChange={e => setInput(e.target.value)} onKeyDown={handleKeyDown} placeholder={config?.isAdmin ? 'Ask anything (Opus 4.6)...' : 'Ask about ZapCodes...'} rows={1} style={{ flex: 1, padding: '9px 14px', borderRadius: 14, border: '1px solid rgba(255,255,255,.08)', background: 'rgba(255,255,255,.03)', color: '#e0e0f0', fontSize: 13, fontFamily: 'inherit', resize: 'none', outline: 'none', maxHeight: 100, overflow: 'auto' }} />
+            <textarea
+              value={input}
+              onChange={e => setInput(e.target.value)}
+              onKeyDown={handleKeyDown}
+              placeholder={config?.isAdmin ? 'Ask anything (Opus 4.6)...' : 'Ask about ZapCodes...'}
+              rows={4}
+              style={{
+                flex: 1,
+                padding: '9px 14px',
+                borderRadius: 14,
+                border: '1px solid rgba(255,255,255,.08)',
+                background: 'rgba(255,255,255,.03)',
+                color: '#e0e0f0',
+                fontSize: 13,
+                fontFamily: 'inherit',
+                resize: 'vertical',
+                outline: 'none',
+                minHeight: 80,
+                maxHeight: 200,
+                overflow: 'auto',
+                lineHeight: 1.5,
+              }}
+            />
             <button onClick={sendMessage} disabled={loading || (!input.trim() && !uploadFile)} style={{ width: 36, height: 36, borderRadius: 18, border: 'none', background: loading || (!input.trim() && !uploadFile) ? 'rgba(255,255,255,.04)' : 'linear-gradient(135deg, #6366f1, #8b5cf6)', color: '#fff', cursor: loading ? 'not-allowed' : 'pointer', fontSize: 16, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>↑</button>
           </div>
 
           {!canUpload && <div style={{ padding: '3px 12px 6px', background: '#07071a', fontSize: 10, color: 'rgba(255,255,255,.2)', textAlign: 'center' }}>📎 File upload available on Bronze+ plans</div>}
+        </div>
+      )}
+
+      {/* ── Image zoom modal (full-screen preview with download) ── */}
+      {imageZoom && (
+        <div
+          onClick={() => setImageZoom(null)}
+          style={{ position: 'fixed', inset: 0, zIndex: 20000, background: 'rgba(0,0,0,.88)', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', padding: 20 }}
+        >
+          <img
+            src={`data:${imageZoom.mimeType || 'image/png'};base64,${imageZoom.base64}`}
+            alt="AI generated image preview"
+            style={{ maxWidth: '90vw', maxHeight: '80vh', borderRadius: 12, boxShadow: '0 20px 60px rgba(0,0,0,.8)' }}
+            onClick={e => e.stopPropagation()}
+          />
+          <div style={{ display: 'flex', gap: 10, marginTop: 16 }} onClick={e => e.stopPropagation()}>
+            <button onClick={() => downloadImage(imageZoom, 0)} style={{ padding: '10px 24px', borderRadius: 10, border: 'none', background: '#6366f1', color: '#fff', cursor: 'pointer', fontSize: 14, fontWeight: 700 }}>
+              ⬇ Download Image
+            </button>
+            <button onClick={() => setImageZoom(null)} style={{ padding: '10px 24px', borderRadius: 10, border: '1px solid rgba(255,255,255,.2)', background: 'transparent', color: '#fff', cursor: 'pointer', fontSize: 14, fontWeight: 600 }}>
+              ✕ Close
+            </button>
+          </div>
         </div>
       )}
 
