@@ -58,12 +58,7 @@ export default function HelpAI() {
         addMessageIfNew({ role: 'user', content: msg.content, msgId: msg.msgId, timestamp: msg.timestamp });
       });
       socket.on('help-ai-message', (msg) => {
-        // Handle auto-switch from another device
-        if (msg.autoSwitched && config?.isAdmin) {
-          setSelectedModel(msg.activeModel);
-          setMessages([]); setHistoryLoaded(false); seenMsgIds.current.clear();
-          return;
-        }
+        if (msg.autoSwitched && config?.isAdmin) { setSelectedModel(msg.activeModel); setMessages([]); setHistoryLoaded(false); seenMsgIds.current.clear(); return; }
         if (config?.isAdmin && msg.activeModel && msg.activeModel !== selectedModel) return;
         addMessageIfNew({ role: 'assistant', content: msg.content, model: msg.model, files: msg.files || [], images: msg.images || [], msgId: msg.msgId, timestamp: msg.timestamp });
         setLoading(false);
@@ -102,18 +97,13 @@ export default function HelpAI() {
     if (open && historyLoaded && messages.length === 0 && user && !loadingHistory) {
       const name = user?.name || user?.email?.split('@')[0] || 'there';
       const mn = config?.isAdmin ? (config.availableModels?.find(m => m.id === selectedModel)?.name || 'AI') : (config?.primaryModel || 'AI');
-      setMessages([{ role: 'assistant', content: `Hey ${name}! 👋 I'm your ZapCodes Help AI${config?.isAdmin ? ` (${mn})` : ''}.\n\nI can help you build websites, fix code, deploy sites, and answer questions about ZapCodes and BlendLink.\n\nNeed code fixed? Just tell me what's wrong — I'll return a complete file you can download.\n\nI can also generate images to help explain things visually! 🎨\n\nWhat can I help you with?`, model: mn }]);
+      setMessages([{ role: 'assistant', content: `Hey ${name}! 👋 I'm your ZapCodes Help AI${config?.isAdmin ? ` (${mn})` : ''}.\n\nI can help you build websites, fix code, deploy sites, and answer questions about ZapCodes and BlendLink.\n\nNeed code fixed? Just tell me what's wrong — I'll return a complete file you can download.\n\nWhat can I help you with?`, model: mn }]);
     }
   }, [open, historyLoaded, messages.length, user, config, selectedModel, loadingHistory]);
 
   useEffect(() => { if (chatEndRef.current) chatEndRef.current.scrollIntoView({ behavior: 'smooth' }); }, [messages, loading]);
+  useEffect(() => { if (switchNotice) { const t = setTimeout(() => setSwitchNotice(null), 5000); return () => clearTimeout(t); } }, [switchNotice]);
 
-  // ── Auto-dismiss switch notice after 5 seconds ──
-  useEffect(() => {
-    if (switchNotice) { const t = setTimeout(() => setSwitchNotice(null), 5000); return () => clearTimeout(t); }
-  }, [switchNotice]);
-
-  // ══════════ SEND MESSAGE — handles auto-failover response ══════════
   const sendMessage = useCallback(async () => {
     if (loading || (!input.trim() && !uploadFile)) return;
     const localId = `local-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -132,7 +122,6 @@ export default function HelpAI() {
       if (data.userMsgId) seenMsgIds.current.add(data.userMsgId);
       if (data.assistantMsgId) seenMsgIds.current.add(data.assistantMsgId);
 
-      // Update local user msgId with server one
       setMessages(prev => {
         const updated = [...prev];
         const idx = updated.findLastIndex(m => m.msgId === localId);
@@ -140,39 +129,23 @@ export default function HelpAI() {
         return updated;
       });
 
-      // ═══════════════════════════════════════════════════════
-      // AUTO-SWITCH: Backend fell back to a different model
-      // For admin: switch to that model's tab, show only the new response
-      // For non-admin: show response in same window with notice
-      // ═══════════════════════════════════════════════════════
       if (data.autoSwitched) {
         if (config?.isAdmin) {
-          // Auto-switch to the fallback model's tab
           const newModel = data.activeModel;
           const newModelName = config.availableModels?.find(m => m.id === newModel)?.name || newModel;
           const oldModelName = config.availableModels?.find(m => m.id === data.switchedFrom)?.name || data.switchedFrom;
-
           setSwitchNotice(`${oldModelName} unavailable — switched to ${newModelName}`);
-
-          // Switch tab: load fallback model's history (which now includes the AI response)
-          setSelectedModel(newModel);
-          seenMsgIds.current.clear();
-          setHistoryLoaded(false);
-          // Reload history for the new model (will include the response just saved)
+          setSelectedModel(newModel); seenMsgIds.current.clear(); setHistoryLoaded(false);
           setTimeout(() => loadHistory(newModel), 100);
         } else {
-          // Non-admin: show in same window with a subtle notice
           setSwitchNotice(data.switchReason || 'Switched to backup AI');
           setMessages(prev => [...prev, { role: 'assistant', content: data.reply, model: data.model, files: data.files || [], images: data.images || [], msgId: data.assistantMsgId }]);
         }
       } else {
-        // Normal response — add to current chat
         setMessages(prev => [...prev, { role: 'assistant', content: data.reply, model: data.model, files: data.files || [], images: data.images || [], msgId: data.assistantMsgId }]);
       }
     } catch (err) {
-      const errData = err.response?.data;
-      // Show error message (1st failure hint)
-      setMessages(prev => [...prev, { role: 'assistant', content: errData?.error || 'Something went wrong. Please try again.', isError: true }]);
+      setMessages(prev => [...prev, { role: 'assistant', content: err.response?.data?.error || 'Something went wrong.', isError: true }]);
     } finally { setLoading(false); setUploadFile(null); }
   }, [input, selectedModel, uploadFile, loading, config, loadHistory]);
 
@@ -199,7 +172,6 @@ export default function HelpAI() {
     try { await api.delete(`/api/help/history${config?.isAdmin ? `?model=${selectedModel}` : ''}`); setMessages([]); setHistoryLoaded(false); seenMsgIds.current.clear(); } catch (e) {}
   };
 
-  // ── Dragging ──
   const handleDragStart = (e) => { e.preventDefault(); const t = e.touches?.[0] || e; const r = iconRef.current?.getBoundingClientRect(); if (!r) return; setDragOffset({ x: t.clientX - r.left, y: t.clientY - r.top }); setDragging(true); dragStartTime.current = Date.now(); dragMoved.current = false; };
   const handleDragMove = useCallback((e) => { if (!dragging) return; e.preventDefault(); const t = e.touches?.[0] || e; setIconPos({ x: Math.max(0, Math.min(window.innerWidth - 52, t.clientX - dragOffset.x)), y: Math.max(0, Math.min(window.innerHeight - 52, t.clientY - dragOffset.y)) }); dragMoved.current = true; }, [dragging, dragOffset]);
   const handleDragEnd = useCallback(() => { setDragging(false); if (!dragMoved.current || Date.now() - dragStartTime.current < 200) setOpen(prev => !prev); }, []);
@@ -223,15 +195,10 @@ export default function HelpAI() {
 
       {open && (
         <div style={{ position: 'fixed', ...(isFullView ? { inset: 0, borderRadius: 0 } : { bottom: 80, right: 20, width: 420, height: 600, borderRadius: 18, boxShadow: '0 20px 60px rgba(0,0,0,.6)' }), zIndex: 10001, display: 'flex', flexDirection: 'column', background: '#09091a', border: isFullView ? 'none' : '1px solid rgba(99,102,241,.25)', overflow: 'hidden' }}>
-
-          {/* Header */}
           <div style={{ padding: '12px 16px', background: 'linear-gradient(135deg, #6366f1, #7c3aed)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexShrink: 0 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
               <div style={{ width: 34, height: 34, borderRadius: 17, background: 'rgba(255,255,255,.18)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}><span style={{ fontSize: 18, fontWeight: 800, color: '#fff' }}>?</span></div>
-              <div>
-                <div style={{ fontSize: 14, fontWeight: 700, color: '#fff' }}>ZapCodes Help AI</div>
-                <div style={{ fontSize: 10, color: 'rgba(255,255,255,.65)' }}>{loading ? '● Typing...' : `Powered by ${activeName}`}</div>
-              </div>
+              <div><div style={{ fontSize: 14, fontWeight: 700, color: '#fff' }}>ZapCodes Help AI</div><div style={{ fontSize: 10, color: 'rgba(255,255,255,.65)' }}>{loading ? '● Typing...' : `Powered by ${activeName}`}</div></div>
             </div>
             <div style={{ display: 'flex', gap: 6 }}>
               {!isMobile && <button onClick={() => setFullScreen(!fullScreen)} style={hBtn}>{fullScreen ? '⊡' : '⊞'}</button>}
@@ -240,7 +207,6 @@ export default function HelpAI() {
             </div>
           </div>
 
-          {/* Admin model tabs — each = separate chat */}
           {config?.isAdmin && config?.availableModels && (
             <div style={{ padding: '6px 12px', background: 'rgba(99,102,241,.06)', borderBottom: '1px solid rgba(99,102,241,.15)', display: 'flex', gap: 4, flexWrap: 'wrap', alignItems: 'center' }}>
               <span style={{ fontSize: 10, color: '#6366f1', fontWeight: 700 }}>AI:</span>
@@ -250,7 +216,6 @@ export default function HelpAI() {
             </div>
           )}
 
-          {/* Auto-switch notice banner */}
           {switchNotice && (
             <div style={{ padding: '6px 12px', background: 'rgba(234,179,8,.1)', borderBottom: '1px solid rgba(234,179,8,.2)', fontSize: 11, color: '#eab308', textAlign: 'center', fontWeight: 600, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <span>⚡ {switchNotice}</span>
@@ -258,12 +223,9 @@ export default function HelpAI() {
             </div>
           )}
 
-          {/* Messages */}
           <div style={{ flex: 1, overflowY: 'auto', padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: 8 }}>
             {loadingHistory && <div style={{ textAlign: 'center', padding: '20px 0', fontSize: 12, color: 'rgba(255,255,255,.3)' }}>Loading {activeName} conversation...</div>}
-            {!loadingHistory && messages.length > 0 && messages[0].timestamp && (
-              <div style={{ textAlign: 'center', padding: '4px 0', fontSize: 10, color: 'rgba(255,255,255,.2)' }}>{activeName} • {messages.length} messages</div>
-            )}
+            {!loadingHistory && messages.length > 0 && messages[0].timestamp && <div style={{ textAlign: 'center', padding: '4px 0', fontSize: 10, color: 'rgba(255,255,255,.2)' }}>{activeName} • {messages.length} messages</div>}
 
             {messages.map((m, i) => (
               <div key={m.msgId || `msg-${i}`}>
