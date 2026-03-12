@@ -163,13 +163,20 @@ const userSchema = new mongoose.Schema({
   }],
 
   // ══════════ ZapCodes Help AI — Persistent Chat History ══════════
+  // Shared history for non-admin users (all tiers)
   help_chat_history: [{
-    help_chat_histories: { type: mongoose.Schema.Types.Mixed, default: {} },
     role: { type: String },
     content: { type: String },
     model: { type: String },
+    msgId: { type: String },
+    usedModel: { type: String },
+    imageCount: { type: Number, default: 0 },
     timestamp: { type: Date, default: Date.now },
   }],
+
+  // Admin only: separate chat history per AI model
+  // { 'opus-4.6': [...messages], 'sonnet-4.6': [...messages], ... }
+  help_chat_histories: { type: mongoose.Schema.Types.Mixed, default: {} },
 
   // Legacy usage
   scansUsed: { type: Number, default: 0 },
@@ -248,7 +255,6 @@ userSchema.methods.hasPermission = function (perm) {
 };
 
 // ══════════ TIER CONFIG — UPDATED: New 5-tier pricing with 5 AI models ══════════
-// Gold = $39.99, all models available on Gold+, BL coin costs per action
 userSchema.methods.getTierConfig = function () {
   const tiers = {
     free: {
@@ -259,14 +265,13 @@ userSchema.methods.getTierConfig = function () {
       monthlyPushCap: 1, monthlyPushType: 'one_time_trial',
       modelChain: ['gemini-2.5-flash', 'groq'],
       monthlyLimits: {
-        'gemini-2.5-flash': 3,      // one-time trial (never resets)
+        'gemini-2.5-flash': 3,
         'groq': 20,
       },
-      trialModels: ['gemini-2.5-flash'],  // these use trials_used, not monthly
+      trialModels: ['gemini-2.5-flash'],
       blCosts: {
         'gemini-2.5-flash': 10000, 'groq': 5000,
       },
-      // BlendLink
       dailyPhotoMinting: 5, memberPages: 1, monthlyListingLimit: 300,
       referralL1: 2, referralL2: 1, xpMultiplier: 1,
     },
@@ -278,7 +283,7 @@ userSchema.methods.getTierConfig = function () {
       monthlyPushCap: 90, monthlyPushType: 'monthly',
       modelChain: ['gemini-3.1-pro', 'gemini-2.5-flash', 'groq'],
       monthlyLimits: {
-        'gemini-3.1-pro': 3,        // one-time trial (never resets)
+        'gemini-3.1-pro': 3,
         'gemini-2.5-flash': 200,
         'groq': 500,
       },
@@ -417,7 +422,6 @@ userSchema.methods.decrementMonthlyUsage = function (model, actionType) {
   this.markModified('monthly_usage');
 };
 
-// Get monthly usage count for a specific model
 userSchema.methods.getModelUsageCount = function (modelKey) {
   const mu = this.getMonthlyUsage();
   const field = MODEL_TO_USAGE_FIELD[modelKey];
@@ -425,21 +429,18 @@ userSchema.methods.getModelUsageCount = function (modelKey) {
   return 0;
 };
 
-// Check if a one-time trial model has been exhausted
 userSchema.methods.isTrialExhausted = function (modelKey, limit) {
   if (!this.trials_used) return false;
   const used = this.trials_used[modelKey] || 0;
   return used >= limit;
 };
 
-// Increment one-time trial counter (never resets)
 userSchema.methods.incrementTrial = function (modelKey) {
   if (!this.trials_used) this.trials_used = {};
   this.trials_used[modelKey] = (this.trials_used[modelKey] || 0) + 1;
   this.markModified('trials_used');
 };
 
-// Daily usage check (kept for backward compatibility)
 userSchema.methods.canPerformAction = function (actionType) {
   if (this.role === 'super-admin') return true;
   const config = this.getTierConfig();
@@ -448,14 +449,13 @@ userSchema.methods.canPerformAction = function (actionType) {
     this.daily_usage = { date: today, generations: 0, codeFixes: 0, githubPushes: 0 };
   }
   switch (actionType) {
-    case 'generation': return true; // Now handled by monthly limits + BL coins
-    case 'codeFix': return true;    // Now handled by monthly limits + BL coins
-    case 'githubPush': return true;  // Now handled by monthly limits + BL coins
+    case 'generation': return true;
+    case 'codeFix': return true;
+    case 'githubPush': return true;
     default: return false;
   }
 };
 
-// BL Coin operations
 userSchema.methods.spendCoins = function (amount, type, description, aiModel) {
   if (this.role === 'super-admin') return;
   if (this.bl_coins < amount) throw new Error('Insufficient BL coins');
