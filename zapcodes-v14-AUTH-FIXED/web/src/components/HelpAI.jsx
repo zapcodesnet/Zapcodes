@@ -36,8 +36,10 @@ export default function HelpAI() {
   useEffect(() => {
     if (user) api.get('/api/help/config').then(r => {
       setConfig(r.data);
-      // Admin defaults to Opus 4.6
-      if (r.data.defaultModel && !selectedModel) setSelectedModel(r.data.defaultModel);
+      // Admin ALWAYS defaults to Opus 4.6 — force it on every config load
+      if (r.data.isAdmin && r.data.defaultModel) {
+        setSelectedModel(r.data.defaultModel);
+      }
     }).catch(() => {});
   }, [user?.subscription_tier]);
 
