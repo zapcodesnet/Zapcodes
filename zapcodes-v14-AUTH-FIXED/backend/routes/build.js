@@ -60,7 +60,6 @@ const NORMALIZE_MODEL_KEY = {
   'haiku': 'haiku-4.5',
   'sonnet': 'sonnet-4.6',
   'groq': 'groq',
-  // New keys pass through
   'gemini-3.1-pro': 'gemini-3.1-pro',
   'gemini-2.5-flash': 'gemini-2.5-flash',
   'haiku-4.5': 'haiku-4.5',
@@ -73,10 +72,30 @@ function normalizeModelKey(key) {
 
 const RESERVED = ['www', 'api', 'app', 'admin', 'mail', 'ftp', 'cdn', 'dev', 'staging', 'test', 'blog', 'docs', 'status', 'support', 'help', 'zapcodes', 'blendlink'];
 
+// ══════════════════════════════════════════════════════════════
+// BUILD FALLBACK CHAINS — Groq blocked for paid tiers
+//
+// Paid tiers (Bronze+): Sonnet → Gemini Pro → Haiku → Gemini Flash
+//   Groq creates ugly, non-functional websites — blocked for paid users
+//
+// Free tier: Gemini Flash (3 trials) → Groq (after trials exhausted)
+//   Groq is only for free users as last resort
+//
+// Admin: Sonnet → Gemini Pro → Haiku → Gemini Flash → Groq (admin can use anything)
+// ══════════════════════════════════════════════════════════════
+const BUILD_FALLBACK_PAID = ['sonnet-4.6', 'gemini-3.1-pro', 'haiku-4.5', 'gemini-2.5-flash'];
+const BUILD_FALLBACK_FREE = ['gemini-2.5-flash', 'groq'];
+const BUILD_FALLBACK_ADMIN = ['sonnet-4.6', 'gemini-3.1-pro', 'haiku-4.5', 'gemini-2.5-flash', 'groq'];
+
+function getBuildFallbackChain(user) {
+  if (user.role === 'super-admin') return BUILD_FALLBACK_ADMIN;
+  const tier = user.subscription_tier || 'free';
+  if (tier === 'free') return BUILD_FALLBACK_FREE;
+  return BUILD_FALLBACK_PAID;
+}
+
 // ══════════════════════════════════════════════════════════════════
-// SYSTEM PROMPTS — Written for ALL AI models (Groq, Gemini, Haiku, Sonnet)
-// These prompts use simple, direct language with zero ambiguity.
-// Every instruction is explicit. Nothing is implied.
+// SYSTEM PROMPTS
 // ══════════════════════════════════════════════════════════════════
 
 const GEN_PROMPT = `You are ZapCodes AI. You build websites. You write complete, working code. You never write placeholder code. You never write "// rest of code here" or "..." or "// similar to above". You write every single line.
@@ -187,7 +206,6 @@ Rule 7: Do NOT delete any code that is working correctly.
 Example: If the user says "the contact form is not working":
 - You fix ONLY the contact form JavaScript.
 - You do NOT touch the header, footer, hero section, navigation, or any other part.
-- You do NOT change any colors, fonts, or spacing.
 - You return the COMPLETE file with the form fixed and everything else exactly the same.
 
 ALSO FIX THESE AUTOMATICALLY (the user does not need to ask):
@@ -204,147 +222,85 @@ OUTPUT FORMAT:
 
 The file must be self-contained. ALL CSS in <style>. ALL JS in <script>. No external files.`;
 
-// ══════════════════════════════════════════════════════════════════
-// EDIT_PROMPT — The most important prompt. Used when user edits
-// their existing website. AI must preserve everything the user
-// did not ask to change. This is explained step by step.
-// ══════════════════════════════════════════════════════════════════
 const EDIT_PROMPT = `You are ZapCodes AI. The user has an EXISTING website and wants to make changes to it. You will receive their current website code and their change request.
 
 YOUR #1 RULE: DO NOT CHANGE ANYTHING THE USER DID NOT ASK YOU TO CHANGE.
 
 This means:
-- If the user says "add a booking form" — you add a booking form. You do NOT touch ANYTHING else on the page. The header stays the same. The footer stays the same. The colors stay the same. The fonts stay the same. Every section stays the same. Every image stays the same. You ONLY add the booking form.
-- If the user says "change the hero text" — you change ONLY the hero text. The navigation stays the same. The contact form stays the same. The about section stays the same. Everything else is identical to the original.
-- If the user says "make it dark theme" — you change ONLY the colors. You do NOT remove sections. You do NOT rewrite text. You do NOT delete forms. You do NOT change images. You ONLY change background colors, text colors, and border colors.
+- If the user says "add a booking form" — you add a booking form. You do NOT touch ANYTHING else.
+- If the user says "change the hero text" — you change ONLY the hero text. Everything else identical.
+- If the user says "make it dark theme" — you change ONLY colors. No sections removed, no text rewritten.
 
-STEP BY STEP — WHAT YOU MUST DO:
+STEP BY STEP:
+Step 1: READ the existing code. Count <section> elements. Remember this number.
+Step 2: Identify EXACTLY what the user wants changed.
+Step 3: Go through code line by line. Only modify lines related to the request. Copy everything else exactly.
+Step 4: Verify same number of <section> elements (unless user asked to add/remove).
 
-Step 1: READ the existing code. Count how many <section> elements there are. Remember this number.
-Step 2: READ the user's request. Identify EXACTLY what they want changed. Make a mental list.
-Step 3: Go through the code line by line.
-  - For each line: Is this line related to what the user asked to change?
-    - YES → Make the change the user requested.
-    - NO → Copy this line EXACTLY as it is. Do not modify it. Do not "improve" it. Do not delete it.
-Step 4: When you are done, count the <section> elements in your output. It MUST be the same number as Step 1 (unless the user asked to add or remove a section).
-Step 5: Verify your output has the SAME number of CSS classes, the SAME color values, the SAME font names, and the SAME text content as the original — except for what the user asked to change.
-
-THINGS YOU MUST NEVER DO (even if you think it would be "better"):
-
-1. NEVER remove a <section> that exists in the original code.
-   WRONG: "I removed the testimonials section to simplify the page."
-   RIGHT: Keep the testimonials section exactly as it was.
-
-2. NEVER change colors that the user did not mention.
-   WRONG: Changing --primary from #6366f1 to #3b82f6 because you think it looks better.
-   RIGHT: Keep --primary as #6366f1.
-
+THINGS YOU MUST NEVER DO:
+1. NEVER remove a <section> that exists in the original.
+2. NEVER change colors the user did not mention.
 3. NEVER rewrite text content.
-   WRONG: Changing "Welcome to Our Restaurant" to "Welcome to the Finest Dining Experience."
-   RIGHT: Keep "Welcome to Our Restaurant" exactly as it is.
-
-4. NEVER remove JavaScript functions that are working.
-   WRONG: "I simplified the code by removing the scroll animation."
-   RIGHT: Keep the scroll animation code exactly as it was.
-
+4. NEVER remove working JavaScript functions.
 5. NEVER change image URLs.
-   WRONG: Changing https://picsum.photos/600/400 to https://picsum.photos/800/500.
-   RIGHT: Keep https://picsum.photos/600/400.
-
-6. NEVER reorganize the HTML structure.
-   WRONG: Moving the footer above the contact section.
-   RIGHT: Keep the same order of sections.
-
+6. NEVER reorganize HTML structure.
 7. NEVER change CSS class names or IDs.
-   WRONG: Renaming .hero-section to .main-hero.
-   RIGHT: Keep .hero-section.
+8. NEVER change fonts.
+9. NEVER remove hover effects or animations.
 
-8. NEVER delete comments in the code.
-   WRONG: Removing <!-- Navigation --> comments.
-   RIGHT: Keep all comments.
+AUTOMATICALLY FIX (without user asking):
+1. Broken <a href="#"> links — fix to match section IDs.
+2. Missing CSS for HTML classes — add matching styles.
+3. Unclosed HTML tags — close them.
+4. Missing input name attributes — add them.
+5. Forms without submission code — add it (submit to https://api.zapcodes.net/api/forms/submit).
+6. Missing smooth scrolling — add html { scroll-behavior: smooth; }
+7. Non-responsive sections — add media queries.
+8. Missing alt attributes — add descriptive alt text.
+9. Missing hover effects — add transition and hover state.
 
-9. NEVER change fonts.
-   WRONG: Switching from "Inter" to "Poppins" because you prefer it.
-   RIGHT: Keep "Inter".
-
-10. NEVER remove hover effects or animations.
-    WRONG: "I removed the hover animation for cleaner code."
-    RIGHT: Keep all hover effects and animations.
-
-WHAT YOU MUST AUTOMATICALLY FIX (without the user asking):
-
-While making the user's requested changes, also fix these if you see them:
-
-1. If any <a href="#something"> link does not scroll to the right section, fix the href to match the correct section ID.
-2. If any CSS class is used in HTML but has no styles in <style>, add the missing styles. Match the existing design style.
-3. If any HTML tag is not closed, close it.
-4. If any <input> is missing a name attribute, add one.
-5. If any form does not submit data, add the form submission JavaScript:
-   - Submit to: https://api.zapcodes.net/api/forms/submit
-   - Send: { subdomain: window.location.hostname.split('.')[0], formType: 'Contact Form', formData: {all fields} }
-   - Show "Sending..." on the button while submitting.
-   - Show "✓ Sent!" in green when successful.
-   - Show "✗ Failed" in red if it fails.
-6. If the page does not have smooth scrolling, add: html { scroll-behavior: smooth; }
-7. If any section is not responsive on mobile, add media queries for it.
-8. If any image is missing an alt attribute, add a descriptive alt.
-9. If any button or link has no hover effect, add: transition: all 0.3s ease; and a hover state.
-
-These fixes are silent. Do not tell the user you fixed them. Just do it.
-
-WHEN ADDING NEW SECTIONS:
-If the user asks you to add something new (like "add a testimonials section"):
-1. Look at the existing CSS variables (--primary, --bg, --text, etc.) and use the SAME variables.
-2. Look at the existing card styles, border radius, shadows, and spacing. Match them EXACTLY.
-3. Look at the existing heading font sizes and weights. Use the SAME sizes.
-4. Place the new section in a logical position (e.g., testimonials before footer, after the main content).
-5. Add smooth entrance animation using Intersection Observer, matching the existing animation style.
-
-OUTPUT FORMAT:
+OUTPUT:
 \`\`\`filepath:index.html
-(the COMPLETE updated file — every single line — not just the changed parts)
+(the COMPLETE updated file — every single line)
 \`\`\`
 
-The file must be self-contained. ALL CSS in <style>. ALL JS in <script>. No external files.
-
-FINAL CHECK BEFORE YOU OUTPUT:
-1. Count the <section> elements. Same number as original? (unless user asked to add/remove one)
-2. Are all original colors still there? (unless user asked to change colors)
-3. Are all original text paragraphs still there? (unless user asked to change text)
-4. Are all original navigation links still there?
-5. Are all original forms still there and working?
-6. Are all original images still there?
-7. Are all original JavaScript functions still there?
-8. Did you make the changes the user asked for?
-9. Did you apply the automatic fixes listed above?
-If any answer is NO (and the user didn't ask for that change), you made a mistake. Fix it before outputting.`;
+Self-contained. ALL CSS in <style>. ALL JS in <script>. No external files.`;
 
 const CLONE_PROMPT = `Analyze the website and return JSON: {"title":"...","type":"...","sections":[...],"colors":{"primary":"#hex","secondary":"#hex","bg":"#hex","text":"#hex"},"fonts":"...","features":[...],"layout":"...","content":"..."}`;
 
-// ══════════ SMART MODEL SELECTION — Updated for new 5-model system ══════════
-function getEffectiveModel(user, requestedModel) {
+// ══════════ SMART MODEL SELECTION ══════════
+// Now blocks Groq for paid tiers on build/edit/fix operations
+function getEffectiveModel(user, requestedModel, isBuildOperation = false) {
   // Admin: can use any model
   if (user.role === 'super-admin') {
     if (requestedModel) return normalizeModelKey(requestedModel);
     return 'gemini-3.1-pro';
   }
 
+  const tier = user.subscription_tier || 'free';
   const config = user.getTierConfig();
   const chain = config.modelChain || ['groq'];
-
-  // Normalize the requested model key (handle old frontend sending 'gemini-flash' etc.)
   const normalized = requestedModel ? normalizeModelKey(requestedModel) : null;
 
-  // If user requested a specific model, check if it's available
-  if (normalized && normalized !== 'auto') {
+  // ══════════════════════════════════════════════════════════
+  // GROQ RESTRICTION FOR BUILD OPERATIONS:
+  // Paid tiers (Bronze+): Groq CANNOT build/edit/fix websites
+  // Groq creates ugly, non-functional code — not acceptable for paying users
+  // ══════════════════════════════════════════════════════════
+  const isPaidTier = ['bronze', 'silver', 'gold', 'diamond'].includes(tier);
+  const groqBlockedForBuild = isBuildOperation && isPaidTier;
+
+  // If user explicitly requested Groq but it's blocked for this operation
+  if (normalized === 'groq' && groqBlockedForBuild) {
+    console.log(`[Model] Groq blocked for ${tier} build operation — auto-selecting better model`);
+    // Fall through to auto-select below
+  } else if (normalized && normalized !== 'auto') {
+    // Check if requested model is available
     if (chain.includes(normalized)) {
       const limit = config.monthlyLimits?.[normalized];
-
-      // Check if it's a one-time trial model
       if (config.trialModels && config.trialModels.includes(normalized)) {
         if (!user.isTrialExhausted(normalized, limit)) return normalized;
       } else {
-        // Monthly limit check
         const used = user.getModelUsageCount(normalized);
         if (limit === Infinity || used < limit) return normalized;
       }
@@ -353,8 +309,10 @@ function getEffectiveModel(user, requestedModel) {
 
   // Auto-select: walk the chain and pick first available model
   for (const model of chain) {
-    const limit = config.monthlyLimits?.[model];
+    // Skip Groq for paid tier build operations
+    if (model === 'groq' && groqBlockedForBuild) continue;
 
+    const limit = config.monthlyLimits?.[model];
     if (config.trialModels && config.trialModels.includes(model)) {
       if (!user.isTrialExhausted(model, limit)) return model;
     } else {
@@ -363,7 +321,14 @@ function getEffectiveModel(user, requestedModel) {
     }
   }
 
-  // Everything exhausted
+  // Everything exhausted (including Groq for free tier)
+  // For free tier: if Gemini Flash trials are done, allow Groq for builds
+  if (tier === 'free' && isBuildOperation) {
+    const groqUsed = user.getModelUsageCount('groq');
+    const groqLimit = config.monthlyLimits?.['groq'];
+    if (groqLimit === Infinity || groqUsed < groqLimit) return 'groq';
+  }
+
   return null;
 }
 
@@ -396,137 +361,89 @@ function generatePreviewHTML(files) {
 
 const BADGE_SCRIPT = `<div id="zc-badge" style="position:fixed;bottom:10px;right:10px;z-index:99999;background:linear-gradient(135deg,#6366f1,#8b5cf6);color:#fff;padding:6px 14px;border-radius:20px;font-family:-apple-system,sans-serif;font-size:12px;font-weight:600;box-shadow:0 2px 10px rgba(99,102,241,.3);cursor:pointer;text-decoration:none;display:flex;align-items:center;gap:4px" onclick="window.open('https://zapcodes.net?ref=badge','_blank')">⚡ Made with ZapCodes</div>`;
 
-// ══════════ AI-POWERED PROGRESS MESSAGES — Sounds like a real person talking ══════════
+// ══════════ AI-POWERED PROGRESS MESSAGES ══════════
 async function generateProgressMessages(prompt, template, projectName, modelLabel) {
   const name = projectName || 'your website';
   try {
     const result = await callAI(
-      `You are ZapCodes AI assistant giving live build updates to a user. Write exactly 25 short progress messages (one per line) that describe what you're doing while building their website/app. 
-
-RULES:
-- Sound like a friendly, enthusiastic human developer talking directly to the user
-- Be specific to what THEY asked for — reference their project by name, mention specific features from their description
-- Each message should be different and describe a NEW thing you're working on
-- Use casual, warm language like "Alright, working on..." or "This is going to look great — adding..." or "Almost there! Just polishing..."
-- Include relevant emojis naturally (not at the start of every line)
-- Mix technical details with excitement: "The navigation is coming together nicely — added smooth scroll and a slick hamburger menu for mobile"
-- Progress from planning → structure → design → features → polish → final checks
-- Never say "Step 1" or number them
-- Keep each message under 120 characters
-- Don't use generic filler — every message should feel like real progress
-- Reference the AI model: "${modelLabel}"
-
-OUTPUT: Return ONLY the 25 messages, one per line. No numbering, no quotes, no extra text.`,
-      `Building: "${name}" — User's description: "${(prompt || '').slice(0, 500)}" — Template: ${template || 'custom'}`,
-      'groq',
-      1500
+      `You are ZapCodes AI assistant giving live build updates. Write exactly 25 short progress messages (one per line). Sound like a friendly developer talking to the user. Be specific to their project. Use emojis naturally. Progress from planning → structure → design → features → polish. Keep under 120 chars each. No numbering. Reference "${modelLabel}".`,
+      `Building: "${name}" — Description: "${(prompt || '').slice(0, 500)}" — Template: ${template || 'custom'}`,
+      'groq', 1500
     );
-    if (result) {
-      const lines = result.split('\n').map(l => l.trim()).filter(l => l.length > 10 && l.length < 200);
-      if (lines.length >= 8) return lines;
-    }
-  } catch (err) {
-    console.log(`[ProgressMsgs] AI generation failed, using fallback: ${err.message}`);
-  }
-
-  // Fallback if Groq is unavailable — still conversational
+    if (result) { const lines = result.split('\n').map(l => l.trim()).filter(l => l.length > 10 && l.length < 200); if (lines.length >= 8) return lines; }
+  } catch (err) { console.log(`[ProgressMsgs] Fallback: ${err.message}`); }
   return [
     `Alright, let me take a look at what you want for ${name}... 🧠`,
-    `Got it! I can see exactly what you're going for. Let me start building this out.`,
-    `First things first — I'm setting up the overall page structure and layout.`,
-    `Working on the design system now — picking the right colors, fonts, and spacing to match your vision.`,
-    `${modelLabel} is doing some heavy lifting here — writing all the HTML structure from scratch.`,
-    `The header and navigation are taking shape. Added smooth scrolling between sections.`,
-    `Making this fully responsive — it needs to look perfect on phones, tablets, and desktop.`,
-    `Adding the main content sections now. This is where ${name} really starts to come alive.`,
-    `Writing the CSS — gradients, shadows, hover effects, the works. Going for that premium feel.`,
-    `The interactive parts are next — JavaScript for animations, form validation, and user interactions.`,
-    `Almost there! Just polishing the micro-interactions and making sure everything flows smoothly.`,
-    `Running through a final check — making sure no styles are missing and all buttons actually work.`,
-    `Looking good! Wrapping everything into a clean, single-file package for you.`,
-    `Just about done — doing one last pass to make sure it's production-ready. Hang tight!`,
+    `Got it! Let me start building this out.`,
+    `Setting up the overall page structure and layout.`,
+    `Working on the design system — colors, fonts, spacing.`,
+    `${modelLabel} is writing all the HTML structure from scratch.`,
+    `Header and navigation are taking shape. Added smooth scrolling.`,
+    `Making this fully responsive — phones, tablets, and desktop.`,
+    `Adding the main content sections now.`,
+    `Writing the CSS — gradients, shadows, hover effects.`,
+    `Interactive parts next — JavaScript for animations and validation.`,
+    `Almost there! Polishing the micro-interactions.`,
+    `Running through a final check — styles and buttons.`,
+    `Looking good! Wrapping everything into a clean package.`,
+    `Just about done — one last pass. Hang tight!`,
   ];
 }
 
 // ══════════ GET /api/build/costs ══════════
 router.get('/costs', (req, res) => res.json({ costs: BL_COSTS }));
 
-// ══════════ GET /api/build/system-prompts — Returns default prompts for the editor ══════════
+// ══════════ GET /api/build/system-prompts ══════════
 router.get('/system-prompts', auth, (req, res) => {
-  res.json({
-    gen_prompt: GEN_PROMPT,
-    edit_prompt: EDIT_PROMPT,
-    fix_prompt: FIX_PROMPT,
-  });
+  res.json({ gen_prompt: GEN_PROMPT, edit_prompt: EDIT_PROMPT, fix_prompt: FIX_PROMPT });
 });
 
-// ══════════ GET /api/build/available-models — Updated for 5 AI models ══════════
+// ══════════ GET /api/build/available-models ══════════
 router.get('/available-models', auth, (req, res) => {
   const tier = req.user.subscription_tier;
   const config = req.user.getTierConfig();
   const chain = config.modelChain || ['groq'];
   const isAdmin = req.user.role === 'super-admin';
+  const isPaidTier = ['bronze', 'silver', 'gold', 'diamond'].includes(tier);
 
   const models = chain.map(m => {
     const limit = config.monthlyLimits?.[m];
     const isTrial = config.trialModels && config.trialModels.includes(m);
-    let used = 0;
+    let used = isTrial ? ((req.user.trials_used && req.user.trials_used[m]) || 0) : req.user.getModelUsageCount(m);
 
-    if (isTrial) {
-      used = (req.user.trials_used && req.user.trials_used[m]) || 0;
-    } else {
-      used = req.user.getModelUsageCount(m);
-    }
+    // Mark Groq as unavailable for builds on paid tiers
+    const groqBlockedForBuild = (m === 'groq' && isPaidTier);
 
     return {
-      id: m,
-      name: getModelDisplayName(m),
+      id: m, name: getModelDisplayName(m),
       cost: BL_COSTS.generation[m] || 5000,
       monthlyLimit: limit === Infinity ? 'Unlimited' : limit,
       monthlyUsed: used,
-      available: isTrial ? !req.user.isTrialExhausted(m, limit) : (limit === Infinity || used < limit),
+      available: groqBlockedForBuild ? false : (isTrial ? !req.user.isTrialExhausted(m, limit) : (limit === Infinity || used < limit)),
       primary: chain.indexOf(m) === 0,
       type: isTrial ? 'one_time_trial' : 'monthly',
+      blockedReason: groqBlockedForBuild ? 'Groq is not available for website building on paid plans. Use a higher-quality AI model.' : undefined,
     };
   });
 
-  // Admin gets all models if not already in chain
   if (isAdmin) {
     const allModels = ['sonnet-4.6', 'gemini-3.1-pro', 'gemini-2.5-flash', 'haiku-4.5', 'groq'];
     for (const m of allModels) {
       if (!chain.includes(m)) {
-        models.push({
-          id: m,
-          name: getModelDisplayName(m) + ' (Admin)',
-          cost: BL_COSTS.generation[m] || 5000,
-          monthlyLimit: 'Unlimited',
-          monthlyUsed: 0,
-          available: true,
-          primary: false,
-          type: 'unlimited',
-        });
+        models.push({ id: m, name: getModelDisplayName(m) + ' (Admin)', cost: BL_COSTS.generation[m] || 5000, monthlyLimit: 'Unlimited', monthlyUsed: 0, available: true, primary: false, type: 'unlimited' });
       }
     }
   }
 
-  // Also include list of ALL models with availability status for the UI
   const allModelsList = ['sonnet-4.6', 'gemini-3.1-pro', 'gemini-2.5-flash', 'haiku-4.5', 'groq'];
   const allModelsInfo = allModelsList.map(m => ({
-    id: m,
-    name: getModelDisplayName(m),
-    cost: BL_COSTS.generation[m] || 5000,
+    id: m, name: getModelDisplayName(m), cost: BL_COSTS.generation[m] || 5000,
     available: chain.includes(m) || isAdmin,
     tier_required: !chain.includes(m),
+    blockedForBuild: m === 'groq' && isPaidTier,
   }));
 
-  res.json({
-    models,
-    allModels: allModelsInfo,
-    plan: tier,
-    subscription_tier: tier,
-    monthlyUsage: req.user.getMonthlyUsage(),
-    bl_coins: req.user.bl_coins || 0,
-  });
+  res.json({ models, allModels: allModelsInfo, plan: tier, subscription_tier: tier, monthlyUsage: req.user.getMonthlyUsage(), bl_coins: req.user.bl_coins || 0 });
 });
 
 // ══════════ POST /api/build/generate-with-progress (SSE) ══════════
@@ -550,8 +467,10 @@ router.post('/generate-with-progress', auth, async (req, res) => {
 
     sendProgress('validating', 'Validating your request and checking limits...');
 
-    // Select model with fallback chain (handles both old and new model keys)
-    const model = getEffectiveModel(user, requestedModel);
+    // ═══════════════════════════════════════════════════════
+    // isBuildOperation = true → Groq blocked for paid tiers
+    // ═══════════════════════════════════════════════════════
+    const model = getEffectiveModel(user, requestedModel, true);
     if (!model) {
       sendProgress('error', 'All AI model limits reached for this month. Upgrade your plan for more generations.');
       safeSend(res, { type: 'error', error: 'Monthly generation limits reached', upgrade: true });
@@ -573,15 +492,9 @@ router.post('/generate-with-progress', auth, async (req, res) => {
       return res.end();
     }
 
-    // Deduct coins + track usage (uses User model's built-in methods)
     user.spendCoins(cost, 'generation', `Website generation (${getModelDisplayName(model)})`, model);
     user.incrementMonthlyUsage(model, 'generation');
-
-    // If one-time trial model, also track trial usage
-    if (config.trialModels && config.trialModels.includes(model)) {
-      user.incrementTrial(model);
-    }
-
+    if (config.trialModels && config.trialModels.includes(model)) user.incrementTrial(model);
     await user.save();
 
     sendProgress('analyzing', 'Analyzing your prompt...', { model, cost, sessionId });
@@ -604,28 +517,23 @@ router.post('/generate-with-progress', auth, async (req, res) => {
       catch { clearInterval(keepaliveInterval); connectionAlive = false; }
     }, 10000);
 
-    // ── AI-Powered Progress Messages — sounds like a real person talking ──
     sendProgress('building', `Hey! Let me take a look at what you want to build... 🧠`);
     const progressMsgs = await generateProgressMessages(prompt || description || '', template, projectName, modelLabel);
     let progressIdx = 0;
     progressTicker = setInterval(() => {
-      if (!connectionAlive || aborted || progressIdx >= progressMsgs.length) {
-        clearInterval(progressTicker);
-        return;
-      }
+      if (!connectionAlive || aborted || progressIdx >= progressMsgs.length) { clearInterval(progressTicker); return; }
       sendProgress('building', progressMsgs[progressIdx]);
       progressIdx++;
-    }, 8000); // New message every 8 seconds — feels more natural, like someone typing
+    }, 8000);
 
     const aiOpts = { onProgress: (msg) => { if (!aborted && connectionAlive) sendProgress('generating', msg); } };
 
     let files;
-    let usedModel = model; // Track which model actually generated the files
+    let usedModel = model;
     let systemPrompt = GEN_PROMPT;
     let userPrompt = '';
 
     if (template && template !== 'custom') {
-      // Template mode — use custom prompt if provided, else GEN_PROMPT
       if (customSystemPrompt && customSystemPrompt.trim().length > 50) systemPrompt = customSystemPrompt;
       sendProgress('generating_html', `Building ${template} project: "${projectName || 'My Project'}"...`);
       files = await generateProjectMultiStep(template, projectName || 'My Project', description || prompt, colorScheme, features, model, aiOpts);
@@ -633,66 +541,44 @@ router.post('/generate-with-progress', auth, async (req, res) => {
       if (existingFiles && existingFiles.length > 0) {
         // ── EDITING EXISTING WEBSITE ──
         sendProgress('generating_html', `Carefully modifying your existing website using ${modelLabel}...`);
-
-        // CRITICAL FIX: ALWAYS use EDIT_PROMPT for edits.
-        // customSystemPrompt is IGNORED during edits — the EDIT_PROMPT is
-        // specifically designed to prevent the AI from reverting/rebuilding.
-        // This was the #1 bug: customSystemPrompt (often GEN_PROMPT from the
-        // System Prompt Editor) was overriding EDIT_PROMPT, causing the AI
-        // to create a brand new website instead of editing the existing one.
         systemPrompt = EDIT_PROMPT;
-
         const existingCode = existingFiles.map(f => `--- ${f.name} ---\n${f.content}`).join('\n\n');
         const existingCodeSize = existingCode.length;
 
-        // Auto-upgrade Groq for edits — Groq can only output 8K tokens (~6000 chars)
-        // but typical websites are 20K-60K chars. Groq literally can't return the full file.
+        // Auto-upgrade Groq for edits (shouldn't happen for paid tiers anymore, but safety net)
         if (model === 'groq' && existingCodeSize > 5000) {
           const upgradeChain = ['gemini-2.5-flash', 'haiku-4.5', 'gemini-3.1-pro'];
           for (const upgradeModel of upgradeChain) {
             const upgradeCost = BL_COSTS.generation[upgradeModel] || 10000;
             if (user.role === 'super-admin' || user.bl_coins >= upgradeCost) {
-              sendProgress('generating', `Your website is ${Math.round(existingCodeSize / 1000)}K chars — too large for Groq (8K limit). Auto-upgrading to ${getModelDisplayName(upgradeModel)} for accurate editing...`);
-              // Note: model variable is const, so we track the actual model used separately
-              // The callAI below will use this upgraded model
-              userPrompt = `<existing_website>\n${existingCode}\n</existing_website>\n\n<user_request>\n${prompt}\n</user_request>\n\nProject name: ${projectName || 'My Website'}\n${colorScheme && colorScheme !== 'keep existing' ? `Color scheme change requested: ${colorScheme}` : 'Color scheme: DO NOT CHANGE — keep existing colors'}\n${features ? `Additional features requested: ${features.join(', ')}` : ''}\n\nRemember: Return the COMPLETE updated file. Every line of the original must be present unless the user specifically asked to remove it.`;
+              sendProgress('generating', `Your website is ${Math.round(existingCodeSize / 1000)}K chars — too large for Groq. Auto-upgrading to ${getModelDisplayName(upgradeModel)}...`);
+              userPrompt = `<existing_website>\n${existingCode}\n</existing_website>\n\n<user_request>\n${prompt}\n</user_request>\n\nProject name: ${projectName || 'My Website'}\n${colorScheme && colorScheme !== 'keep existing' ? `Color scheme change requested: ${colorScheme}` : 'Color scheme: DO NOT CHANGE'}\n${features ? `Additional features: ${features.join(', ')}` : ''}\n\nReturn the COMPLETE updated file.`;
               const result = await callAI(systemPrompt, userPrompt, upgradeModel, undefined, aiOpts);
               files = result ? parseFilesFromResponse(result) : [];
               if (files && files.length > 0) {
                 usedModel = upgradeModel;
-                // Charge the upgraded model cost instead
-                const originalCost = BL_COSTS.generation[model] || 5000;
-                if (upgradeCost > originalCost) {
-                  const diff = upgradeCost - originalCost;
-                  user.spendCoins(diff, 'generation', `Edit upgrade: ${getModelDisplayName(model)} → ${getModelDisplayName(upgradeModel)}`);
-                  await user.save();
-                }
+                const diff = upgradeCost - cost;
+                if (diff > 0) { user.spendCoins(diff, 'generation', `Edit upgrade: ${getModelDisplayName(model)} → ${getModelDisplayName(upgradeModel)}`); await user.save(); }
                 break;
               }
             }
           }
-          // If upgrade worked, skip the normal callAI below
-          if (files && files.length > 0) {
-            // files already set by upgrade path above
-          } else {
-            // All upgrades failed or unavailable, fall through to normal edit with original model
-            sendProgress('generating', `No larger model available — trying edit with Groq (results may be incomplete)...`);
-            userPrompt = `<existing_website>\n${existingCode}\n</existing_website>\n\n<user_request>\n${prompt}\n</user_request>\n\nProject name: ${projectName || 'My Website'}\n${colorScheme && colorScheme !== 'keep existing' ? `Color scheme change requested: ${colorScheme}` : 'Color scheme: DO NOT CHANGE — keep existing colors'}\n${features ? `Additional features requested: ${features.join(', ')}` : ''}\n\nRemember: Return the COMPLETE updated file. Every line of the original must be present unless the user specifically asked to remove it.`;
+          if (!files || files.length === 0) {
+            sendProgress('generating', `No larger model available — trying with Groq...`);
+            userPrompt = `<existing_website>\n${existingCode}\n</existing_website>\n\n<user_request>\n${prompt}\n</user_request>\n\nProject name: ${projectName || 'My Website'}\n${colorScheme && colorScheme !== 'keep existing' ? `Color scheme change: ${colorScheme}` : 'Color scheme: DO NOT CHANGE'}\n${features ? `Features: ${features.join(', ')}` : ''}\n\nReturn the COMPLETE updated file.`;
             const result = await callAI(systemPrompt, userPrompt, model, undefined, aiOpts);
             files = result ? parseFilesFromResponse(result) : [];
           }
         } else {
-          // Normal edit path (non-Groq or small files)
-          userPrompt = `<existing_website>\n${existingCode}\n</existing_website>\n\n<user_request>\n${prompt}\n</user_request>\n\nProject name: ${projectName || 'My Website'}\n${colorScheme && colorScheme !== 'keep existing' ? `Color scheme change requested: ${colorScheme}` : 'Color scheme: DO NOT CHANGE — keep existing colors'}\n${features ? `Additional features requested: ${features.join(', ')}` : ''}\n\nRemember: Return the COMPLETE updated file. Every line of the original must be present unless the user specifically asked to remove it.`;
+          userPrompt = `<existing_website>\n${existingCode}\n</existing_website>\n\n<user_request>\n${prompt}\n</user_request>\n\nProject name: ${projectName || 'My Website'}\n${colorScheme && colorScheme !== 'keep existing' ? `Color scheme change: ${colorScheme}` : 'Color scheme: DO NOT CHANGE'}\n${features ? `Features: ${features.join(', ')}` : ''}\n\nReturn the COMPLETE updated file.`;
           const result = await callAI(systemPrompt, userPrompt, model, undefined, aiOpts);
           files = result ? parseFilesFromResponse(result) : [];
         }
       } else {
         // ── CREATING NEW WEBSITE ──
         sendProgress('generating_html', `Generating website using ${modelLabel}...`);
-        // Use custom prompt if provided, otherwise use GEN_PROMPT
         systemPrompt = (customSystemPrompt && customSystemPrompt.trim().length > 50) ? customSystemPrompt : GEN_PROMPT;
-        userPrompt = `Create a complete, production-ready website: ${prompt}\n\nProject name: ${projectName || 'My Website'}\nColor scheme: ${colorScheme || 'modern dark theme'}\n${features ? `Features: ${features.join(', ')}` : ''}\n\nIMPORTANT: index.html must be self-contained with ALL CSS inside <style> and ALL JS inside <script>.`;
+        userPrompt = `Create a complete, production-ready website: ${prompt}\n\nProject name: ${projectName || 'My Website'}\nColor scheme: ${colorScheme || 'modern dark theme'}\n${features ? `Features: ${features.join(', ')}` : ''}\n\nIMPORTANT: index.html must be self-contained with ALL CSS in <style> and ALL JS in <script>.`;
         const result = await callAI(systemPrompt, userPrompt, model, undefined, aiOpts);
         files = result ? parseFilesFromResponse(result) : [];
       }
@@ -709,32 +595,30 @@ router.post('/generate-with-progress', auth, async (req, res) => {
     }
 
     if (!files || files.length === 0) {
-      // ── FALLBACK: Try next model when current model's output couldn't be parsed ──
-      const FALLBACK_ORDER = ['sonnet-4.6', 'gemini-3.1-pro', 'haiku-4.5', 'gemini-2.5-flash', 'groq'];
-      const currentIdx = FALLBACK_ORDER.indexOf(normalizeModelKey(model));
+      // ═══════════════════════════════════════════════════════
+      // FALLBACK — Use tier-appropriate chain (Groq excluded for paid)
+      // ═══════════════════════════════════════════════════════
+      const fallbackChain = getBuildFallbackChain(user);
+      const currentIdx = fallbackChain.indexOf(normalizeModelKey(model));
       let fallbackFiles = null;
       let fallbackModel = null;
 
-      for (let fi = currentIdx + 1; fi < FALLBACK_ORDER.length; fi++) {
+      for (let fi = currentIdx + 1; fi < fallbackChain.length; fi++) {
         if (aborted || !connectionAlive) break;
-        const nextModel = FALLBACK_ORDER[fi];
+        const nextModel = fallbackChain[fi];
         const nextLabel = getModelDisplayName(nextModel);
         const nextCost = BL_COSTS.generation[nextModel] || 5000;
-
-        // Check if user has enough BL for fallback model
         if (user.role !== 'super-admin' && user.bl_coins < nextCost) continue;
 
-        sendProgress('generating', `${modelLabel} output couldn't be processed. Trying ${nextLabel}...`);
-        console.log(`[Build Fallback] ${model} produced 0 parseable files → trying ${nextModel}`);
+        sendProgress('generating', `${modelLabel} couldn't process. Trying ${nextLabel}...`);
+        console.log(`[Build Fallback] ${model} → ${nextModel}`);
 
         try {
-          // Reuse the same prompt — if editing, keep the edit context
           const fbResult = await callAI(systemPrompt, userPrompt, nextModel, undefined, aiOpts);
           fallbackFiles = fbResult ? parseFilesFromResponse(fbResult) : [];
           if (fallbackFiles && fallbackFiles.length > 0) {
             fallbackModel = nextModel;
-            // Refund original model, charge fallback model
-            user.creditCoins(cost, 'generation', `Refund: ${modelLabel} output failed, used ${nextLabel}`);
+            user.creditCoins(cost, 'generation', `Refund: ${modelLabel} failed, used ${nextLabel}`);
             user.spendCoins(nextCost, 'generation', `Website generation fallback (${nextLabel})`, nextModel);
             await user.save();
             files = fallbackFiles;
@@ -742,34 +626,28 @@ router.post('/generate-with-progress', auth, async (req, res) => {
             sendProgress('generating', `${nextLabel} generated ${files.length} file(s) successfully!`);
             break;
           }
-        } catch (fbErr) {
-          console.error(`[Build Fallback] ${nextModel} also failed: ${fbErr.message}`);
-          continue;
-        }
+        } catch (fbErr) { console.error(`[Build Fallback] ${nextModel} failed: ${fbErr.message}`); continue; }
       }
 
-      // If all fallbacks failed too
       if (!files || files.length === 0) {
         if (keepaliveInterval) clearInterval(keepaliveInterval);
         clearInterval(progressTicker);
         user.creditCoins(cost, 'generation', `Refund: generation failed (${model})`);
         user.decrementMonthlyUsage(model, 'generation');
         await user.save();
-        sendProgress('error', `All AI models couldn't generate parseable code. Coins refunded. Try a simpler or shorter prompt.`);
-        safeSend(res, { type: 'error', error: 'Generation failed. Coins refunded.', suggestion: 'Try a simpler prompt or different template.' });
+        sendProgress('error', `All AI models couldn't generate code. Coins refunded. Try a simpler prompt.`);
+        safeSend(res, { type: 'error', error: 'Generation failed. Coins refunded.', suggestion: 'Try a simpler prompt.' });
         return res.end();
       }
     }
 
     sendProgress('preview', 'Building live preview...');
     const preview = generatePreviewHTML(files);
-
     const actualModel = usedModel;
     const actualLabel = getModelDisplayName(actualModel);
     const actualCost = BL_COSTS.generation[actualModel] || cost;
 
     sendProgress('done', `Done! ${files.length} file(s) generated using ${actualLabel}.`);
-
     safeSend(res, { type: 'complete', files, preview, model: actualModel, blSpent: actualCost, balanceRemaining: user.bl_coins, monthlyUsage: user.getMonthlyUsage(), fileCount: files.length });
 
     if (keepaliveInterval) clearInterval(keepaliveInterval);
@@ -782,8 +660,8 @@ router.post('/generate-with-progress', auth, async (req, res) => {
     console.error('[Build] Error:', err.message);
     if (connectionAlive) {
       try {
-        if (err.message === 'Generation cancelled') safeSend(res, { type: 'stopped', message: 'Stopped.' });
-        else safeSend(res, { type: 'error', error: err.message || 'Generation failed', suggestion: 'Try Groq AI for faster results.' });
+        if (err.message === 'Generation cancelled') safeSend(res, { type: 'stopped' });
+        else safeSend(res, { type: 'error', error: err.message || 'Generation failed' });
         res.end();
       } catch {}
     }
@@ -799,12 +677,12 @@ router.post('/stop', auth, (req, res) => {
   res.json({ stopped: false });
 });
 
-// ══════════ POST /api/build/generate (non-SSE, kept for compatibility) ══════════
+// ══════════ POST /api/build/generate (non-SSE compatibility) ══════════
 router.post('/generate', auth, async (req, res) => {
   try {
     const user = req.user;
     const { prompt, template, projectName, description, colorScheme, features, model: requestedModel } = req.body;
-    const model = getEffectiveModel(user, requestedModel);
+    const model = getEffectiveModel(user, requestedModel, true); // isBuildOperation = true
     if (!model) return res.status(403).json({ error: 'Monthly generation limits reached', upgrade: true });
     const config = user.getTierConfig();
     const inputText = prompt || description || '';
@@ -818,7 +696,7 @@ router.post('/generate', auth, async (req, res) => {
     let files;
     if (template && template !== 'custom') { files = await generateProjectMultiStep(template, projectName || 'My Project', description || prompt, colorScheme, features, model); }
     else {
-      const userPrompt = `Create a complete, production-ready website: ${prompt}\n\nProject name: ${projectName || 'My Website'}\nColor scheme: ${colorScheme || 'modern dark theme'}\n${features ? `Features: ${features.join(', ')}` : ''}\n\nIMPORTANT: index.html must be self-contained with ALL CSS in <style> and ALL JS in <script>.`;
+      const userPrompt = `Create a complete website: ${prompt}\n\nProject: ${projectName || 'My Website'}\nColors: ${colorScheme || 'modern dark theme'}\n${features ? `Features: ${features.join(', ')}` : ''}\n\nSelf-contained index.html.`;
       const result = await callAI(GEN_PROMPT, userPrompt, model);
       files = result ? parseFilesFromResponse(result) : [];
     }
@@ -836,28 +714,11 @@ router.post('/save-project', auth, async (req, res) => {
     if (!files || !files.length) return res.status(400).json({ error: 'No files to save' });
     if (projectId) {
       const idx = (user.saved_projects || []).findIndex(p => p.projectId === projectId);
-      if (idx >= 0) {
-        user.saved_projects[idx].name = name || user.saved_projects[idx].name;
-        user.saved_projects[idx].files = files;
-        user.saved_projects[idx].preview = (preview || '').slice(0, 500000);
-        user.saved_projects[idx].updatedAt = new Date();
-        user.saved_projects[idx].version = (user.saved_projects[idx].version || 1) + 1;
-        user.saved_projects[idx].description = description || user.saved_projects[idx].description;
-        // Preserve or set linkedSubdomain
-        if (subdomain && !user.saved_projects[idx].linkedSubdomain) user.saved_projects[idx].linkedSubdomain = subdomain;
-      }
+      if (idx >= 0) { user.saved_projects[idx].name = name || user.saved_projects[idx].name; user.saved_projects[idx].files = files; user.saved_projects[idx].preview = (preview || '').slice(0, 500000); user.saved_projects[idx].updatedAt = new Date(); user.saved_projects[idx].version = (user.saved_projects[idx].version || 1) + 1; user.saved_projects[idx].description = description || user.saved_projects[idx].description; if (subdomain && !user.saved_projects[idx].linkedSubdomain) user.saved_projects[idx].linkedSubdomain = subdomain; }
       else return res.status(404).json({ error: 'Project not found' });
     } else {
       if (!user.saved_projects) user.saved_projects = [];
-      user.saved_projects.push({
-        projectId: `proj-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-        name: name || 'Untitled Project', files,
-        preview: (preview || '').slice(0, 500000),
-        template: template || 'custom',
-        description: description || '',
-        linkedSubdomain: subdomain || null,
-        version: 1, createdAt: new Date(), updatedAt: new Date(),
-      });
+      user.saved_projects.push({ projectId: `proj-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, name: name || 'Untitled Project', files, preview: (preview || '').slice(0, 500000), template: template || 'custom', description: description || '', linkedSubdomain: subdomain || null, version: 1, createdAt: new Date(), updatedAt: new Date() });
     }
     await user.save();
     const proj = projectId ? user.saved_projects.find(p => p.projectId === projectId) : user.saved_projects[user.saved_projects.length - 1];
@@ -881,25 +742,13 @@ router.delete('/project/:projectId', auth, async (req, res) => {
     const user = req.user;
     const idx = (user.saved_projects || []).findIndex(p => p.projectId === req.params.projectId);
     if (idx === -1) return res.status(404).json({ error: 'Not found' });
-
     const project = user.saved_projects[idx];
     let shutdownSite = null;
-
-    // If this project is linked to a deployed site, shut down that site too
-    if (project.linkedSubdomain) {
-      const siteIdx = user.deployed_sites.findIndex(s => s.subdomain === project.linkedSubdomain);
-      if (siteIdx >= 0) {
-        shutdownSite = project.linkedSubdomain;
-        user.deployed_sites.splice(siteIdx, 1);
-        console.log(`[Project Delete] Also shut down deployed site: ${project.linkedSubdomain}.zapcodes.net`);
-      }
-    }
-
+    if (project.linkedSubdomain) { const siteIdx = user.deployed_sites.findIndex(s => s.subdomain === project.linkedSubdomain); if (siteIdx >= 0) { shutdownSite = project.linkedSubdomain; user.deployed_sites.splice(siteIdx, 1); } }
     user.saved_projects.splice(idx, 1);
     await user.save();
     res.json({ success: true, shutdownSite });
-  }
-  catch { res.status(500).json({ error: 'Failed' }); }
+  } catch { res.status(500).json({ error: 'Failed' }); }
 });
 
 // ══════════ Deploy ══════════
@@ -917,95 +766,48 @@ router.post('/deploy', auth, async (req, res) => {
     if (shouldBadge && deployFiles) deployFiles = deployFiles.map(f => f.name.endsWith('.html') ? { ...f, content: f.content.replace('</body>', `${BADGE_SCRIPT}</body>`) } : f);
     if (existingSite) { existingSite.title = title || existingSite.title; existingSite.files = deployFiles; existingSite.lastUpdated = new Date(); existingSite.hasBadge = shouldBadge; existingSite.fileSize = JSON.stringify(files).length; }
     else user.deployed_sites.push({ subdomain: sub, title: title || sub, files: deployFiles, hasBadge: shouldBadge, fileSize: JSON.stringify(files).length });
-
-    // ── AUTO-SAVE: Clone to Saved Projects (staging copy) ──
     if (!user.saved_projects) user.saved_projects = [];
     const linkedProject = user.saved_projects.find(p => p.linkedSubdomain === sub);
-    const projectName = title || sub;
-    if (linkedProject) {
-      // Update existing linked project
-      linkedProject.name = projectName;
-      linkedProject.files = files; // Save ORIGINAL files (without badge)
-      linkedProject.updatedAt = new Date();
-      linkedProject.version = (linkedProject.version || 1) + 1;
-      linkedProject.description = `Deployed site: ${sub}.zapcodes.net`;
-    } else {
-      // Create new linked project
-      user.saved_projects.push({
-        projectId: `proj-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-        name: projectName,
-        files: files, // Save ORIGINAL files (without badge)
-        preview: '',
-        template: 'custom',
-        description: `Deployed site: ${sub}.zapcodes.net`,
-        linkedSubdomain: sub, // Links this project to the deployed site
-        version: 1,
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      });
-    }
-
+    if (linkedProject) { linkedProject.name = title || sub; linkedProject.files = files; linkedProject.updatedAt = new Date(); linkedProject.version = (linkedProject.version || 1) + 1; linkedProject.description = `Deployed: ${sub}.zapcodes.net`; }
+    else { user.saved_projects.push({ projectId: `proj-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, name: title || sub, files, preview: '', template: 'custom', description: `Deployed: ${sub}.zapcodes.net`, linkedSubdomain: sub, version: 1, createdAt: new Date(), updatedAt: new Date() }); }
     await user.save();
     const savedProj = user.saved_projects.find(p => p.linkedSubdomain === sub);
     res.json({ url: `https://${sub}.zapcodes.net`, subdomain: sub, deployed: true, hasBadge: shouldBadge, sites: user.deployed_sites.length, maxSites: config.maxSites, linkedProjectId: savedProj?.projectId });
   } catch (err) { res.status(500).json({ error: 'Deploy failed' }); }
 });
 
-// ══════════ POST /api/build/redeploy-from-project — Push project changes to live site ══════════
 router.post('/redeploy-from-project', auth, async (req, res) => {
   try {
-    const user = req.user;
-    const { projectId } = req.body;
+    const user = req.user; const { projectId } = req.body;
     if (!projectId) return res.status(400).json({ error: 'Missing projectId' });
-
     const project = (user.saved_projects || []).find(p => p.projectId === projectId);
     if (!project) return res.status(404).json({ error: 'Project not found' });
-    if (!project.linkedSubdomain) return res.status(400).json({ error: 'This project is not linked to a deployed site. Use regular deploy instead.' });
-
+    if (!project.linkedSubdomain) return res.status(400).json({ error: 'Project not linked to a site.' });
     const sub = project.linkedSubdomain;
     const site = user.deployed_sites.find(s => s.subdomain === sub);
-    if (!site) return res.status(404).json({ error: `Deployed site ${sub}.zapcodes.net not found. It may have been deleted.` });
-
-    // Apply badge if needed
-    const config = user.getTierConfig();
-    const shouldBadge = !config.canRemoveBadge;
+    if (!site) return res.status(404).json({ error: `${sub}.zapcodes.net not found.` });
+    const config = user.getTierConfig(); const shouldBadge = !config.canRemoveBadge;
     let deployFiles = project.files || [];
     if (shouldBadge) deployFiles = deployFiles.map(f => f.name.endsWith('.html') ? { ...f, content: f.content.replace('</body>', `${BADGE_SCRIPT}</body>`) } : f);
-
-    // Update the live site
-    site.files = deployFiles;
-    site.title = project.name || site.title;
-    site.lastUpdated = new Date();
-    site.hasBadge = shouldBadge;
-    site.fileSize = JSON.stringify(project.files).length;
-
-    // Update the project version
-    project.updatedAt = new Date();
-    project.version = (project.version || 1) + 1;
-
+    site.files = deployFiles; site.title = project.name || site.title; site.lastUpdated = new Date(); site.hasBadge = shouldBadge; site.fileSize = JSON.stringify(project.files).length;
+    project.updatedAt = new Date(); project.version = (project.version || 1) + 1;
     await user.save();
-    console.log(`[Redeploy] ${sub}.zapcodes.net updated from project ${projectId}`);
     res.json({ success: true, url: `https://${sub}.zapcodes.net`, subdomain: sub, version: project.version });
-  } catch (err) { console.error('[Redeploy] Error:', err.message); res.status(500).json({ error: 'Re-deploy failed' }); }
+  } catch (err) { res.status(500).json({ error: 'Re-deploy failed' }); }
 });
 
-// ══════════ Code Fix — Updated for new model keys ══════════
+// ══════════ Code Fix — Groq blocked for paid tiers ══════════
 router.post('/code-fix', auth, async (req, res) => {
   try {
     const user = req.user; const { files, description, model: requestedModel } = req.body;
     const config = user.getTierConfig(); const mu = user.getMonthlyUsage();
-
-    // Check fix limit
     if (config.monthlyFixCap !== Infinity) {
-      if (config.monthlyFixType === 'one_time_trial') {
-        const trialUsed = (user.trials_used && user.trials_used['fixes']) || 0;
-        if (trialUsed >= config.monthlyFixCap) return res.status(403).json({ error: 'Your one-time trial fix has been used. Upgrade for more.', upgrade: true });
-      } else if ((mu.code_fixes || 0) >= config.monthlyFixCap) {
-        return res.status(403).json({ error: 'Monthly code fix limit reached', upgrade: true });
-      }
+      if (config.monthlyFixType === 'one_time_trial') { const trialUsed = (user.trials_used && user.trials_used['fixes']) || 0; if (trialUsed >= config.monthlyFixCap) return res.status(403).json({ error: 'Trial fix used. Upgrade for more.', upgrade: true }); }
+      else if ((mu.code_fixes || 0) >= config.monthlyFixCap) return res.status(403).json({ error: 'Monthly fix limit reached', upgrade: true });
     }
 
-    const model = getEffectiveModel(user, requestedModel) || 'groq';
+    // isBuildOperation = true → Groq blocked for paid tiers
+    const model = getEffectiveModel(user, requestedModel, true) || 'gemini-2.5-flash';
     const cost = BL_COSTS.codeFix[model] || 5000;
     if (user.role !== 'super-admin' && user.bl_coins < cost) return res.status(402).json({ error: 'Insufficient BL coins' });
 
@@ -1017,16 +819,14 @@ router.post('/code-fix', auth, async (req, res) => {
     const fileContent = (files || []).map(f => `--- ${f.name} ---\n${f.content}`).join('\n\n');
     const fileSize = fileContent.length;
 
-    // Auto-upgrade Groq for large files — Groq can only output 8K tokens
+    // Auto-upgrade Groq for large files (safety net — shouldn't trigger for paid tiers)
     let actualModel = model;
     if (model === 'groq' && fileSize > 5000) {
       const upgradeChain = ['gemini-2.5-flash', 'haiku-4.5', 'gemini-3.1-pro'];
       for (const upgradeModel of upgradeChain) {
         const upgradeCost = BL_COSTS.codeFix[upgradeModel] || 10000;
         if (user.role === 'super-admin' || user.bl_coins >= upgradeCost) {
-          console.log(`[CodeFix] Auto-upgrading from Groq to ${upgradeModel} (file size: ${Math.round(fileSize / 1000)}K chars)`);
           actualModel = upgradeModel;
-          // Charge the difference
           const diff = upgradeCost - cost;
           if (diff > 0) { user.spendCoins(diff, 'code_fix', `Fix upgrade: Groq → ${getModelDisplayName(upgradeModel)}`); await user.save(); }
           break;
@@ -1042,31 +842,22 @@ router.post('/code-fix', auth, async (req, res) => {
   } catch (err) { res.status(500).json({ error: 'Fix failed' }); }
 });
 
-// ══════════ GitHub Push — Updated for new model keys ══════════
+// ══════════ GitHub Push ══════════
 router.post('/github-push', auth, async (req, res) => {
   try {
     const user = req.user; const config = user.getTierConfig(); const mu = user.getMonthlyUsage();
-
-    // Check push limit
     if (config.monthlyPushCap !== Infinity) {
-      if (config.monthlyPushType === 'one_time_trial') {
-        const trialUsed = (user.trials_used && user.trials_used['github_pushes']) || 0;
-        if (trialUsed >= config.monthlyPushCap) return res.status(403).json({ error: 'Your one-time trial GitHub push has been used. Upgrade for more.' });
-      } else if ((mu.github_pushes || 0) >= config.monthlyPushCap) {
-        return res.status(403).json({ error: 'Monthly push limit reached' });
-      }
+      if (config.monthlyPushType === 'one_time_trial') { const trialUsed = (user.trials_used && user.trials_used['github_pushes']) || 0; if (trialUsed >= config.monthlyPushCap) return res.status(403).json({ error: 'Trial push used. Upgrade.' }); }
+      else if ((mu.github_pushes || 0) >= config.monthlyPushCap) return res.status(403).json({ error: 'Monthly push limit reached' });
     }
-
     if (user.role !== 'super-admin' && user.bl_coins < BL_COSTS.githubPush) return res.status(402).json({ error: 'Insufficient BL coins' });
     const { files, repoName, message } = req.body;
     const token = user.githubToken;
     if (!token) return res.status(400).json({ error: 'Connect GitHub in Settings' });
-
     user.spendCoins(BL_COSTS.githubPush, 'github_push', 'GitHub push');
     user.incrementMonthlyUsage(null, 'push');
     if (config.monthlyPushType === 'one_time_trial') user.incrementTrial('github_pushes');
     await user.save();
-
     const ghUser = await axios.get('https://api.github.com/user', { headers: { Authorization: `Bearer ${token}` } });
     const owner = ghUser.data.login;
     let repo;
@@ -1086,8 +877,7 @@ router.post('/pwa', auth, async (req, res) => {
     const { subdomain, appName, themeColor } = req.body;
     const site = user.deployed_sites.find(s => s.subdomain === subdomain);
     if (!site) return res.status(404).json({ error: 'Site not found' });
-    user.spendCoins(BL_COSTS.pwaBuild, 'pwa_build', `PWA for ${subdomain}`);
-    site.isPWA = true; await user.save();
+    user.spendCoins(BL_COSTS.pwaBuild, 'pwa_build', `PWA for ${subdomain}`); site.isPWA = true; await user.save();
     res.json({ manifest: { name: appName || site.title, short_name: (appName || subdomain).slice(0, 12), start_url: '/', display: 'standalone', background_color: '#000', theme_color: themeColor || '#6366f1', icons: [{ src: '/icon-192.png', sizes: '192x192', type: 'image/png' }, { src: '/icon-512.png', sizes: '512x512', type: 'image/png' }] }, serviceWorker: `const C='zc-${subdomain}-v1';self.addEventListener('install',e=>e.waitUntil(caches.open(C).then(c=>c.addAll(['/']))));self.addEventListener('fetch',e=>e.respondWith(caches.match(e.request).then(r=>r||fetch(e.request))));`, blSpent: BL_COSTS.pwaBuild, balanceRemaining: user.bl_coins });
   } catch { res.status(500).json({ error: 'PWA failed' }); }
 });
@@ -1100,8 +890,7 @@ router.post('/remove-badge', auth, async (req, res) => {
     const site = user.deployed_sites.find(s => s.subdomain === req.body.subdomain);
     if (!site) return res.status(404).json({ error: 'Site not found' });
     if (!site.hasBadge) return res.json({ message: 'Already removed' });
-    user.spendCoins(BL_COSTS.badgeRemoval, 'badge_removal', `Badge removal ${req.body.subdomain}`);
-    site.hasBadge = false; await user.save();
+    user.spendCoins(BL_COSTS.badgeRemoval, 'badge_removal', `Badge removal ${req.body.subdomain}`); site.hasBadge = false; await user.save();
     res.json({ success: true, blSpent: BL_COSTS.badgeRemoval, balanceRemaining: user.bl_coins });
   } catch { res.status(500).json({ error: 'Failed' }); }
 });
@@ -1119,7 +908,8 @@ router.post('/clone-analyze', auth, async (req, res) => {
 
 router.post('/clone-rebuild', auth, async (req, res) => {
   try {
-    const user = req.user; const model = getEffectiveModel(user, req.body.model) || 'groq';
+    const user = req.user;
+    const model = getEffectiveModel(user, req.body.model, true) || 'gemini-2.5-flash'; // isBuildOperation = true
     const cost = BL_COSTS.generation[model] || 5000;
     if (user.role !== 'super-admin' && user.bl_coins < cost) return res.status(402).json({ error: 'Insufficient BL coins' });
     user.spendCoins(cost, 'generation', `Clone rebuild (${getModelDisplayName(model)})`, model);
@@ -1135,7 +925,6 @@ router.post('/clone-rebuild', auth, async (req, res) => {
   } catch { res.status(500).json({ error: 'Clone rebuild failed' }); }
 });
 
-// Return deployed sites with their linked project IDs
 router.get('/sites', auth, (req, res) => {
   const sites = (req.user.deployed_sites || []).map(s => {
     const linkedProject = (req.user.saved_projects || []).find(p => p.linkedSubdomain === s.subdomain);
@@ -1144,38 +933,25 @@ router.get('/sites', auth, (req, res) => {
   res.json({ sites });
 });
 
-// Shut Down = remove from deployed sites, keep project with subdomain intact
 router.post('/site/shutdown', auth, async (req, res) => {
   try {
-    const user = req.user;
-    const { subdomain } = req.body;
-    const sub = (subdomain || '').toLowerCase().trim();
+    const user = req.user; const sub = (req.body.subdomain || '').toLowerCase().trim();
     const idx = user.deployed_sites.findIndex(s => s.subdomain === sub);
     if (idx === -1) return res.status(404).json({ error: 'Site not found' });
-
-    user.deployed_sites.splice(idx, 1);
-    await user.save();
-    console.log(`[Shutdown] ${sub}.zapcodes.net shut down — project preserved`);
-    res.json({ success: true, message: `${sub}.zapcodes.net is now offline. Your project is still saved.` });
+    user.deployed_sites.splice(idx, 1); await user.save();
+    res.json({ success: true, message: `${sub}.zapcodes.net is now offline. Project still saved.` });
   } catch { res.status(500).json({ error: 'Shutdown failed' }); }
 });
 
-// Legacy delete — also removes linked project (full delete)
 router.delete('/site/:subdomain', auth, async (req, res) => {
   try {
-    const user = req.user;
-    const sub = req.params.subdomain;
+    const user = req.user; const sub = req.params.subdomain;
     const siteIdx = user.deployed_sites.findIndex(s => s.subdomain === sub);
     if (siteIdx >= 0) user.deployed_sites.splice(siteIdx, 1);
-
-    // Also remove linked project
     const projIdx = (user.saved_projects || []).findIndex(p => p.linkedSubdomain === sub);
     if (projIdx >= 0) user.saved_projects.splice(projIdx, 1);
-
-    await user.save();
-    res.json({ success: true });
-  }
-  catch { res.status(500).json({ error: 'Failed' }); }
+    await user.save(); res.json({ success: true });
+  } catch { res.status(500).json({ error: 'Failed' }); }
 });
 
 router.get('/templates', (req, res) => res.json({ templates: [
