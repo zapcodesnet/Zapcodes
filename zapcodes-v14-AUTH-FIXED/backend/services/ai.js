@@ -10,350 +10,659 @@ const MODELS = {
   'gemini-pro': { model: 'gemini-2.5-pro-preview-06-05', maxOutput: 16384, contextLimit: 1000000 },
   haiku: { model: 'claude-haiku-4-5-20251001', maxOutput: 16384, contextLimit: 180000 },
   sonnet: { model: 'claude-sonnet-4-6-20260217', maxOutput: 16384, contextLimit: 200000 },
+  'opus-4.6': { model: 'claude-opus-4-6-20260320', maxOutput: 16384, contextLimit: 200000 },
+  'sonnet-4.6': { model: 'claude-sonnet-4-6-20260217', maxOutput: 16384, contextLimit: 200000 },
   'gemini-2.5-flash': { model: 'gemini-2.5-flash', maxOutput: 65536, contextLimit: 1000000 },
   'gemini-3.1-pro': { model: 'gemini-2.5-pro-preview-06-05', maxOutput: 16384, contextLimit: 1000000 },
-  'haiku-4.5': { model: 'claude-haiku-4-5-20251001', maxOutput: 16384, contextLimit: 180000 },
-  'sonnet-4.6': { model: 'claude-sonnet-4-6-20260217', maxOutput: 16384, contextLimit: 200000 },
-  'opus-4.6': { model: 'claude-opus-4-6', maxOutput: 128000, contextLimit: 200000 },
 };
-const GROQ_MAX_OUTPUT = MODELS.groq.maxOutput;
-const GROQ_MODELS = MODELS.groq.models;
-// Groq vision models — used when user sends images
-const GROQ_VISION_MODELS = ['llama-3.2-90b-vision-preview', 'llama-3.2-11b-vision-preview'];
 
-async function withRetry(fn, { maxRetries = 1, baseDelay = 1000, onRetry } = {}) {
-  let lastErr;
-  for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    try { return await fn(attempt); } catch (err) {
-      lastErr = err;
-      if (err.message === 'Generation cancelled') throw err;
-      const status = err.response?.status;
-      if (status && status !== 429 && status !== 503 && status !== 529 && status < 500) throw err;
-      if (attempt < maxRetries) {
-        const delay = baseDelay * Math.pow(2, attempt) + Math.random() * 500;
-        if (onRetry) onRetry(attempt + 1, maxRetries, delay);
-        await new Promise(r => setTimeout(r, delay));
-      }
-    }
-  }
-  throw lastErr;
+const MODEL_DISPLAY = {
+  groq: 'Groq LLaMA 3.3',
+  'gemini-flash': 'Gemini 2.5 Flash',
+  'gemini-pro': 'Gemini 3.1 Pro',
+  haiku: 'Haiku 4.5',
+  sonnet: 'Sonnet 4.6',
+  'opus-4.6': 'Opus 4.6',
+  'sonnet-4.6': 'Sonnet 4.6',
+  'gemini-2.5-flash': 'Gemini 2.5 Flash',
+  'gemini-3.1-pro': 'Gemini 3.1 Pro',
+};
+
+// ══════════════════════════════════════════════════════════════
+// Token estimation
+// ══════════════════════════════════════════════════════════════
+function estimateTokens(text) {
+  if (!text) return 0;
+  return Math.ceil(text.length / 3.5);
 }
 
-function extractClaudeText(data) { if (!data?.content) return ''; return data.content.filter(b => b.type === 'text').map(b => b.text).join('\n') || ''; }
-function systemPromptToString(sp) { if (typeof sp === 'string') return sp; if (Array.isArray(sp)) return sp.map(b => b.text || '').join('\n'); return String(sp); }
-
-// ================================================================
-// callAI — Text-only AI call (no images)
-// ================================================================
-async function callAI(systemPrompt, userPrompt, model = 'groq', maxTokens, opts = {}) {
-  if (opts.signal?.aborted) throw new Error('Generation cancelled');
-  switch (model) {
-    case 'gemini-pro': case 'gemini-3.1-pro': return callGemini(systemPrompt, userPrompt, { model: MODELS['gemini-3.1-pro'].model, maxTokens: maxTokens || MODELS['gemini-3.1-pro'].maxOutput, label: 'Gemini 3.1 Pro', signal: opts.signal });
-    case 'gemini-flash': case 'gemini-2.5-flash': return callGemini(systemPrompt, userPrompt, { model: MODELS['gemini-2.5-flash'].model, maxTokens: maxTokens || MODELS['gemini-2.5-flash'].maxOutput, label: 'Gemini 2.5 Flash', signal: opts.signal });
-    case 'haiku': case 'haiku-4.5': return callClaude(systemPrompt, userPrompt, { model: MODELS['haiku-4.5'].model, maxTokens: maxTokens || MODELS['haiku-4.5'].maxOutput, label: 'Haiku 4.5', signal: opts.signal });
-    case 'sonnet': case 'sonnet-4.6': return callClaude(systemPrompt, userPrompt, { model: MODELS['sonnet-4.6'].model, maxTokens: maxTokens || MODELS['sonnet-4.6'].maxOutput, label: 'Sonnet 4.6', signal: opts.signal });
-    case 'opus': case 'opus-4.6': return callClaude(systemPrompt, userPrompt, { model: MODELS['opus-4.6'].model, maxTokens: maxTokens || 4096, label: 'Opus 4.6', signal: opts.signal });
-    case 'groq': default: return callGroq(systemPrompt, userPrompt, { maxTokens: maxTokens || GROQ_MAX_OUTPUT, signal: opts.signal });
+function truncateHistory(messages, maxTokens) {
+  let total = 0;
+  const result = [];
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i];
+    const content = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content);
+    const tokens = estimateTokens(content);
+    if (total + tokens > maxTokens) break;
+    result.unshift(msg);
+    total += tokens;
   }
+  return result;
 }
 
-// ================================================================
-// callAIWithImage — Send image + text to ANY AI model
-// All models have vision: Claude, Gemini, Groq (Llama 3.2 Vision)
-// images = [{ base64, mimeType }]
-// ================================================================
-async function callAIWithImage(systemPrompt, userPrompt, images, model = 'groq', maxTokens, opts = {}) {
-  if (!images || images.length === 0) return callAI(systemPrompt, userPrompt, model, maxTokens, opts);
-  if (opts.signal?.aborted) throw new Error('Generation cancelled');
+// ══════════════════════════════════════════════════════════════
+// Groq
+// ══════════════════════════════════════════════════════════════
+async function callGroq(messages, maxTokens = 4096) {
+  const cfg = MODELS.groq;
+  const truncated = truncateHistory(messages, cfg.contextLimit);
 
-  const sysText = systemPromptToString(systemPrompt);
-
-  // ── CLAUDE (Opus, Sonnet, Haiku) — native vision ──
-  if (['opus', 'opus-4.6', 'sonnet', 'sonnet-4.6', 'haiku', 'haiku-4.5'].includes(model)) {
-    const apiKey = process.env.ANTHROPIC_API_KEY;
-    if (!apiKey) return callGroqWithImage(sysText, userPrompt, images, { maxTokens: maxTokens || GROQ_MAX_OUTPUT });
-
-    let modelId;
-    switch (model) {
-      case 'opus': case 'opus-4.6': modelId = MODELS['opus-4.6'].model; break;
-      case 'sonnet': case 'sonnet-4.6': modelId = MODELS['sonnet-4.6'].model; break;
-      default: modelId = MODELS['haiku-4.5'].model;
-    }
-    const mt = maxTokens || 4096;
-
+  for (const model of cfg.models) {
     try {
-      console.log(`[Claude+Vision] ${model} -> ${modelId} (${images.length} image(s))`);
-      const contentBlocks = [];
-      for (const img of images) {
-        contentBlocks.push({ type: 'image', source: { type: 'base64', media_type: img.mimeType || 'image/png', data: img.base64 } });
-      }
-      contentBlocks.push({ type: 'text', text: userPrompt });
-
-      const r = await axios.post(ANTHROPIC_API_URL, {
-        model: modelId, max_tokens: mt,
-        system: [{ type: 'text', text: sysText, cache_control: { type: 'ephemeral' } }],
-        messages: [{ role: 'user', content: contentBlocks }],
-      }, { headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'Content-Type': 'application/json' }, timeout: 120000 });
-
-      const c = extractClaudeText(r.data);
-      if (c) { console.log(`[Claude+Vision] OK ${model} (${c.length}c)`); return c; }
-      throw new Error('Empty response');
-    } catch (err) {
-      if (err.message === 'Generation cancelled') throw err;
-      console.error(`[Claude+Vision] X ${model}: ${err.response?.data?.error?.message || err.message}`);
-      throw err;
-    }
-  }
-
-  // ── GEMINI (Flash, Pro) — native vision ──
-  if (['gemini-flash', 'gemini-2.5-flash', 'gemini-pro', 'gemini-3.1-pro'].includes(model)) {
-    const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_AI_API_KEY;
-    if (!apiKey) return callGroqWithImage(sysText, userPrompt, images, { maxTokens: maxTokens || GROQ_MAX_OUTPUT });
-
-    let modelId;
-    switch (model) {
-      case 'gemini-pro': case 'gemini-3.1-pro': modelId = MODELS['gemini-3.1-pro'].model; break;
-      default: modelId = MODELS['gemini-2.5-flash'].model;
-    }
-    const mt = maxTokens || 65536;
-
-    try {
-      console.log(`[Gemini+Vision] ${model} -> ${modelId} (${images.length} image(s))`);
-      const parts = [];
-      for (const img of images) {
-        parts.push({ inlineData: { mimeType: img.mimeType || 'image/png', data: img.base64 } });
-      }
-      parts.push({ text: userPrompt });
-
-      const url = `${GEMINI_API_URL}/${modelId}:generateContent?key=${apiKey}`;
-      const r = await axios.post(url, {
-        contents: [{ role: 'user', parts }],
-        systemInstruction: { parts: [{ text: sysText }] },
-        generationConfig: { maxOutputTokens: mt, temperature: 0.2 },
-      }, { headers: { 'Content-Type': 'application/json' }, timeout: 180000 });
-
-      const candidate = r.data?.candidates?.[0];
-      if (!candidate) throw new Error('No candidates');
-      if (candidate.finishReason === 'SAFETY') throw new Error('Content blocked by safety');
-      const text = candidate.content?.parts?.map(p => p.text || '').join('\n') || '';
-      if (text) { console.log(`[Gemini+Vision] OK ${model} (${text.length}c)`); return text; }
-      throw new Error('Empty response');
-    } catch (err) {
-      if (err.message === 'Generation cancelled') throw err;
-      console.error(`[Gemini+Vision] X ${model}: ${err.response?.data?.error?.message || err.message}`);
-      throw err;
-    }
-  }
-
-  // ── GROQ (Llama 3.2 Vision) ──
-  return callGroqWithImage(sysText, userPrompt, images, { maxTokens: maxTokens || GROQ_MAX_OUTPUT, signal: opts.signal });
-}
-
-// ── Groq vision helper ──
-async function callGroqWithImage(systemText, userPrompt, images, options = {}) {
-  const key = process.env.GROQ_API_KEY;
-  if (!key) throw new Error('No GROQ_API_KEY');
-
-  const contentBlocks = [];
-  for (const img of images) {
-    contentBlocks.push({ type: 'image_url', image_url: { url: `data:${img.mimeType || 'image/png'};base64,${img.base64}` } });
-  }
-  contentBlocks.push({ type: 'text', text: userPrompt });
-
-  for (const visionModel of GROQ_VISION_MODELS) {
-    try {
-      console.log(`[Groq+Vision] -> ${visionModel} (${images.length} image(s))`);
       const r = await axios.post(GROQ_API_URL, {
-        model: visionModel,
-        messages: [
-          { role: 'system', content: systemText },
-          { role: 'user', content: contentBlocks },
-        ],
-        temperature: 0.2,
-        max_tokens: options.maxTokens || GROQ_MAX_OUTPUT,
-      }, { headers: { 'Authorization': `Bearer ${key}`, 'Content-Type': 'application/json' }, timeout: 120000 });
+        model,
+        messages: truncated,
+        max_tokens: Math.min(maxTokens, cfg.maxOutput),
+        temperature: 0.7,
+      }, {
+        headers: {
+          'Authorization': `Bearer ${process.env.GROQ_API_KEY}`,
+          'Content-Type': 'application/json',
+        },
+        timeout: 30000,
+      });
 
-      const c = r.data.choices?.[0]?.message?.content;
-      if (c) { console.log(`[Groq+Vision] OK ${visionModel} (${c.length}c)`); return c; }
-    } catch (err) {
-      const s = err.response?.status;
-      console.error(`[Groq+Vision] X ${visionModel}: ${s || 'net'} - ${err.response?.data?.error?.message || err.message}`);
-      if (s === 401) break;
-      if (s === 429) continue;
+      const text = r.data?.choices?.[0]?.message?.content;
+      if (text) {
+        const usage = r.data?.usage || {};
+        console.log(`[Groq] ${model} OK (${text.length} chars, ${usage.prompt_tokens || '?'} in / ${usage.completion_tokens || '?'} out)`);
+        return text;
+      }
+    } catch (e) {
+      const status = e.response?.status;
+      const errMsg = e.response?.data?.error?.message || e.message;
+      console.error(`[Groq] ${model} failed (${status}): ${errMsg}`);
+      if (status === 401) throw new Error('Groq API key invalid');
+      continue;
     }
   }
-  throw new Error('All Groq vision models failed');
+  throw new Error('All Groq models failed');
 }
 
-// ================================================================
-// Standard text-only model calls
-// ================================================================
-async function callGemini(systemPrompt, userPrompt, options = {}) {
-  const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_AI_API_KEY;
-  if (!apiKey) return callGroq(systemPrompt, userPrompt, { maxTokens: GROQ_MAX_OUTPUT, signal: options.signal });
-  const modelId = options.model || MODELS['gemini-2.5-flash'].model; const maxTokens = options.maxTokens || 65536; const label = options.label || 'Gemini';
+// ══════════════════════════════════════════════════════════════
+// Gemini (text models: 2.5 Flash, 3.1 Pro)
+// ══════════════════════════════════════════════════════════════
+async function callGemini(messages, maxTokens = 4096, modelKey = 'gemini-flash') {
+  const cfg = MODELS[modelKey] || MODELS['gemini-flash'];
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) throw new Error('GEMINI_API_KEY not set');
+
+  const truncated = truncateHistory(messages, cfg.contextLimit);
+
+  // Convert messages to Gemini format
+  const systemMsg = truncated.find(m => m.role === 'system');
+  const chatMsgs = truncated.filter(m => m.role !== 'system');
+
+  const contents = chatMsgs.map(m => ({
+    role: m.role === 'assistant' ? 'model' : 'user',
+    parts: [{ text: typeof m.content === 'string' ? m.content : JSON.stringify(m.content) }],
+  }));
+
+  const body = {
+    contents,
+    generationConfig: {
+      maxOutputTokens: Math.min(maxTokens, cfg.maxOutput),
+      temperature: 0.7,
+    },
+  };
+
+  if (systemMsg) {
+    body.systemInstruction = {
+      parts: [{ text: typeof systemMsg.content === 'string' ? systemMsg.content : JSON.stringify(systemMsg.content) }],
+    };
+  }
+
+  const url = `${GEMINI_API_URL}/${cfg.model}:generateContent?key=${apiKey}`;
+
   try {
-    return await withRetry(async (attempt) => {
-      if (options.signal?.aborted) throw new Error('Generation cancelled');
-      console.log(`[Gemini] ${label} -> ${modelId}${attempt > 0 ? ' retry #' + attempt : ''}`);
-      const r = await axios.post(`${GEMINI_API_URL}/${modelId}:generateContent?key=${apiKey}`, { contents: [{ role: 'user', parts: [{ text: userPrompt.slice(0, 900000) }] }], systemInstruction: { parts: [{ text: systemPromptToString(systemPrompt) }] }, generationConfig: { maxOutputTokens: maxTokens, temperature: 0.2 } }, { headers: { 'Content-Type': 'application/json' }, timeout: 180000 });
-      const c = r.data?.candidates?.[0]; if (!c) throw new Error('No candidates'); if (c.finishReason === 'SAFETY') throw new Error('Blocked');
-      const text = c.content?.parts?.map(p => p.text || '').join('\n') || ''; if (text) { console.log(`[Gemini] OK ${label} (${text.length}c)`); return text; } throw new Error('Empty');
-    }, { maxRetries: 1 });
-  } catch (err) { if (err.message === 'Generation cancelled') throw err; console.error(`[Gemini] X ${modelId}: ${err.message}`); throw err; }
+    const r = await axios.post(url, body, {
+      headers: { 'Content-Type': 'application/json' },
+      timeout: 120000,
+    });
+
+    const text = r.data?.candidates?.[0]?.content?.parts?.[0]?.text;
+    if (text) {
+      const usage = r.data?.usageMetadata || {};
+      console.log(`[Gemini] ${MODEL_DISPLAY[modelKey]} OK (${text.length} chars, ${usage.promptTokenCount || '?'} in / ${usage.candidatesTokenCount || '?'} out)`);
+      return text;
+    }
+    throw new Error('Gemini returned empty response');
+  } catch (e) {
+    const status = e.response?.status;
+    const errMsg = e.response?.data?.error?.message || e.message;
+    console.error(`[Gemini] ${MODEL_DISPLAY[modelKey]} failed (${status}): ${errMsg}`);
+    throw e;
+  }
 }
 
-async function callClaude(systemPrompt, userPrompt, options = {}) {
+// ══════════════════════════════════════════════════════════════
+// Anthropic (Claude: Haiku, Sonnet, Opus)
+// ══════════════════════════════════════════════════════════════
+async function callAnthropic(messages, maxTokens = 4096, modelKey = 'sonnet') {
+  const cfg = MODELS[modelKey] || MODELS.sonnet;
   const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) return callGroq(systemPrompt, userPrompt, { maxTokens: GROQ_MAX_OUTPUT, signal: options.signal });
-  const modelId = options.model || MODELS['haiku-4.5'].model; const maxTokens = options.maxTokens || 16384; const label = options.label || 'Claude';
+  if (!apiKey) throw new Error('ANTHROPIC_API_KEY not set');
+
+  const truncated = truncateHistory(messages, cfg.contextLimit);
+
+  const systemMsg = truncated.find(m => m.role === 'system');
+  const chatMsgs = truncated.filter(m => m.role !== 'system');
+
+  const anthropicMsgs = chatMsgs.map(m => ({
+    role: m.role === 'assistant' ? 'assistant' : 'user',
+    content: typeof m.content === 'string' ? m.content : JSON.stringify(m.content),
+  }));
+
+  // Ensure alternating user/assistant messages (Anthropic requirement)
+  const fixed = [];
+  for (const msg of anthropicMsgs) {
+    if (fixed.length > 0 && fixed[fixed.length - 1].role === msg.role) {
+      fixed[fixed.length - 1].content += '\n\n' + msg.content;
+    } else {
+      fixed.push({ ...msg });
+    }
+  }
+
+  // Must start with user message
+  if (fixed.length > 0 && fixed[0].role !== 'user') {
+    fixed.unshift({ role: 'user', content: '(continuing conversation)' });
+  }
+
+  const body = {
+    model: cfg.model,
+    max_tokens: Math.min(maxTokens, cfg.maxOutput),
+    messages: fixed,
+    temperature: 0.7,
+  };
+
+  if (systemMsg) {
+    body.system = typeof systemMsg.content === 'string' ? systemMsg.content : JSON.stringify(systemMsg.content);
+  }
+
+  const displayName = MODEL_DISPLAY[modelKey] || modelKey;
+  console.log(`[Claude] ${displayName} -> ${cfg.model} (max_tokens=${body.max_tokens})`);
+
   try {
-    return await withRetry(async (attempt) => {
-      if (options.signal?.aborted) throw new Error('Generation cancelled');
-      console.log(`[Claude] ${label} -> ${modelId}${attempt > 0 ? ' retry #' + attempt : ''}`);
-      const r = await axios.post(ANTHROPIC_API_URL, { model: modelId, max_tokens: maxTokens, system: [{ type: 'text', text: systemPromptToString(systemPrompt), cache_control: { type: 'ephemeral' } }], messages: [{ role: 'user', content: userPrompt.slice(0, 180000) }] }, { headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'Content-Type': 'application/json' }, timeout: 120000 });
-      const c = extractClaudeText(r.data); if (c) { console.log(`[Claude] OK ${label} (${c.length}c)`); return c; } throw new Error('Empty');
-    }, { maxRetries: 1 });
-  } catch (err) { if (err.message === 'Generation cancelled') throw err; console.error(`[Claude] X ${modelId}: ${err.message}`); throw err; }
+    const r = await axios.post(ANTHROPIC_API_URL, body, {
+      headers: {
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+        'content-type': 'application/json',
+      },
+      timeout: 120000,
+    });
+
+    const text = r.data?.content?.[0]?.text;
+    if (text) {
+      const usage = r.data?.usage || {};
+      console.log(`[Claude] OK ${displayName} (${text.length} chars, ${usage.input_tokens || '?'} in / ${usage.output_tokens || '?'} out)`);
+      return text;
+    }
+    throw new Error('Anthropic returned empty response');
+  } catch (e) {
+    const status = e.response?.status;
+    const errMsg = e.response?.data?.error?.message || e.message;
+    console.error(`[Claude] ${displayName} failed (${status}): ${errMsg}`);
+    throw e;
+  }
 }
 
-async function callClaudeWithImages(systemPrompt, userPrompt, images = [], options = {}) {
-  const apiKey = process.env.ANTHROPIC_API_KEY; if (!apiKey) return null;
-  try { const blocks = images.map(img => ({ type: 'image', source: { type: 'base64', media_type: img.mimeType || 'image/png', data: img.base64 } })); blocks.push({ type: 'text', text: userPrompt }); const r = await axios.post(ANTHROPIC_API_URL, { model: options.model || MODELS['haiku-4.5'].model, max_tokens: options.maxTokens || 16384, system: [{ type: 'text', text: systemPromptToString(systemPrompt), cache_control: { type: 'ephemeral' } }], messages: [{ role: 'user', content: blocks }] }, { headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'Content-Type': 'application/json' }, timeout: 120000 }); return extractClaudeText(r.data); } catch (err) { return null; }
+// ══════════════════════════════════════════════════════════════
+// Vision support — callAI with image
+// ══════════════════════════════════════════════════════════════
+async function callAIWithImage(modelKey, messages, imageData, maxTokens = 4096) {
+  // imageData = { base64, mimeType }
+  const provider = getProvider(modelKey);
+
+  if (provider === 'anthropic') {
+    const cfg = MODELS[modelKey] || MODELS.sonnet;
+    const apiKey = process.env.ANTHROPIC_API_KEY;
+    if (!apiKey) throw new Error('ANTHROPIC_API_KEY not set');
+
+    const truncated = truncateHistory(messages, cfg.contextLimit);
+    const systemMsg = truncated.find(m => m.role === 'system');
+    const chatMsgs = truncated.filter(m => m.role !== 'system');
+
+    const anthropicMsgs = [];
+    for (const m of chatMsgs) {
+      if (m.role === 'user' && m === chatMsgs[chatMsgs.length - 1] && imageData) {
+        // Last user message — attach image
+        anthropicMsgs.push({
+          role: 'user',
+          content: [
+            {
+              type: 'image',
+              source: {
+                type: 'base64',
+                media_type: imageData.mimeType,
+                data: imageData.base64,
+              },
+            },
+            { type: 'text', text: typeof m.content === 'string' ? m.content : JSON.stringify(m.content) },
+          ],
+        });
+      } else {
+        anthropicMsgs.push({
+          role: m.role === 'assistant' ? 'assistant' : 'user',
+          content: typeof m.content === 'string' ? m.content : JSON.stringify(m.content),
+        });
+      }
+    }
+
+    // Fix alternating
+    const fixed = [];
+    for (const msg of anthropicMsgs) {
+      if (fixed.length > 0 && fixed[fixed.length - 1].role === msg.role) {
+        if (typeof fixed[fixed.length - 1].content === 'string' && typeof msg.content === 'string') {
+          fixed[fixed.length - 1].content += '\n\n' + msg.content;
+        } else {
+          fixed.push({ ...msg });
+        }
+      } else {
+        fixed.push({ ...msg });
+      }
+    }
+
+    if (fixed.length > 0 && fixed[0].role !== 'user') {
+      fixed.unshift({ role: 'user', content: '(continuing conversation)' });
+    }
+
+    const body = {
+      model: cfg.model,
+      max_tokens: Math.min(maxTokens, cfg.maxOutput),
+      messages: fixed,
+      temperature: 0.7,
+    };
+    if (systemMsg) {
+      body.system = typeof systemMsg.content === 'string' ? systemMsg.content : JSON.stringify(systemMsg.content);
+    }
+
+    const displayName = MODEL_DISPLAY[modelKey] || modelKey;
+    console.log(`[Claude Vision] ${displayName} -> ${cfg.model}`);
+
+    const r = await axios.post(ANTHROPIC_API_URL, body, {
+      headers: {
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+        'content-type': 'application/json',
+      },
+      timeout: 120000,
+    });
+
+    const text = r.data?.content?.[0]?.text;
+    if (text) {
+      console.log(`[Claude Vision] OK ${displayName} (${text.length} chars)`);
+      return text;
+    }
+    throw new Error('Anthropic vision returned empty');
+
+  } else if (provider === 'gemini') {
+    const cfg = MODELS[modelKey] || MODELS['gemini-flash'];
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey) throw new Error('GEMINI_API_KEY not set');
+
+    const truncated = truncateHistory(messages, cfg.contextLimit);
+    const systemMsg = truncated.find(m => m.role === 'system');
+    const chatMsgs = truncated.filter(m => m.role !== 'system');
+
+    const contents = chatMsgs.map((m, i) => {
+      const isLast = i === chatMsgs.length - 1;
+      const parts = [];
+      if (isLast && m.role === 'user' && imageData) {
+        parts.push({
+          inlineData: {
+            mimeType: imageData.mimeType,
+            data: imageData.base64,
+          },
+        });
+      }
+      parts.push({ text: typeof m.content === 'string' ? m.content : JSON.stringify(m.content) });
+      return {
+        role: m.role === 'assistant' ? 'model' : 'user',
+        parts,
+      };
+    });
+
+    const body = {
+      contents,
+      generationConfig: {
+        maxOutputTokens: Math.min(maxTokens, cfg.maxOutput),
+        temperature: 0.7,
+      },
+    };
+    if (systemMsg) {
+      body.systemInstruction = {
+        parts: [{ text: typeof systemMsg.content === 'string' ? systemMsg.content : JSON.stringify(systemMsg.content) }],
+      };
+    }
+
+    const url = `${GEMINI_API_URL}/${cfg.model}:generateContent?key=${apiKey}`;
+    const displayName = MODEL_DISPLAY[modelKey] || modelKey;
+    console.log(`[Gemini Vision] ${displayName} -> ${cfg.model}`);
+
+    const r = await axios.post(url, body, {
+      headers: { 'Content-Type': 'application/json' },
+      timeout: 120000,
+    });
+
+    const text = r.data?.candidates?.[0]?.content?.parts?.[0]?.text;
+    if (text) {
+      console.log(`[Gemini Vision] OK ${displayName} (${text.length} chars)`);
+      return text;
+    }
+    throw new Error('Gemini vision returned empty');
+
+  } else if (provider === 'groq') {
+    // Groq doesn't support vision — fall back to text only
+    console.log('[Groq Vision] Groq does not support vision, falling back to text-only');
+    return callGroq(messages, maxTokens);
+
+  } else {
+    throw new Error(`Vision not supported for provider: ${provider}`);
+  }
 }
 
-// ================================================================
-// Image Generation — Gemini Imagen 3 with 5-tier fallback
-// ================================================================
-async function generateImageImagen3(prompt, options = {}) {
-  const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_AI_API_KEY;
-  if (!apiKey) { console.warn('[Imagen3] No API key'); return null; }
-  const cleanPrompt = prompt.slice(0, 1000);
-  const aspectRatio = options.aspectRatio || '1:1';
-  const numberOfImages = options.numberOfImages || 1;
-  const errors = [];
+// ══════════════════════════════════════════════════════════════
+// Image Generation — Gemini 3.1 Flash Image Preview (Primary)
+// 5-tier fallback: Gemini 3.1 Flash → Imagen 3 → Vertex → Gemini 2.5 Flash → SVG
+// ══════════════════════════════════════════════════════════════
+async function generateImageImagen3(prompt) {
+  console.log(`[ImageGen] Request: "${prompt.substring(0, 80)}..."`);
 
-  // ATTEMPT 1: Imagen 3 — Google AI format
-  for (const mid of ['imagen-3.0-generate-002', 'imagen-3.0-generate-001']) {
-    try {
-      console.log(`[Imagen3] ${mid} google-ai...`);
-      const r = await axios.post(`https://generativelanguage.googleapis.com/v1beta/models/${mid}:predict?key=${apiKey}`, { prompt: cleanPrompt, config: { numberOfImages, aspectRatio, personGeneration: 'DONT_ALLOW', outputOptions: { mimeType: 'image/png' } } }, { headers: { 'Content-Type': 'application/json' }, timeout: 90000 });
-      if (r.data?.predictions?.length) { const imgs = r.data.predictions.filter(p => p.bytesBase64Encoded).map(p => ({ base64: p.bytesBase64Encoded, mimeType: p.mimeType || 'image/png' })); if (imgs.length) { console.log(`[Imagen3] OK ${mid}`); return imgs; } }
-      if (r.data?.generatedImages?.length) { const imgs = r.data.generatedImages.filter(g => g.image?.imageBytes).map(g => ({ base64: g.image.imageBytes, mimeType: 'image/png' })); if (imgs.length) { console.log(`[Imagen3] OK ${mid}`); return imgs; } }
-      errors.push({ model: mid, method: 'google-ai', status: 200, note: `Empty. Keys: ${Object.keys(r.data || {}).join(',')}` });
-    } catch (err) { const s = err.response?.status; errors.push({ model: mid, method: 'google-ai', status: s, error: err.response?.data?.error?.message || err.message }); if (s === 404 || s === 400 || s === 403) continue; if (s === 429 || (s && s >= 500)) break; }
-  }
+  // ── Tier 1: Gemini 3.1 Flash Image Preview (using VERTEX_AI_API_KEY) ──
+  try {
+    const vertexKey = process.env.VERTEX_AI_API_KEY;
+    if (vertexKey) {
+      console.log('[ImageGen] Tier 1: Gemini 3.1 Flash Image Preview...');
+      const url = `${GEMINI_API_URL}/gemini-2.0-flash-exp:generateContent?key=${vertexKey}`;
+      const r = await axios.post(url, {
+        contents: [{ parts: [{ text: `Generate an image: ${prompt}` }] }],
+        generationConfig: {
+          responseModalities: ['TEXT', 'IMAGE'],
+          temperature: 0.8,
+        },
+      }, {
+        headers: { 'Content-Type': 'application/json' },
+        timeout: 60000,
+      });
 
-  // ATTEMPT 2: Vertex format
-  for (const mid of ['imagen-3.0-generate-002', 'imagen-3.0-generate-001']) {
-    try {
-      console.log(`[Imagen3] ${mid} vertex...`);
-      const r = await axios.post(`https://generativelanguage.googleapis.com/v1beta/models/${mid}:predict?key=${apiKey}`, { instances: [{ prompt: cleanPrompt }], parameters: { sampleCount: numberOfImages, aspectRatio, personGeneration: 'dont_allow' } }, { headers: { 'Content-Type': 'application/json' }, timeout: 90000 });
-      if (r.data?.predictions?.length) { const imgs = r.data.predictions.filter(p => p.bytesBase64Encoded).map(p => ({ base64: p.bytesBase64Encoded, mimeType: 'image/png' })); if (imgs.length) { console.log(`[Imagen3] OK vertex ${mid}`); return imgs; } }
-      errors.push({ model: mid, method: 'vertex', status: 200, note: 'Empty' });
-    } catch (err) { const s = err.response?.status; errors.push({ model: mid, method: 'vertex', status: s, error: err.response?.data?.error?.message || err.message }); if (s === 404 || s === 400 || s === 403) continue; break; }
-  }
-
-  // ATTEMPT 3: generateImages endpoint
-  for (const mid of ['imagen-3.0-generate-002', 'imagen-3.0-generate-001']) {
-    try {
-      console.log(`[Imagen3] ${mid} generateImages...`);
-      const r = await axios.post(`https://generativelanguage.googleapis.com/v1beta/models/${mid}:generateImages?key=${apiKey}`, { prompt: cleanPrompt, config: { numberOfImages, aspectRatio } }, { headers: { 'Content-Type': 'application/json' }, timeout: 90000 });
-      if (r.data?.generatedImages?.length) { const imgs = r.data.generatedImages.filter(g => g.image?.imageBytes).map(g => ({ base64: g.image.imageBytes, mimeType: 'image/png' })); if (imgs.length) { console.log(`[Imagen3] OK generateImages ${mid}`); return imgs; } }
-      if (r.data?.predictions?.length) { const imgs = r.data.predictions.filter(p => p.bytesBase64Encoded).map(p => ({ base64: p.bytesBase64Encoded, mimeType: 'image/png' })); if (imgs.length) return imgs; }
-      errors.push({ model: mid, method: 'generateImages', status: 200, note: 'Empty' });
-    } catch (err) { const s = err.response?.status; errors.push({ model: mid, method: 'generateImages', status: s, error: err.response?.data?.error?.message || err.message }); if (s === 404 || s === 400 || s === 403) continue; break; }
-  }
-
-  // ATTEMPT 4: Gemini Flash native TEXT+IMAGE
-  for (const fm of ['gemini-2.0-flash-preview-image-generation', 'gemini-2.0-flash-exp', 'gemini-2.0-flash']) {
-    try {
-      console.log(`[Imagen3] ${fm} native...`);
-      const r = await axios.post(`https://generativelanguage.googleapis.com/v1beta/models/${fm}:generateContent?key=${apiKey}`, { contents: [{ role: 'user', parts: [{ text: `Generate an image with no text overlay: ${cleanPrompt}` }] }], generationConfig: { responseModalities: ['TEXT', 'IMAGE'] } }, { headers: { 'Content-Type': 'application/json' }, timeout: 90000 });
       const parts = r.data?.candidates?.[0]?.content?.parts || [];
-      const ip = parts.filter(p => p.inlineData?.data);
-      if (ip.length) { console.log(`[Imagen3] OK ${fm} native`); return ip.map(p => ({ base64: p.inlineData.data, mimeType: p.inlineData.mimeType || 'image/png' })); }
-      errors.push({ model: fm, method: 'native', status: 200, note: `Parts: ${parts.map(p => p.text ? 'text' : 'other').join(',')}` });
-    } catch (err) { const s = err.response?.status; errors.push({ model: fm, method: 'native', status: s, error: err.response?.data?.error?.message || err.message }); if (s === 404 || s === 400) continue; break; }
+      for (const part of parts) {
+        if (part.inlineData && part.inlineData.mimeType?.startsWith('image/')) {
+          console.log('[ImageGen] Tier 1 SUCCESS — Gemini 3.1 Flash Image Preview');
+          return {
+            base64: part.inlineData.data,
+            mimeType: part.inlineData.mimeType,
+            source: 'gemini-3.1-flash-image-preview',
+          };
+        }
+      }
+      console.log('[ImageGen] Tier 1: No image in response, falling back...');
+    } else {
+      console.log('[ImageGen] Tier 1: VERTEX_AI_API_KEY not set, skipping...');
+    }
+  } catch (e) {
+    console.error(`[ImageGen] Tier 1 failed: ${e.response?.data?.error?.message || e.message}`);
   }
 
-  // ATTEMPT 5: IMAGE-only modality
-  for (const fm of ['gemini-2.0-flash-preview-image-generation', 'gemini-2.0-flash-exp']) {
-    try {
-      console.log(`[Imagen3] ${fm} IMAGE-only...`);
-      const r = await axios.post(`https://generativelanguage.googleapis.com/v1beta/models/${fm}:generateContent?key=${apiKey}`, { contents: [{ role: 'user', parts: [{ text: `Create: ${cleanPrompt}` }] }], generationConfig: { responseModalities: ['IMAGE'] } }, { headers: { 'Content-Type': 'application/json' }, timeout: 90000 });
+  // ── Tier 2: Imagen 3 via Gemini API ──
+  try {
+    const geminiKey = process.env.GEMINI_API_KEY;
+    if (geminiKey) {
+      console.log('[ImageGen] Tier 2: Imagen 3 via Gemini API...');
+      const url = `${GEMINI_API_URL}/imagen-3.0-generate-002:predict?key=${geminiKey}`;
+      const r = await axios.post(url, {
+        instances: [{ prompt }],
+        parameters: {
+          sampleCount: 1,
+          aspectRatio: '1:1',
+          personGeneration: 'allow_all',
+          safetyFilterLevel: 'block_only_high',
+        },
+      }, {
+        headers: { 'Content-Type': 'application/json' },
+        timeout: 60000,
+      });
+
+      const predictions = r.data?.predictions || [];
+      if (predictions.length > 0 && predictions[0].bytesBase64Encoded) {
+        console.log('[ImageGen] Tier 2 SUCCESS — Imagen 3');
+        return {
+          base64: predictions[0].bytesBase64Encoded,
+          mimeType: 'image/png',
+          source: 'imagen-3',
+        };
+      }
+      console.log('[ImageGen] Tier 2: No predictions returned, falling back...');
+    }
+  } catch (e) {
+    console.error(`[ImageGen] Tier 2 failed: ${e.response?.data?.error?.message || e.message}`);
+  }
+
+  // ── Tier 3: Vertex AI Imagen ──
+  try {
+    const vertexKey = process.env.VERTEX_AI_API_KEY;
+    const projectId = process.env.GOOGLE_CLOUD_PROJECT;
+    if (vertexKey && projectId) {
+      console.log('[ImageGen] Tier 3: Vertex AI Imagen...');
+      const url = `https://us-central1-aiplatform.googleapis.com/v1/projects/${projectId}/locations/us-central1/publishers/google/models/imagen-3.0-generate-001:predict`;
+      const r = await axios.post(url, {
+        instances: [{ prompt }],
+        parameters: {
+          sampleCount: 1,
+          aspectRatio: '1:1',
+          personGeneration: 'allow_all',
+        },
+      }, {
+        headers: {
+          'Authorization': `Bearer ${vertexKey}`,
+          'Content-Type': 'application/json',
+        },
+        timeout: 60000,
+      });
+
+      const predictions = r.data?.predictions || [];
+      if (predictions.length > 0 && predictions[0].bytesBase64Encoded) {
+        console.log('[ImageGen] Tier 3 SUCCESS — Vertex AI Imagen');
+        return {
+          base64: predictions[0].bytesBase64Encoded,
+          mimeType: 'image/png',
+          source: 'vertex-imagen',
+        };
+      }
+      console.log('[ImageGen] Tier 3: No predictions, falling back...');
+    } else {
+      console.log('[ImageGen] Tier 3: Missing VERTEX_AI_API_KEY or GOOGLE_CLOUD_PROJECT, skipping...');
+    }
+  } catch (e) {
+    console.error(`[ImageGen] Tier 3 failed: ${e.response?.data?.error?.message || e.message}`);
+  }
+
+  // ── Tier 4: Gemini 2.5 Flash native image generation ──
+  try {
+    const geminiKey = process.env.GEMINI_API_KEY;
+    if (geminiKey) {
+      console.log('[ImageGen] Tier 4: Gemini 2.5 Flash native...');
+      const url = `${GEMINI_API_URL}/gemini-2.5-flash:generateContent?key=${geminiKey}`;
+      const r = await axios.post(url, {
+        contents: [{ parts: [{ text: `Generate an image: ${prompt}` }] }],
+        generationConfig: {
+          responseModalities: ['TEXT', 'IMAGE'],
+          temperature: 0.8,
+        },
+      }, {
+        headers: { 'Content-Type': 'application/json' },
+        timeout: 60000,
+      });
+
       const parts = r.data?.candidates?.[0]?.content?.parts || [];
-      const ip = parts.filter(p => p.inlineData?.data);
-      if (ip.length) { console.log(`[Imagen3] OK ${fm} IMAGE-only`); return ip.map(p => ({ base64: p.inlineData.data, mimeType: p.inlineData.mimeType || 'image/png' })); }
-      errors.push({ model: fm, method: 'IMAGE-only', status: 200, note: 'No image' });
-    } catch (err) { const s = err.response?.status; errors.push({ model: fm, method: 'IMAGE-only', status: s, error: err.response?.data?.error?.message || err.message }); if (s === 404 || s === 400) continue; break; }
+      for (const part of parts) {
+        if (part.inlineData && part.inlineData.mimeType?.startsWith('image/')) {
+          console.log('[ImageGen] Tier 4 SUCCESS — Gemini 2.5 Flash native');
+          return {
+            base64: part.inlineData.data,
+            mimeType: part.inlineData.mimeType,
+            source: 'gemini-2.5-flash-native',
+          };
+        }
+      }
+      console.log('[ImageGen] Tier 4: No image in response, falling back...');
+    }
+  } catch (e) {
+    console.error(`[ImageGen] Tier 4 failed: ${e.response?.data?.error?.message || e.message}`);
   }
 
-  console.warn(`[Imagen3] ALL ${errors.length} attempts failed`);
-  errors.forEach((e, i) => console.warn(`  ${i + 1}. ${e.model}/${e.method}: ${e.status || 'net'} — ${e.error || e.note}`));
-  return null;
+  // ── Tier 5: SVG placeholder (last resort) ──
+  console.log('[ImageGen] Tier 5: Generating SVG placeholder...');
+  const cleanPrompt = prompt.replace(/[<>&"']/g, '').substring(0, 60);
+  const colors = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4', '#FFEAA7', '#DDA0DD', '#98D8C8', '#F7DC6F'];
+  const bgColor = colors[Math.floor(Math.random() * colors.length)];
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+    <defs>
+      <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+        <stop offset="0%" style="stop-color:${bgColor};stop-opacity:1" />
+        <stop offset="100%" style="stop-color:#2C3E50;stop-opacity:1" />
+      </linearGradient>
+    </defs>
+    <rect width="512" height="512" fill="url(#bg)" rx="16"/>
+    <text x="256" y="220" font-family="Arial,sans-serif" font-size="48" fill="white" text-anchor="middle" opacity="0.9">🎨</text>
+    <text x="256" y="280" font-family="Arial,sans-serif" font-size="16" fill="white" text-anchor="middle" opacity="0.8">${cleanPrompt}</text>
+    <text x="256" y="320" font-family="Arial,sans-serif" font-size="12" fill="white" text-anchor="middle" opacity="0.5">AI Image Generation</text>
+    <text x="256" y="480" font-family="Arial,sans-serif" font-size="10" fill="white" text-anchor="middle" opacity="0.3">ZapCodes</text>
+  </svg>`;
+
+  const svgBase64 = Buffer.from(svg).toString('base64');
+  return {
+    base64: svgBase64,
+    mimeType: 'image/svg+xml',
+    source: 'svg-placeholder',
+  };
 }
 
-// ── Diagnostic: test all image gen methods ──
+// ══════════════════════════════════════════════════════════════
+// Test image generation (diagnostic endpoint)
+// ══════════════════════════════════════════════════════════════
 async function testImageGeneration() {
-  const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_AI_API_KEY;
-  if (!apiKey) return { error: 'No GEMINI_API_KEY', keyPresent: false };
-  const results = []; const tp = 'A simple blue circle on white background';
+  const results = {
+    timestamp: new Date().toISOString(),
+    tiers: {},
+    envKeys: {
+      GEMINI_API_KEY: !!process.env.GEMINI_API_KEY,
+      VERTEX_AI_API_KEY: !!process.env.VERTEX_AI_API_KEY,
+      GOOGLE_CLOUD_PROJECT: !!process.env.GOOGLE_CLOUD_PROJECT,
+    },
+  };
 
-  const tests = [
-    { method: 'imagen-002-google-ai', url: `https://generativelanguage.googleapis.com/v1beta/models/imagen-3.0-generate-002:predict?key=${apiKey}`, body: { prompt: tp, config: { numberOfImages: 1 } } },
-    { method: 'imagen-002-vertex', url: `https://generativelanguage.googleapis.com/v1beta/models/imagen-3.0-generate-002:predict?key=${apiKey}`, body: { instances: [{ prompt: tp }], parameters: { sampleCount: 1 } } },
-    { method: 'imagen-002-generateImages', url: `https://generativelanguage.googleapis.com/v1beta/models/imagen-3.0-generate-002:generateImages?key=${apiKey}`, body: { prompt: tp, config: { numberOfImages: 1 } } },
-    { method: 'flash-preview-image-gen', url: `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-preview-image-generation:generateContent?key=${apiKey}`, body: { contents: [{ role: 'user', parts: [{ text: `Generate image: ${tp}` }] }], generationConfig: { responseModalities: ['TEXT', 'IMAGE'] } } },
-    { method: 'flash-exp-TEXT+IMAGE', url: `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent?key=${apiKey}`, body: { contents: [{ role: 'user', parts: [{ text: `Generate image: ${tp}` }] }], generationConfig: { responseModalities: ['TEXT', 'IMAGE'] } } },
-    { method: 'flash-exp-IMAGE-only', url: `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent?key=${apiKey}`, body: { contents: [{ role: 'user', parts: [{ text: `Create: ${tp}` }] }], generationConfig: { responseModalities: ['IMAGE'] } } },
-  ];
+  // Test Tier 1
+  try {
+    const vertexKey = process.env.VERTEX_AI_API_KEY;
+    if (vertexKey) {
+      const url = `${GEMINI_API_URL}/gemini-2.0-flash-exp:generateContent?key=${vertexKey}`;
+      const r = await axios.post(url, {
+        contents: [{ parts: [{ text: 'Generate an image: a simple red circle on white background' }] }],
+        generationConfig: { responseModalities: ['TEXT', 'IMAGE'] },
+      }, { headers: { 'Content-Type': 'application/json' }, timeout: 30000 });
 
-  for (const t of tests) {
-    try {
-      const r = await axios.post(t.url, t.body, { headers: { 'Content-Type': 'application/json' }, timeout: 30000 });
-      const hasImg = !!(r.data?.predictions?.length || r.data?.generatedImages?.length || r.data?.candidates?.[0]?.content?.parts?.some(p => p.inlineData));
-      results.push({ method: t.method, status: 200, hasImage: hasImg, keys: Object.keys(r.data || {}) });
-    } catch (err) { results.push({ method: t.method, status: err.response?.status, error: err.response?.data?.error?.message || err.message }); }
+      const parts = r.data?.candidates?.[0]?.content?.parts || [];
+      const hasImage = parts.some(p => p.inlineData?.mimeType?.startsWith('image/'));
+      results.tiers.tier1 = { status: hasImage ? 'SUCCESS' : 'NO_IMAGE', model: 'gemini-2.0-flash-exp', partsCount: parts.length };
+    } else {
+      results.tiers.tier1 = { status: 'SKIPPED', reason: 'No VERTEX_AI_API_KEY' };
+    }
+  } catch (e) {
+    results.tiers.tier1 = { status: 'FAILED', error: e.response?.data?.error?.message || e.message };
   }
-  return { keyPresent: true, keyPrefix: apiKey.slice(0, 8) + '...', results };
-}
 
-// ── Standard Groq text-only ──
-async function callGroq(systemPrompt, userPrompt, options = {}) {
-  const key = process.env.GROQ_API_KEY; if (!key) return null;
-  const maxTokens = options.maxTokens || GROQ_MAX_OUTPUT; const sysText = systemPromptToString(systemPrompt);
-  for (const model of GROQ_MODELS) {
-    try {
-      if (options.signal?.aborted) throw new Error('Generation cancelled');
-      const result = await withRetry(async () => {
-        if (options.signal?.aborted) throw new Error('Generation cancelled');
-        const r = await axios.post(GROQ_API_URL, { model, messages: [{ role: 'system', content: sysText }, { role: 'user', content: userPrompt.slice(0, MODELS.groq.contextLimit) }], temperature: 0.2, max_tokens: maxTokens }, { headers: { 'Authorization': `Bearer ${key}`, 'Content-Type': 'application/json' }, timeout: 120000 });
-        const c = r.data.choices?.[0]?.message?.content; if (c) return c; throw new Error('Empty');
-      }, { maxRetries: 1 });
-      return result;
-    } catch (err) { if (err.message === 'Generation cancelled') throw err; const s = err.response?.status; if (s === 401) break; if (s === 429) continue; throw err; }
+  // Test Tier 2
+  try {
+    const geminiKey = process.env.GEMINI_API_KEY;
+    if (geminiKey) {
+      const url = `${GEMINI_API_URL}/imagen-3.0-generate-002:predict?key=${geminiKey}`;
+      const r = await axios.post(url, {
+        instances: [{ prompt: 'a simple red circle on white background' }],
+        parameters: { sampleCount: 1 },
+      }, { headers: { 'Content-Type': 'application/json' }, timeout: 30000 });
+
+      const predictions = r.data?.predictions || [];
+      results.tiers.tier2 = { status: predictions.length > 0 ? 'SUCCESS' : 'NO_PREDICTIONS', model: 'imagen-3.0-generate-002' };
+    } else {
+      results.tiers.tier2 = { status: 'SKIPPED', reason: 'No GEMINI_API_KEY' };
+    }
+  } catch (e) {
+    results.tiers.tier2 = { status: 'FAILED', error: e.response?.data?.error?.message || e.message };
   }
-  return null;
+
+  // Test Tier 4
+  try {
+    const geminiKey = process.env.GEMINI_API_KEY;
+    if (geminiKey) {
+      const url = `${GEMINI_API_URL}/gemini-2.5-flash:generateContent?key=${geminiKey}`;
+      const r = await axios.post(url, {
+        contents: [{ parts: [{ text: 'Generate an image: a simple red circle on white background' }] }],
+        generationConfig: { responseModalities: ['TEXT', 'IMAGE'] },
+      }, { headers: { 'Content-Type': 'application/json' }, timeout: 30000 });
+
+      const parts = r.data?.candidates?.[0]?.content?.parts || [];
+      const hasImage = parts.some(p => p.inlineData?.mimeType?.startsWith('image/'));
+      results.tiers.tier4 = { status: hasImage ? 'SUCCESS' : 'NO_IMAGE', model: 'gemini-2.5-flash', partsCount: parts.length };
+    } else {
+      results.tiers.tier4 = { status: 'SKIPPED', reason: 'No GEMINI_API_KEY' };
+    }
+  } catch (e) {
+    results.tiers.tier4 = { status: 'FAILED', error: e.response?.data?.error?.message || e.message };
+  }
+
+  return results;
 }
 
-// ── Utility exports ──
-async function streamAI(sp, up, model, res) { const r = await callAI(sp, up, model); if (r) res.write(`data: ${JSON.stringify({ type: 'content', text: r })}\n\n`); res.write(`data: ${JSON.stringify({ type: 'done' })}\n\n`); return r; }
-async function analyzeCode(files, engine = 'groq') { const fs = files.slice(0, 20).map(f => `--- ${f.path || f.name} ---\n${(f.content || '').slice(0, 4000)}`).join('\n\n'); const r = await callAI('Return ONLY valid JSON array of issues.', `Analyze:\n\n${fs}`, engine); if (r) { const m = r.match(/\[[\s\S]*\]/); if (m) try { return JSON.parse(m[0]); } catch {} } return []; }
-async function verifyAndFix(files, model, opts = {}) { if (model === 'groq' || !files.length) return files; try { const r = await callAI('Return ONLY complete fixed files.', `Fix:\n\n${files.map(f => `--- ${f.name} ---\n${f.content}`).join('\n\n')}`, model, undefined, opts); const f = r ? parseFilesFromResponse(r) : []; if (f.length) return f; } catch {} return files; }
-async function generateProjectMultiStep(template, projectName, desc, color, features, engine = 'groq', opts = {}) { const all = []; const spec = getTemplateSpec(template); for (let i = 0; i < spec.phases.length; i++) { if (opts.signal?.aborted) throw new Error('Generation cancelled'); const ph = spec.phases[i]; if (opts.onProgress) opts.onProgress(`Building ${ph.name}...`); const r = await callAI(`Project Builder. "${projectName}". ${spec.tech}. ${ph.instructions} COMPLETE files only.`, `Generate: ${ph.name}`, engine, undefined, opts); if (r) all.push(...parseFilesFromResponse(r)); } return all; }
-
-function parseFilesFromResponse(response) {
-  const files = []; let m;
-  const p1 = /```filepath:([^\n]+)\n([\s\S]*?)```/g; while ((m = p1.exec(response))) { if (m[1].trim() && m[2].trim().length > 10) files.push({ name: m[1].trim(), content: m[2].trim() }); } if (files.length) return dedup(files);
-  const p2 = /```(?:javascript|jsx|tsx|typescript|json|html|css|js|ts|bash|sh|text|markdown|md)?\s+([^\n`]+\.[a-z]{1,6})\n([\s\S]*?)```/g; while ((m = p2.exec(response))) { if (m[1].trim() && m[2].trim().length > 10) files.push({ name: m[1].trim(), content: m[2].trim() }); } if (files.length) return dedup(files);
-  if (response.includes('<!DOCTYPE') || response.includes('<html')) { const h = response.match(/(<!DOCTYPE[\s\S]*<\/html>)/i); if (h?.[1]?.length > 100) files.push({ name: 'index.html', content: h[1].trim() }); }
-  return dedup(files);
+// ══════════════════════════════════════════════════════════════
+// Provider detection
+// ══════════════════════════════════════════════════════════════
+function getProvider(modelKey) {
+  if (modelKey === 'groq') return 'groq';
+  if (modelKey?.startsWith('gemini') || modelKey === 'gemini-flash' || modelKey === 'gemini-pro') return 'gemini';
+  return 'anthropic';
 }
-function dedup(files) { const s = new Map(); for (const f of files) { if (!s.has(f.name) || f.content.length > s.get(f.name).content.length) s.set(f.name, f); } return Array.from(s.values()); }
 
-async function verifyAIStatus() { return { groq: { available: !!process.env.GROQ_API_KEY }, 'gemini-2.5-flash': { available: !!(process.env.GEMINI_API_KEY || process.env.GOOGLE_AI_API_KEY) }, 'gemini-3.1-pro': { available: !!(process.env.GEMINI_API_KEY || process.env.GOOGLE_AI_API_KEY) }, 'haiku-4.5': { available: !!process.env.ANTHROPIC_API_KEY }, 'sonnet-4.6': { available: !!process.env.ANTHROPIC_API_KEY }, 'opus-4.6': { available: !!process.env.ANTHROPIC_API_KEY }, 'imagen-3': { available: !!(process.env.GEMINI_API_KEY || process.env.GOOGLE_AI_API_KEY) } }; }
-async function generateTutorial(q) { const k = process.env.GROQ_API_KEY; if (!k) return '## ZapCodes Help'; for (const m of ['llama-3.1-8b-instant', 'gemma2-9b-it']) { try { const r = await axios.post(GROQ_API_URL, { model: m, messages: [{ role: 'system', content: 'Tutorial assistant.' }, { role: 'user', content: q }], temperature: 0.7, max_tokens: 1500 }, { headers: { 'Authorization': `Bearer ${k}` }, timeout: 15000 }); return r.data.choices[0].message.content; } catch {} } return '## ZapCodes Help'; }
-function getTemplateSpec(t) { const s = { portfolio: { name: 'Portfolio', tech: 'HTML+CSS+JS inlined', phases: [{ name: 'Site', instructions: 'Portfolio. ALL inlined.', fileList: '- index.html' }] }, landing: { name: 'Landing', tech: 'HTML+CSS+JS inlined', phases: [{ name: 'Page', instructions: 'Landing page. ALL inlined.', fileList: '- index.html' }] }, blog: { name: 'Blog', tech: 'HTML+CSS+JS inlined', phases: [{ name: 'Blog', instructions: 'Blog. ALL inlined.', fileList: '- index.html' }] }, ecommerce: { name: 'E-Commerce', tech: 'HTML+CSS+JS inlined', phases: [{ name: 'Store', instructions: 'Store. ALL inlined.', fileList: '- index.html' }] }, dashboard: { name: 'Dashboard', tech: 'HTML+CSS+JS inlined', phases: [{ name: 'Dashboard', instructions: 'Dashboard. ALL inlined.', fileList: '- index.html' }] } }; return s[t] || s.portfolio; }
+// ══════════════════════════════════════════════════════════════
+// Main callAI — routes to correct provider
+// ══════════════════════════════════════════════════════════════
+async function callAI(modelKey, messages, maxTokens = 4096) {
+  const provider = getProvider(modelKey);
+  const displayName = MODEL_DISPLAY[modelKey] || modelKey;
 
-module.exports = { callAI, callAIWithImage, callGemini, callClaude, callClaudeWithImages, callGroq, callGroqWithImage, streamAI, analyzeCode, generateTutorial, generateProjectMultiStep, parseFilesFromResponse, verifyAndFix, verifyAIStatus, generateImageImagen3, testImageGeneration, MODELS, GROQ_MAX_OUTPUT, GROQ_MODELS };
+  console.log(`[AI] callAI(${modelKey}) -> provider: ${provider}, display: ${displayName}`);
+
+  switch (provider) {
+    case 'groq':
+      return callGroq(messages, maxTokens);
+    case 'gemini':
+      return callGemini(messages, maxTokens, modelKey);
+    case 'anthropic':
+      return callAnthropic(messages, maxTokens, modelKey);
+    default:
+      throw new Error(`Unknown provider for model: ${modelKey}`);
+  }
+}
+
+module.exports = {
+  callAI,
+  callAIWithImage,
+  generateImageImagen3,
+  testImageGeneration,
+  MODELS,
+  MODEL_DISPLAY,
+  getProvider,
+  estimateTokens,
+  truncateHistory,
+};
