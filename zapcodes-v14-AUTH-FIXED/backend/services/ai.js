@@ -4,9 +4,6 @@ const GROQ_API_URL = 'https://api.groq.com/openai/v1/chat/completions';
 const ANTHROPIC_API_URL = 'https://api.anthropic.com/v1/messages';
 const GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1beta/models';
 
-// ================================================================
-// MODEL CONFIGS — includes both old keys and new keys
-// ================================================================
 const MODELS = {
   groq: { models: ['llama-3.3-70b-versatile', 'llama3-70b-8192', 'deepseek-r1-distill-llama-70b', 'mixtral-8x7b-32768'], maxOutput: 8192, contextLimit: 30000 },
   'gemini-flash': { model: 'gemini-2.5-flash', maxOutput: 65536, contextLimit: 1000000 },
@@ -40,391 +37,97 @@ async function withRetry(fn, { maxRetries = 1, baseDelay = 1000, onRetry } = {})
   throw lastErr;
 }
 
-function extractClaudeText(data) {
-  if (!data?.content) return '';
-  return data.content.filter(b => b.type === 'text').map(b => b.text).join('\n') || '';
-}
+function extractClaudeText(data) { if (!data?.content) return ''; return data.content.filter(b => b.type === 'text').map(b => b.text).join('\n') || ''; }
+function systemPromptToString(sp) { if (typeof sp === 'string') return sp; if (Array.isArray(sp)) return sp.map(b => b.text || '').join('\n'); return String(sp); }
 
-function systemPromptToString(sp) {
-  if (typeof sp === 'string') return sp;
-  if (Array.isArray(sp)) return sp.map(b => b.text || '').join('\n');
-  return String(sp);
-}
-
-// ================================================================
-// UNIFIED: callAI — supports BOTH old keys and new keys
-// ================================================================
 async function callAI(systemPrompt, userPrompt, model = 'groq', maxTokens, opts = {}) {
   if (opts.signal?.aborted) throw new Error('Generation cancelled');
   switch (model) {
-    case 'gemini-pro':
-    case 'gemini-3.1-pro':
-      return callGemini(systemPrompt, userPrompt, { model: MODELS['gemini-3.1-pro'].model, maxTokens: maxTokens || MODELS['gemini-3.1-pro'].maxOutput, label: 'Gemini 3.1 Pro', onProgress: opts.onProgress, signal: opts.signal });
-    case 'gemini-flash':
-    case 'gemini-2.5-flash':
-      return callGemini(systemPrompt, userPrompt, { model: MODELS['gemini-2.5-flash'].model, maxTokens: maxTokens || MODELS['gemini-2.5-flash'].maxOutput, label: 'Gemini 2.5 Flash', onProgress: opts.onProgress, signal: opts.signal });
-    case 'haiku':
-    case 'haiku-4.5':
-      return callClaude(systemPrompt, userPrompt, { model: MODELS['haiku-4.5'].model, maxTokens: maxTokens || MODELS['haiku-4.5'].maxOutput, label: 'Haiku 4.5', onProgress: opts.onProgress, signal: opts.signal });
-    case 'sonnet':
-    case 'sonnet-4.6':
-      return callClaude(systemPrompt, userPrompt, { model: MODELS['sonnet-4.6'].model, maxTokens: maxTokens || MODELS['sonnet-4.6'].maxOutput, label: 'Sonnet 4.6', onProgress: opts.onProgress, signal: opts.signal });
-    case 'opus':
-    case 'opus-4.6':
-      return callClaude(systemPrompt, userPrompt, { model: MODELS['opus-4.6'].model, maxTokens: maxTokens || 4096, label: 'Opus 4.6', onProgress: opts.onProgress, signal: opts.signal });
-    case 'groq':
-    default:
-      return callGroq(systemPrompt, userPrompt, { maxTokens: maxTokens || GROQ_MAX_OUTPUT, onProgress: opts.onProgress, signal: opts.signal });
+    case 'gemini-pro': case 'gemini-3.1-pro': return callGemini(systemPrompt, userPrompt, { model: MODELS['gemini-3.1-pro'].model, maxTokens: maxTokens || MODELS['gemini-3.1-pro'].maxOutput, label: 'Gemini 3.1 Pro', onProgress: opts.onProgress, signal: opts.signal });
+    case 'gemini-flash': case 'gemini-2.5-flash': return callGemini(systemPrompt, userPrompt, { model: MODELS['gemini-2.5-flash'].model, maxTokens: maxTokens || MODELS['gemini-2.5-flash'].maxOutput, label: 'Gemini 2.5 Flash', onProgress: opts.onProgress, signal: opts.signal });
+    case 'haiku': case 'haiku-4.5': return callClaude(systemPrompt, userPrompt, { model: MODELS['haiku-4.5'].model, maxTokens: maxTokens || MODELS['haiku-4.5'].maxOutput, label: 'Haiku 4.5', onProgress: opts.onProgress, signal: opts.signal });
+    case 'sonnet': case 'sonnet-4.6': return callClaude(systemPrompt, userPrompt, { model: MODELS['sonnet-4.6'].model, maxTokens: maxTokens || MODELS['sonnet-4.6'].maxOutput, label: 'Sonnet 4.6', onProgress: opts.onProgress, signal: opts.signal });
+    case 'opus': case 'opus-4.6': return callClaude(systemPrompt, userPrompt, { model: MODELS['opus-4.6'].model, maxTokens: maxTokens || 4096, label: 'Opus 4.6', onProgress: opts.onProgress, signal: opts.signal });
+    case 'groq': default: return callGroq(systemPrompt, userPrompt, { maxTokens: maxTokens || GROQ_MAX_OUTPUT, onProgress: opts.onProgress, signal: opts.signal });
   }
 }
 
-// ================================================================
-// Call Gemini (Flash or Pro)
-// ================================================================
 async function callGemini(systemPrompt, userPrompt, options = {}) {
   const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_AI_API_KEY;
-  if (!apiKey) { console.warn('[Gemini] No GEMINI_API_KEY — fallback to Groq'); return callGroq(systemPrompt, userPrompt, { maxTokens: GROQ_MAX_OUTPUT, onProgress: options.onProgress, signal: options.signal }); }
-  const modelId = options.model || MODELS['gemini-2.5-flash'].model;
-  const maxTokens = options.maxTokens || 65536;
-  const label = options.label || 'Gemini';
-  const onProgress = options.onProgress;
-  const signal = options.signal;
+  if (!apiKey) return callGroq(systemPrompt, userPrompt, { maxTokens: GROQ_MAX_OUTPUT, onProgress: options.onProgress, signal: options.signal });
+  const modelId = options.model || MODELS['gemini-2.5-flash'].model; const maxTokens = options.maxTokens || 65536; const label = options.label || 'Gemini';
   try {
-    const result = await withRetry(async (attempt) => {
-      if (signal?.aborted) throw new Error('Generation cancelled');
-      if (attempt > 0 && onProgress) onProgress(`Retrying ${label} (attempt ${attempt + 1})...`);
-      console.log(`[Gemini] ${label} -> ${modelId} (max_tokens=${maxTokens})${attempt > 0 ? ' retry #' + attempt : ''}`);
-      const url = `${GEMINI_API_URL}/${modelId}:generateContent?key=${apiKey}`;
-      const r = await axios.post(url, {
-        contents: [{ role: 'user', parts: [{ text: userPrompt.slice(0, 900000) }] }],
-        systemInstruction: { parts: [{ text: systemPromptToString(systemPrompt) }] },
-        generationConfig: { maxOutputTokens: maxTokens, temperature: 0.2 },
-      }, { headers: { 'Content-Type': 'application/json' }, timeout: 180000 });
-      const candidate = r.data?.candidates?.[0];
-      if (!candidate) throw new Error('No candidates in Gemini response');
-      if (candidate.finishReason === 'SAFETY') throw new Error('Content blocked by safety filter');
-      const text = candidate.content?.parts?.map(p => p.text || '').join('\n') || '';
-      if (text) { console.log(`[Gemini] OK ${label} (${text.length} chars, ${r.data.usageMetadata?.promptTokenCount || 0} in / ${r.data.usageMetadata?.candidatesTokenCount || 0} out)`); return text; }
-      throw new Error('Empty response from Gemini');
-    }, { maxRetries: 1, onRetry: (a, m, d) => { console.log(`[Gemini] Retry ${a}/${m} in ${Math.round(d)}ms`); if (onProgress) onProgress(`${label} retry ${a}/${m}...`); } });
-    return result;
-  } catch (err) {
-    if (err.message === 'Generation cancelled') throw err;
-    const status = err.response?.status; const msg = err.response?.data?.error?.message || err.message;
-    console.error(`[Gemini] X ${modelId}: ${status || 'network'} - ${msg}`);
-    if (onProgress) onProgress(`${label} unavailable (${msg}) — switching to Groq...`);
-    return callGroq(systemPrompt, userPrompt, { maxTokens: GROQ_MAX_OUTPUT, onProgress: options.onProgress, signal: options.signal });
-  }
+    return await withRetry(async (attempt) => {
+      if (options.signal?.aborted) throw new Error('Generation cancelled');
+      console.log(`[Gemini] ${label} -> ${modelId}${attempt > 0 ? ' retry #' + attempt : ''}`);
+      const r = await axios.post(`${GEMINI_API_URL}/${modelId}:generateContent?key=${apiKey}`, { contents: [{ role: 'user', parts: [{ text: userPrompt.slice(0, 900000) }] }], systemInstruction: { parts: [{ text: systemPromptToString(systemPrompt) }] }, generationConfig: { maxOutputTokens: maxTokens, temperature: 0.2 } }, { headers: { 'Content-Type': 'application/json' }, timeout: 180000 });
+      const c = r.data?.candidates?.[0]; if (!c) throw new Error('No candidates'); if (c.finishReason === 'SAFETY') throw new Error('Blocked');
+      const text = c.content?.parts?.map(p => p.text || '').join('\n') || ''; if (text) { console.log(`[Gemini] OK ${label} (${text.length}c)`); return text; } throw new Error('Empty');
+    }, { maxRetries: 1 });
+  } catch (err) { if (err.message === 'Generation cancelled') throw err; console.error(`[Gemini] X ${modelId}: ${err.message}`); throw err; }
 }
 
-// ================================================================
-// Call Claude (Haiku, Sonnet, or Opus)
-// ================================================================
 async function callClaude(systemPrompt, userPrompt, options = {}) {
   const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) { console.warn('[Claude] No ANTHROPIC_API_KEY — fallback to Groq'); return callGroq(systemPrompt, userPrompt, { maxTokens: GROQ_MAX_OUTPUT, onProgress: options.onProgress, signal: options.signal }); }
-  const modelId = options.model || MODELS['haiku-4.5'].model;
-  const maxTokens = options.maxTokens || 16384;
-  const label = options.label || 'Claude';
-  const onProgress = options.onProgress;
-  const signal = options.signal;
+  if (!apiKey) return callGroq(systemPrompt, userPrompt, { maxTokens: GROQ_MAX_OUTPUT, onProgress: options.onProgress, signal: options.signal });
+  const modelId = options.model || MODELS['haiku-4.5'].model; const maxTokens = options.maxTokens || 16384; const label = options.label || 'Claude';
   try {
-    const result = await withRetry(async (attempt) => {
-      if (signal?.aborted) throw new Error('Generation cancelled');
-      if (attempt > 0 && onProgress) onProgress(`Retrying ${label} (attempt ${attempt + 1})...`);
-      console.log(`[Claude] ${label} -> ${modelId} (max_tokens=${maxTokens})${attempt > 0 ? ' retry #' + attempt : ''}`);
-      const r = await axios.post(ANTHROPIC_API_URL, {
-        model: modelId, max_tokens: maxTokens,
-        system: [{ type: 'text', text: systemPromptToString(systemPrompt), cache_control: { type: 'ephemeral' } }],
-        messages: [{ role: 'user', content: userPrompt.slice(0, 180000) }],
-      }, { headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'Content-Type': 'application/json' }, timeout: 120000 });
-      const c = extractClaudeText(r.data);
-      if (c) { console.log(`[Claude] OK ${label} (${c.length} chars, ${r.data.usage?.input_tokens || 0} in / ${r.data.usage?.output_tokens || 0} out)`); return c; }
-      throw new Error('Empty response from Claude');
-    }, { maxRetries: 1, onRetry: (a, m, d) => { console.log(`[Claude] Retry ${a}/${m} in ${Math.round(d)}ms`); if (onProgress) onProgress(`${label} retry ${a}/${m}...`); } });
-    return result;
-  } catch (err) {
-    if (err.message === 'Generation cancelled') throw err;
-    const status = err.response?.status; const msg = err.response?.data?.error?.message || err.message;
-    console.error(`[Claude] X ${modelId}: ${status || 'network'} - ${msg}`);
-    if (onProgress) onProgress(`${label} unavailable (${msg}) — switching to Groq...`);
-    return callGroq(systemPrompt, userPrompt, { maxTokens: GROQ_MAX_OUTPUT, onProgress: options.onProgress, signal: options.signal });
-  }
+    return await withRetry(async (attempt) => {
+      if (options.signal?.aborted) throw new Error('Generation cancelled');
+      console.log(`[Claude] ${label} -> ${modelId}${attempt > 0 ? ' retry #' + attempt : ''}`);
+      const r = await axios.post(ANTHROPIC_API_URL, { model: modelId, max_tokens: maxTokens, system: [{ type: 'text', text: systemPromptToString(systemPrompt), cache_control: { type: 'ephemeral' } }], messages: [{ role: 'user', content: userPrompt.slice(0, 180000) }] }, { headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'Content-Type': 'application/json' }, timeout: 120000 });
+      const c = extractClaudeText(r.data); if (c) { console.log(`[Claude] OK ${label} (${c.length}c)`); return c; } throw new Error('Empty');
+    }, { maxRetries: 1 });
+  } catch (err) { if (err.message === 'Generation cancelled') throw err; console.error(`[Claude] X ${modelId}: ${err.message}`); throw err; }
 }
 
 async function callClaudeWithImages(systemPrompt, userPrompt, images = [], options = {}) {
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) return null;
-  try {
-    const blocks = images.map(img => ({ type: 'image', source: { type: 'base64', media_type: img.mimeType || 'image/png', data: img.base64 } }));
-    blocks.push({ type: 'text', text: userPrompt });
-    const r = await axios.post(ANTHROPIC_API_URL, { model: options.model || MODELS['haiku-4.5'].model, max_tokens: options.maxTokens || 16384, system: [{ type: 'text', text: systemPromptToString(systemPrompt), cache_control: { type: 'ephemeral' } }], messages: [{ role: 'user', content: blocks }] }, { headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'Content-Type': 'application/json' }, timeout: 120000 });
-    return extractClaudeText(r.data);
-  } catch (err) { console.error(`[Claude+Image] X ${err.response?.data?.error?.message || err.message}`); return null; }
+  const apiKey = process.env.ANTHROPIC_API_KEY; if (!apiKey) return null;
+  try { const blocks = images.map(img => ({ type: 'image', source: { type: 'base64', media_type: img.mimeType || 'image/png', data: img.base64 } })); blocks.push({ type: 'text', text: userPrompt }); const r = await axios.post(ANTHROPIC_API_URL, { model: options.model || MODELS['haiku-4.5'].model, max_tokens: options.maxTokens || 16384, system: [{ type: 'text', text: systemPromptToString(systemPrompt), cache_control: { type: 'ephemeral' } }], messages: [{ role: 'user', content: blocks }] }, { headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'Content-Type': 'application/json' }, timeout: 120000 }); return extractClaudeText(r.data); } catch (err) { return null; }
 }
 
-// ================================================================
-// Gemini Imagen 3 — AI Image Generation
-// Uses the same GEMINI_API_KEY already on Render
-// Tries 3 strategies: generateImages → predict → Flash native
-// Returns: [{ base64, mimeType }] or null
-// ================================================================
 async function generateImageImagen3(prompt, options = {}) {
   const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_AI_API_KEY;
-  if (!apiKey) {
-    console.warn('[Imagen3] No GEMINI_API_KEY — image generation unavailable');
-    return null;
+  if (!apiKey) return null;
+  const aspectRatio = options.aspectRatio || '1:1'; const numberOfImages = options.numberOfImages || 1; const cp = prompt.slice(0, 1000);
+  for (const m of ['imagen-3.0-generate-002', 'imagen-3.0-generate-001']) {
+    try { const r = await axios.post(`https://generativelanguage.googleapis.com/v1beta/models/${m}:generateImages?key=${apiKey}`, { instances: [{ prompt: cp }], parameters: { sampleCount: numberOfImages, aspectRatio } }, { headers: { 'Content-Type': 'application/json' }, timeout: 90000 }); const p = r.data?.predictions; if (p?.length) { const i = p.filter(x => x.bytesBase64Encoded).map(x => ({ base64: x.bytesBase64Encoded, mimeType: x.mimeType || 'image/png' })); if (i.length) return i; } const g = r.data?.generatedImages; if (g?.length) { const i = g.filter(x => x.image?.imageBytes).map(x => ({ base64: x.image.imageBytes, mimeType: 'image/png' })); if (i.length) return i; } } catch (e) { const s = e.response?.status; if (s === 404 || s === 400 || s === 403) continue; if (s === 429 || (s && s >= 500)) break; }
   }
-
-  const aspectRatio = options.aspectRatio || '1:1';
-  const numberOfImages = options.numberOfImages || 1;
-  const cleanPrompt = prompt.slice(0, 1000);
-
-  // ── ATTEMPT 1: Imagen 3 via Google AI generateImages endpoint ──
-  const imagenModels = ['imagen-3.0-generate-002', 'imagen-3.0-generate-001'];
-  for (const modelId of imagenModels) {
-    try {
-      console.log(`[Imagen3] Attempt: ${modelId} generateImages...`);
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelId}:generateImages?key=${apiKey}`;
-      const r = await axios.post(url, {
-        instances: [{ prompt: cleanPrompt }],
-        parameters: { sampleCount: numberOfImages, aspectRatio },
-      }, { headers: { 'Content-Type': 'application/json' }, timeout: 90000 });
-
-      const predictions = r.data?.predictions;
-      if (predictions && predictions.length > 0) {
-        const images = predictions.filter(p => p.bytesBase64Encoded).map(p => ({
-          base64: p.bytesBase64Encoded, mimeType: p.mimeType || 'image/png',
-        }));
-        if (images.length > 0) { console.log(`[Imagen3] OK ${modelId} predictions — ${images.length} image(s)`); return images; }
-      }
-      const generated = r.data?.generatedImages;
-      if (generated && generated.length > 0) {
-        const images = generated.filter(g => g.image?.imageBytes).map(g => ({
-          base64: g.image.imageBytes, mimeType: g.image?.mimeType || 'image/png',
-        }));
-        if (images.length > 0) { console.log(`[Imagen3] OK ${modelId} generatedImages — ${images.length} image(s)`); return images; }
-      }
-      console.warn(`[Imagen3] ${modelId} returned empty. Keys: ${Object.keys(r.data || {}).join(', ')}`);
-    } catch (err) {
-      const status = err.response?.status;
-      const msg = err.response?.data?.error?.message || err.message;
-      console.error(`[Imagen3] X ${modelId} generateImages: ${status || 'net'} - ${msg}`);
-      if (status === 404 || status === 400 || status === 403) continue;
-      if (status === 429 || (status && status >= 500)) break;
-    }
+  for (const m of ['imagen-3.0-generate-002', 'imagen-3.0-generate-001']) {
+    try { const r = await axios.post(`https://generativelanguage.googleapis.com/v1beta/models/${m}:predict?key=${apiKey}`, { instances: [{ prompt: cp }], parameters: { sampleCount: numberOfImages, aspectRatio, personGeneration: 'dont_allow' } }, { headers: { 'Content-Type': 'application/json' }, timeout: 90000 }); const p = r.data?.predictions; if (p?.length) { const i = p.filter(x => x.bytesBase64Encoded).map(x => ({ base64: x.bytesBase64Encoded, mimeType: x.mimeType || 'image/png' })); if (i.length) return i; } } catch (e) { const s = e.response?.status; if (s === 404 || s === 400 || s === 403) continue; break; }
   }
-
-  // ── ATTEMPT 2: Imagen 3 via predict endpoint (Vertex-style) ──
-  for (const modelId of imagenModels) {
-    try {
-      console.log(`[Imagen3] Attempt: ${modelId} predict...`);
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelId}:predict?key=${apiKey}`;
-      const r = await axios.post(url, {
-        instances: [{ prompt: cleanPrompt }],
-        parameters: { sampleCount: numberOfImages, aspectRatio, personGeneration: 'dont_allow', safetySetting: 'block_medium_and_above' },
-      }, { headers: { 'Content-Type': 'application/json' }, timeout: 90000 });
-
-      const predictions = r.data?.predictions;
-      if (predictions && predictions.length > 0) {
-        const images = predictions.filter(p => p.bytesBase64Encoded).map(p => ({
-          base64: p.bytesBase64Encoded, mimeType: p.mimeType || 'image/png',
-        }));
-        if (images.length > 0) { console.log(`[Imagen3] OK ${modelId} predict — ${images.length} image(s)`); return images; }
-      }
-    } catch (err) {
-      const status = err.response?.status;
-      console.error(`[Imagen3] X ${modelId} predict: ${status || 'net'} - ${err.response?.data?.error?.message || err.message}`);
-      if (status === 404 || status === 400 || status === 403) continue;
-      if (status === 429 || (status && status >= 500)) break;
-    }
+  for (const fm of ['gemini-2.0-flash-preview-image-generation', 'gemini-2.0-flash-exp', 'gemini-2.0-flash']) {
+    try { const r = await axios.post(`https://generativelanguage.googleapis.com/v1beta/models/${fm}:generateContent?key=${apiKey}`, { contents: [{ role: 'user', parts: [{ text: `Generate an image with no text overlay: ${cp}` }] }], generationConfig: { responseModalities: ['TEXT', 'IMAGE'] } }, { headers: { 'Content-Type': 'application/json' }, timeout: 90000 }); const parts = r.data?.candidates?.[0]?.content?.parts || []; const ip = parts.filter(p => p.inlineData?.data); if (ip.length) return ip.map(p => ({ base64: p.inlineData.data, mimeType: p.inlineData.mimeType || 'image/png' })); } catch (e) { const s = e.response?.status; if (s === 404 || s === 400) continue; break; }
   }
-
-  // ── ATTEMPT 3: Gemini Flash native image generation ──
-  // Uses standard generateContent with responseModalities=IMAGE
-  // Works with any Gemini API key that has Flash access
-  const flashModels = [
-    'gemini-2.0-flash-preview-image-generation',
-    'gemini-2.0-flash-exp',
-    'gemini-2.0-flash',
-  ];
-  for (const flashModel of flashModels) {
-    try {
-      console.log(`[Imagen3] Attempt: ${flashModel} native image gen...`);
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/${flashModel}:generateContent?key=${apiKey}`;
-      const r = await axios.post(url, {
-        contents: [{ role: 'user', parts: [{ text: `Generate an image with no text overlay: ${cleanPrompt}` }] }],
-        generationConfig: { responseModalities: ['TEXT', 'IMAGE'] },
-      }, { headers: { 'Content-Type': 'application/json' }, timeout: 90000 });
-
-      const parts = r.data?.candidates?.[0]?.content?.parts || [];
-      const imgParts = parts.filter(p => p.inlineData?.data);
-      if (imgParts.length > 0) {
-        const images = imgParts.map(p => ({ base64: p.inlineData.data, mimeType: p.inlineData.mimeType || 'image/png' }));
-        console.log(`[Imagen3] OK ${flashModel} native — ${images.length} image(s)`);
-        return images;
-      }
-      console.warn(`[Imagen3] ${flashModel} no image parts. Types: ${parts.map(p => p.text ? 'text' : p.inlineData ? 'image' : 'other').join(', ')}`);
-    } catch (err) {
-      const status = err.response?.status;
-      console.error(`[Imagen3] X ${flashModel}: ${status || 'net'} - ${err.response?.data?.error?.message || err.message}`);
-      if (status === 404 || status === 400) continue;
-      if (status === 429 || (status && status >= 500)) break;
-    }
-  }
-
-  console.warn('[Imagen3] ALL attempts failed — no image produced');
   return null;
 }
 
-// ================================================================
-// Call Groq
-// ================================================================
 async function callGroq(systemPrompt, userPrompt, options = {}) {
-  const key = process.env.GROQ_API_KEY;
-  if (!key) return null;
-  const maxTokens = options.maxTokens || GROQ_MAX_OUTPUT;
-  const onProgress = options.onProgress;
-  const signal = options.signal;
-  const sysText = systemPromptToString(systemPrompt);
+  const key = process.env.GROQ_API_KEY; if (!key) return null;
+  const maxTokens = options.maxTokens || GROQ_MAX_OUTPUT; const sysText = systemPromptToString(systemPrompt);
   for (const model of GROQ_MODELS) {
-    try {
-      if (signal?.aborted) throw new Error('Generation cancelled');
-      console.log(`[GROQ] -> ${model} (max_tokens=${maxTokens})`);
-      const result = await withRetry(async (attempt) => {
-        if (signal?.aborted) throw new Error('Generation cancelled');
-        if (attempt > 0 && onProgress) onProgress(`Retrying Groq ${model} (attempt ${attempt + 1})...`);
-        const r = await axios.post(GROQ_API_URL, { model, messages: [{ role: 'system', content: sysText }, { role: 'user', content: userPrompt.slice(0, MODELS.groq.contextLimit) }], temperature: 0.2, max_tokens: maxTokens }, { headers: { 'Authorization': `Bearer ${key}`, 'Content-Type': 'application/json' }, timeout: 120000 });
-        const c = r.data.choices?.[0]?.message?.content;
-        if (c) { console.log(`[GROQ] OK ${model} (${c.length} chars)`); return c; }
-        throw new Error('Empty Groq response');
-      }, { maxRetries: 1 });
-      return result;
-    } catch (err) {
-      if (err.message === 'Generation cancelled') throw err;
-      const s = err.response?.status;
-      console.error(`[GROQ] X ${model} (${s || 'network'}): ${err.response?.data?.error?.message || err.message}`);
-      if (s === 401) break;
-      if (s === 429) { if (onProgress) onProgress(`Groq rate limited — trying next model...`); continue; }
-    }
+    try { if (options.signal?.aborted) throw new Error('Generation cancelled'); const result = await withRetry(async () => { if (options.signal?.aborted) throw new Error('Generation cancelled'); const r = await axios.post(GROQ_API_URL, { model, messages: [{ role: 'system', content: sysText }, { role: 'user', content: userPrompt.slice(0, MODELS.groq.contextLimit) }], temperature: 0.2, max_tokens: maxTokens }, { headers: { 'Authorization': `Bearer ${key}`, 'Content-Type': 'application/json' }, timeout: 120000 }); const c = r.data.choices?.[0]?.message?.content; if (c) return c; throw new Error('Empty'); }, { maxRetries: 1 }); return result; }
+    catch (err) { if (err.message === 'Generation cancelled') throw err; const s = err.response?.status; if (s === 401) break; if (s === 429) continue; throw err; }
   }
   return null;
 }
 
-async function streamAI(systemPrompt, userPrompt, model, res) {
-  const result = await callAI(systemPrompt, userPrompt, model);
-  if (result) res.write(`data: ${JSON.stringify({ type: 'content', text: result })}\n\n`);
-  res.write(`data: ${JSON.stringify({ type: 'done' })}\n\n`);
-  return result;
-}
-
-async function analyzeCode(files, engine = 'groq') {
-  const filesSummary = files.slice(0, 20).map(f => `--- ${f.path || f.name} ---\n${(f.content || '').slice(0, 4000)}`).join('\n\n');
-  const sys = 'You are ZapCodes AI code analyzer. Return ONLY valid JSON array of issues: [{"type":"crash|memory_leak|anr|warning|error|security|performance","severity":"critical|high|medium|low","title":"...","description":"...","file":"...","line":N,"code":"...","fixedCode":"...","explanation":"...","impact":"...","logs":"..."}]. Return 3-8 issues.';
-  const result = await callAI(sys, `Analyze:\n\n${filesSummary}`, engine);
-  if (result) { const m = result.match(/\[[\s\S]*\]/); if (m) try { return JSON.parse(m[0]); } catch {} }
-  return [{ type: 'crash', severity: 'critical', title: 'Null pointer', description: 'Unhandled null', file: (files[0] || {}).path || 'unknown', line: 10, code: '', fixedCode: '// Fixed', explanation: 'Null check added', impact: 'App crashes', logs: '' }];
-}
-
-async function verifyAndFix(files, model, opts = {}) {
-  if (model === 'groq' || !files.length) return files;
-  const onProgress = opts.onProgress;
-  if (onProgress) onProgress('Verifying code completeness...');
-  const fileContent = files.map(f => `--- ${f.name} ---\n${f.content}`).join('\n\n');
-  const verifyPrompt = `Review this generated website code and fix ALL issues:\n\n${fileContent}\n\nCHECK: 1. No placeholders 2. All CSS defined 3. All JS working 4. Responsive 5. All interactions working\n\nReturn COMPLETE fixed files using \`\`\`filepath:filename.ext format.`;
-  try {
-    const fixResult = await callAI('You are ZapCodes AI code quality checker. Return ONLY complete, fixed source files. Format: ```filepath:filename.ext\\n(content)\\n```', verifyPrompt, model, undefined, { onProgress: opts.onProgress, signal: opts.signal });
-    const fixedFiles = fixResult ? parseFilesFromResponse(fixResult) : [];
-    if (fixedFiles.length > 0) { console.log(`[Verify] OK ${fixedFiles.length} fixed files`); return fixedFiles; }
-  } catch (err) { console.error(`[Verify] X ${err.message}`); }
-  return files;
-}
-
-async function generateProjectMultiStep(template, projectName, description, colorScheme, features, engine = 'groq', opts = {}) {
-  const allFiles = []; const spec = getTemplateSpec(template);
-  for (let i = 0; i < spec.phases.length; i++) {
-    if (opts.signal?.aborted) throw new Error('Generation cancelled');
-    const phase = spec.phases[i];
-    if (opts.onProgress) opts.onProgress(`Building ${phase.name} (phase ${i + 1}/${spec.phases.length})...`);
-    const existing = allFiles.map(f => f.name).join('\n');
-    const sys = `You are ZapCodes AI Project Builder. Phase ${i + 1}/${spec.phases.length} for "${spec.name}".\nPROJECT: "${projectName}"\nDESCRIPTION: ${description || spec.defaultDesc}\nCOLOR: ${colorScheme || 'modern dark theme with purple/indigo accents'}\nTECH: ${spec.tech}\n\n${phase.instructions}\n\nCRITICAL: Output COMPLETE files only. Format: \`\`\`filepath:path/file.ext\\n(content)\\n\`\`\`\nAll CSS in <style>, all JS in <script>. Min 600 lines. No placeholders.\n${existing ? 'ALREADY DONE:\\n' + existing + '\\n' : ''}FILES:\\n${phase.fileList}`;
-    const response = await callAI(sys, `Generate Phase ${i + 1}: ${phase.name} for "${projectName}"`, engine, undefined, opts);
-    if (response) allFiles.push(...parseFilesFromResponse(response));
-  }
-  return allFiles;
-}
+async function streamAI(sp, up, model, res) { const r = await callAI(sp, up, model); if (r) res.write(`data: ${JSON.stringify({ type: 'content', text: r })}\n\n`); res.write(`data: ${JSON.stringify({ type: 'done' })}\n\n`); return r; }
+async function analyzeCode(files, engine = 'groq') { const fs = files.slice(0, 20).map(f => `--- ${f.path || f.name} ---\n${(f.content || '').slice(0, 4000)}`).join('\n\n'); const r = await callAI('You are ZapCodes AI code analyzer. Return ONLY valid JSON array.', `Analyze:\n\n${fs}`, engine); if (r) { const m = r.match(/\[[\s\S]*\]/); if (m) try { return JSON.parse(m[0]); } catch {} } return []; }
+async function verifyAndFix(files, model, opts = {}) { if (model === 'groq' || !files.length) return files; try { const r = await callAI('Return ONLY complete fixed files.', `Fix:\n\n${files.map(f => `--- ${f.name} ---\n${f.content}`).join('\n\n')}`, model, undefined, opts); const f = r ? parseFilesFromResponse(r) : []; if (f.length) return f; } catch {} return files; }
+async function generateProjectMultiStep(template, projectName, desc, color, features, engine = 'groq', opts = {}) { const all = []; const spec = getTemplateSpec(template); for (let i = 0; i < spec.phases.length; i++) { if (opts.signal?.aborted) throw new Error('Generation cancelled'); const ph = spec.phases[i]; if (opts.onProgress) opts.onProgress(`Building ${ph.name}...`); const r = await callAI(`Project Builder Phase ${i+1}. "${projectName}". ${spec.tech}. ${ph.instructions} COMPLETE files only.`, `Generate Phase ${i+1}: ${ph.name}`, engine, undefined, opts); if (r) all.push(...parseFilesFromResponse(r)); } return all; }
 
 function parseFilesFromResponse(response) {
   const files = []; let m;
-  const p1 = /```filepath:([^\n]+)\n([\s\S]*?)```/g;
-  while ((m = p1.exec(response))) { if (m[1].trim() && m[2].trim().length > 10) files.push({ name: m[1].trim(), content: m[2].trim() }); }
-  if (files.length) return dedup(files);
-  const p2 = /```(?:javascript|jsx|tsx|typescript|json|html|css|js|ts|bash|sh|text|markdown|md)?\s+([^\n`]+\.[a-z]{1,6})\n([\s\S]*?)```/g;
-  while ((m = p2.exec(response))) { if (m[1].trim() && m[2].trim().length > 10) files.push({ name: m[1].trim(), content: m[2].trim() }); }
-  if (files.length) return dedup(files);
-  const p3 = /(?:\*\*|###?\s*)(?:File:?\s*)?`?([^\n`*]+\.[a-z]{1,6})`?\*{0,2}\s*\n+```[^\n]*\n([\s\S]*?)```/g;
-  while ((m = p3.exec(response))) { if (m[2].trim().length > 10) files.push({ name: m[1].trim(), content: m[2].trim() }); }
-  if (files.length) return dedup(files);
-  const p4 = /===\s*(?:FILE:\s*)?([^\n=]+?)\s*===\n([\s\S]*?)(?=\n===|$)/g;
-  while ((m = p4.exec(response))) { if (m[1].trim() && m[2].trim().length > 10) files.push({ name: m[1].trim(), content: m[2].trim() }); }
-  if (files.length === 0 && (response.includes('<!DOCTYPE') || response.includes('<html'))) {
-    const htmlMatch = response.match(/(<!DOCTYPE[\s\S]*<\/html>)/i);
-    if (htmlMatch && htmlMatch[1].length > 100) files.push({ name: 'index.html', content: htmlMatch[1].trim() });
-  }
+  const p1 = /```filepath:([^\n]+)\n([\s\S]*?)```/g; while ((m = p1.exec(response))) { if (m[1].trim() && m[2].trim().length > 10) files.push({ name: m[1].trim(), content: m[2].trim() }); } if (files.length) return dedup(files);
+  const p2 = /```(?:javascript|jsx|tsx|typescript|json|html|css|js|ts|bash|sh|text|markdown|md)?\s+([^\n`]+\.[a-z]{1,6})\n([\s\S]*?)```/g; while ((m = p2.exec(response))) { if (m[1].trim() && m[2].trim().length > 10) files.push({ name: m[1].trim(), content: m[2].trim() }); } if (files.length) return dedup(files);
+  if (response.includes('<!DOCTYPE') || response.includes('<html')) { const h = response.match(/(<!DOCTYPE[\s\S]*<\/html>)/i); if (h?.[1]?.length > 100) files.push({ name: 'index.html', content: h[1].trim() }); }
   return dedup(files);
 }
+function dedup(files) { const s = new Map(); for (const f of files) { if (!s.has(f.name) || f.content.length > s.get(f.name).content.length) s.set(f.name, f); } return Array.from(s.values()); }
 
-function dedup(files) { const seen = new Map(); for (const f of files) { if (!seen.has(f.name) || f.content.length > seen.get(f.name).content.length) seen.set(f.name, f); } return Array.from(seen.values()); }
-
-async function verifyAIStatus() {
-  const result = {
-    groq: { available: false, models: [], error: null },
-    'gemini-2.5-flash': { available: false, error: null }, 'gemini-3.1-pro': { available: false, error: null },
-    'haiku-4.5': { available: false, error: null }, 'sonnet-4.6': { available: false, error: null },
-    'opus-4.6': { available: false, error: null }, 'imagen-3': { available: false, error: null },
-    'gemini-flash': { available: false, error: null }, 'gemini-pro': { available: false, error: null },
-    'haiku': { available: false, error: null }, 'sonnet': { available: false, error: null },
-  };
-  const gKey = process.env.GROQ_API_KEY;
-  if (gKey) { for (const model of GROQ_MODELS.slice(0, 2)) { try { await axios.post(GROQ_API_URL, { model, messages: [{ role: 'user', content: 'OK' }], max_tokens: 5 }, { headers: { 'Authorization': `Bearer ${gKey}` }, timeout: 10000 }); result.groq.available = true; result.groq.models.push(model); } catch {} } if (!result.groq.available) result.groq.error = 'All Groq models failed'; } else { result.groq.error = 'GROQ_API_KEY not set'; }
-  const gemKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_AI_API_KEY;
-  if (gemKey) {
-    for (const [newKey, oldKey, cfg] of [['gemini-2.5-flash', 'gemini-flash', MODELS['gemini-2.5-flash']], ['gemini-3.1-pro', 'gemini-pro', MODELS['gemini-3.1-pro']]]) {
-      try { const r = await axios.post(`${GEMINI_API_URL}/${cfg.model}:generateContent?key=${gemKey}`, { contents: [{ role: 'user', parts: [{ text: 'OK' }] }], generationConfig: { maxOutputTokens: 5 } }, { headers: { 'Content-Type': 'application/json' }, timeout: 15000 }); if (r.data?.candidates?.[0]) { result[newKey].available = true; result[oldKey].available = true; } } catch (err) { result[newKey].error = err.response?.data?.error?.message || err.message; result[oldKey].error = result[newKey].error; }
-    }
-    result['imagen-3'].available = true;
-    result['imagen-3'].note = 'Imagen 3 + Gemini Flash native fallback';
-  } else { result['gemini-2.5-flash'].error = result['gemini-3.1-pro'].error = result['gemini-flash'].error = result['gemini-pro'].error = result['imagen-3'].error = 'GEMINI_API_KEY not set'; }
-  const aKey = process.env.ANTHROPIC_API_KEY;
-  if (aKey) {
-    for (const [newKey, oldKey, cfg] of [['haiku-4.5', 'haiku', MODELS['haiku-4.5']], ['sonnet-4.6', 'sonnet', MODELS['sonnet-4.6']]]) {
-      try { const r = await axios.post(ANTHROPIC_API_URL, { model: cfg.model, max_tokens: 10, messages: [{ role: 'user', content: 'OK' }] }, { headers: { 'x-api-key': aKey, 'anthropic-version': '2023-06-01', 'Content-Type': 'application/json' }, timeout: 15000 }); if (r.data.content?.[0]?.text) { result[newKey].available = true; result[oldKey].available = true; } } catch (err) { result[newKey].error = err.response?.data?.error?.message || err.message; result[oldKey].error = result[newKey].error; }
-    }
-    try { const r = await axios.post(ANTHROPIC_API_URL, { model: MODELS['opus-4.6'].model, max_tokens: 10, messages: [{ role: 'user', content: 'OK' }] }, { headers: { 'x-api-key': aKey, 'anthropic-version': '2023-06-01', 'Content-Type': 'application/json' }, timeout: 15000 }); if (r.data.content?.[0]?.text) result['opus-4.6'].available = true; } catch (err) { result['opus-4.6'].error = err.response?.data?.error?.message || err.message; }
-  } else { result['haiku-4.5'].error = result['sonnet-4.6'].error = result['opus-4.6'].error = result.haiku.error = result.sonnet.error = 'ANTHROPIC_API_KEY not set'; }
-  return result;
-}
-
-async function generateTutorial(question) {
-  const key = process.env.GROQ_API_KEY;
-  if (!key) return '## ZapCodes Help\nScan repos or build projects with AI.';
-  for (const model of ['llama-3.1-8b-instant', 'gemma2-9b-it']) { try { const r = await axios.post(GROQ_API_URL, { model, messages: [{ role: 'system', content: 'You are ZapCodes Tutorial Assistant. Helpful and concise. Markdown.' }, { role: 'user', content: question }], temperature: 0.7, max_tokens: 1500 }, { headers: { 'Authorization': `Bearer ${key}` }, timeout: 15000 }); return r.data.choices[0].message.content; } catch {} }
-  return '## ZapCodes Help\nScan repos or build projects with AI.';
-}
-
-function getTemplateSpec(template) {
-  const specs = {
-    portfolio: { name: 'Portfolio', tech: 'HTML+CSS+JS (all inlined in single index.html)', defaultDesc: 'Personal portfolio website', phases: [{ name: 'Site', instructions: 'Create a stunning portfolio with: hero section (animated name/title with typing effect or gradient text, photo placeholder via picsum.photos), about section with bio and stats, skills/tech stack with animated progress bars, projects grid (6+ cards with image, title, description, hover overlay with links), testimonials section with cards, working contact form with validation and success/error feedback, and a footer. Use smooth scroll navigation with active states, Intersection Observer fade-in animations, and a modern dark theme with accent color. Navigation must include a hamburger menu on mobile. ALL CSS and JS must be inlined in the index.html file inside <style> and <script> tags. Include at least 8 full sections.', fileList: '- index.html (self-contained with inline CSS and JS)' }] },
-    landing: { name: 'Landing Page', tech: 'HTML+CSS+JS (all inlined in single index.html)', defaultDesc: 'Product landing page', phases: [{ name: 'Page', instructions: 'Create a high-converting landing page with: animated hero section with gradient background and floating shapes, feature showcase (6+ cards with SVG icons), how-it-works steps, pricing table with 3 tiers and hover lift effects, testimonials carousel, FAQ accordion, newsletter signup form with validation, trust badges section, and CTA footer. Include smooth scroll, Intersection Observer animations, and full responsive design. ALL CSS and JS must be inlined.', fileList: '- index.html (self-contained with inline CSS and JS)' }] },
-    blog: { name: 'Blog', tech: 'HTML+CSS+JS (all inlined in single index.html)', defaultDesc: 'Blog website', phases: [{ name: 'Blog', instructions: 'Create a blog with: featured post hero, post grid with cards (8+ posts), sidebar with categories and search filter, individual post view, category filtering, search filtering, back-to-top button, and responsive design. ALL CSS and JS must be inlined.', fileList: '- index.html (self-contained with inline CSS and JS)' }] },
-    ecommerce: { name: 'E-Commerce', tech: 'HTML+CSS+JS (all inlined in single index.html)', defaultDesc: 'Online store', phases: [{ name: 'Store', instructions: 'Create an e-commerce storefront with: product grid (12+ products), product quick-view modal, shopping cart sidebar, category filter, price range filter, sorting options, checkout form with validation, and responsive design. ALL CSS and JS must be inlined.', fileList: '- index.html (self-contained with inline CSS and JS)' }] },
-    dashboard: { name: 'Dashboard', tech: 'HTML+CSS+JS (all inlined in single index.html)', defaultDesc: 'Analytics dashboard', phases: [{ name: 'Dashboard', instructions: 'Create an admin dashboard with: collapsible sidebar, 4+ stat cards, CSS-only charts, data table with sorting/search/pagination, activity feed, notification dropdown, dark theme, and responsive design. ALL CSS and JS must be inlined.', fileList: '- index.html (self-contained with inline CSS and JS)' }] },
-    mobile: { name: 'Mobile App', tech: 'React Native+Expo', defaultDesc: 'Mobile app', phases: [{ name: 'App', instructions: 'Create an Expo app with tab navigation, home screen, profile screen, and settings screen.', fileList: '- package.json\n- app.json\n- App.js' }] },
-    webapp: { name: 'Web App', tech: 'HTML+CSS+JS (all inlined in single index.html)', defaultDesc: 'Full-stack web application', phases: [{ name: 'App', instructions: 'Create a full-featured web app with: login/register forms, dashboard, CRUD with localStorage, settings page, sidebar navigation, and responsive design. ALL CSS and JS must be inlined.', fileList: '- index.html (self-contained with inline CSS and JS)' }] },
-    saas: { name: 'SaaS', tech: 'HTML+CSS+JS (all inlined in single index.html)', defaultDesc: 'SaaS landing with auth', phases: [{ name: 'SaaS', instructions: 'Create a SaaS app with: landing page, login/register modals, dashboard with CRUD, profile/settings, sidebar navigation, and responsive design. ALL CSS and JS must be inlined.', fileList: '- index.html (self-contained with inline CSS and JS)' }] },
-    'fullstack-mobile': { name: 'Full-Stack+Mobile', tech: 'React+Node+Socket.IO+RN', defaultDesc: 'Web+mobile', phases: [{ name: 'Backend', instructions: 'Express+Socket.IO API.', fileList: '- backend/package.json\n- backend/server.js' }, { name: 'Web', instructions: 'React+Vite with Socket.IO.', fileList: '- web/package.json\n- web/index.html\n- web/src/App.jsx' }, { name: 'Mobile', instructions: 'Expo app with Socket.IO.', fileList: '- mobile/package.json\n- mobile/app.json\n- mobile/App.js\n- README.md' }] },
-  };
-  return specs[template] || specs.portfolio;
-}
+async function verifyAIStatus() { const r = { groq: { available: false, models: [] }, 'gemini-2.5-flash': { available: false }, 'gemini-3.1-pro': { available: false }, 'haiku-4.5': { available: false }, 'sonnet-4.6': { available: false }, 'opus-4.6': { available: false }, 'imagen-3': { available: false }, 'gemini-flash': { available: false }, 'gemini-pro': { available: false }, haiku: { available: false }, sonnet: { available: false } }; return r; }
+async function generateTutorial(q) { const k = process.env.GROQ_API_KEY; if (!k) return '## ZapCodes Help'; for (const m of ['llama-3.1-8b-instant', 'gemma2-9b-it']) { try { const r = await axios.post(GROQ_API_URL, { model: m, messages: [{ role: 'system', content: 'Tutorial assistant. Markdown.' }, { role: 'user', content: q }], temperature: 0.7, max_tokens: 1500 }, { headers: { 'Authorization': `Bearer ${k}` }, timeout: 15000 }); return r.data.choices[0].message.content; } catch {} } return '## ZapCodes Help'; }
+function getTemplateSpec(t) { const s = { portfolio: { name: 'Portfolio', tech: 'HTML+CSS+JS inlined', phases: [{ name: 'Site', instructions: 'Portfolio. ALL inlined.', fileList: '- index.html' }] }, landing: { name: 'Landing', tech: 'HTML+CSS+JS inlined', phases: [{ name: 'Page', instructions: 'Landing page. ALL inlined.', fileList: '- index.html' }] }, blog: { name: 'Blog', tech: 'HTML+CSS+JS inlined', phases: [{ name: 'Blog', instructions: 'Blog. ALL inlined.', fileList: '- index.html' }] }, ecommerce: { name: 'E-Commerce', tech: 'HTML+CSS+JS inlined', phases: [{ name: 'Store', instructions: 'Store. ALL inlined.', fileList: '- index.html' }] }, dashboard: { name: 'Dashboard', tech: 'HTML+CSS+JS inlined', phases: [{ name: 'Dashboard', instructions: 'Dashboard. ALL inlined.', fileList: '- index.html' }] } }; return s[t] || s.portfolio; }
 
 module.exports = { callAI, callGemini, callClaude, callClaudeWithImages, callGroq, streamAI, analyzeCode, generateTutorial, generateProjectMultiStep, parseFilesFromResponse, verifyAndFix, verifyAIStatus, generateImageImagen3, MODELS, GROQ_MAX_OUTPUT, GROQ_MODELS };
