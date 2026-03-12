@@ -13,12 +13,10 @@ const MODELS = {
   'gemini-pro': { model: 'gemini-2.5-pro-preview-06-05', maxOutput: 16384, contextLimit: 1000000 },
   haiku: { model: 'claude-haiku-4-5-20251001', maxOutput: 16384, contextLimit: 180000 },
   sonnet: { model: 'claude-sonnet-4-6-20260217', maxOutput: 16384, contextLimit: 200000 },
-  // NEW model key aliases (point to same configs)
   'gemini-2.5-flash': { model: 'gemini-2.5-flash', maxOutput: 65536, contextLimit: 1000000 },
   'gemini-3.1-pro': { model: 'gemini-2.5-pro-preview-06-05', maxOutput: 16384, contextLimit: 1000000 },
   'haiku-4.5': { model: 'claude-haiku-4-5-20251001', maxOutput: 16384, contextLimit: 180000 },
   'sonnet-4.6': { model: 'claude-sonnet-4-6-20260217', maxOutput: 16384, contextLimit: 200000 },
-  // Opus 4.6 — admin-only default in Help AI
   'opus-4.6': { model: 'claude-opus-4-6', maxOutput: 128000, contextLimit: 200000 },
 };
 const GROQ_MAX_OUTPUT = MODELS.groq.maxOutput;
@@ -59,30 +57,21 @@ function systemPromptToString(sp) {
 async function callAI(systemPrompt, userPrompt, model = 'groq', maxTokens, opts = {}) {
   if (opts.signal?.aborted) throw new Error('Generation cancelled');
   switch (model) {
-    // ── Gemini models (old + new keys) ──
     case 'gemini-pro':
     case 'gemini-3.1-pro':
       return callGemini(systemPrompt, userPrompt, { model: MODELS['gemini-3.1-pro'].model, maxTokens: maxTokens || MODELS['gemini-3.1-pro'].maxOutput, label: 'Gemini 3.1 Pro', onProgress: opts.onProgress, signal: opts.signal });
-
     case 'gemini-flash':
     case 'gemini-2.5-flash':
       return callGemini(systemPrompt, userPrompt, { model: MODELS['gemini-2.5-flash'].model, maxTokens: maxTokens || MODELS['gemini-2.5-flash'].maxOutput, label: 'Gemini 2.5 Flash', onProgress: opts.onProgress, signal: opts.signal });
-
-    // ── Claude models (old + new keys) ──
     case 'haiku':
     case 'haiku-4.5':
       return callClaude(systemPrompt, userPrompt, { model: MODELS['haiku-4.5'].model, maxTokens: maxTokens || MODELS['haiku-4.5'].maxOutput, label: 'Haiku 4.5', onProgress: opts.onProgress, signal: opts.signal });
-
     case 'sonnet':
     case 'sonnet-4.6':
       return callClaude(systemPrompt, userPrompt, { model: MODELS['sonnet-4.6'].model, maxTokens: maxTokens || MODELS['sonnet-4.6'].maxOutput, label: 'Sonnet 4.6', onProgress: opts.onProgress, signal: opts.signal });
-
-    // ── Opus 4.6 (admin Help AI default — ALWAYS Opus) ──
     case 'opus':
     case 'opus-4.6':
       return callClaude(systemPrompt, userPrompt, { model: MODELS['opus-4.6'].model, maxTokens: maxTokens || 4096, label: 'Opus 4.6', onProgress: opts.onProgress, signal: opts.signal });
-
-    // ── Groq (default for non-admin) ──
     case 'groq':
     default:
       return callGroq(systemPrompt, userPrompt, { maxTokens: maxTokens || GROQ_MAX_OUTPUT, onProgress: opts.onProgress, signal: opts.signal });
@@ -177,6 +166,7 @@ async function callClaudeWithImages(systemPrompt, userPrompt, images = [], optio
 // ================================================================
 // Gemini Imagen 3 — AI Image Generation
 // Uses the same GEMINI_API_KEY already on Render
+// Tries 3 strategies: generateImages → predict → Flash native
 // Returns: [{ base64, mimeType }] or null
 // ================================================================
 async function generateImageImagen3(prompt, options = {}) {
@@ -188,100 +178,102 @@ async function generateImageImagen3(prompt, options = {}) {
 
   const aspectRatio = options.aspectRatio || '1:1';
   const numberOfImages = options.numberOfImages || 1;
+  const cleanPrompt = prompt.slice(0, 1000);
 
-  // ── Attempt 1: Imagen 3 predict endpoint (older format) ──
-  const predictModels = ['imagen-3.0-generate-002', 'imagen-3.0-generate-001'];
-  for (const modelId of predictModels) {
+  // ── ATTEMPT 1: Imagen 3 via Google AI generateImages endpoint ──
+  const imagenModels = ['imagen-3.0-generate-002', 'imagen-3.0-generate-001'];
+  for (const modelId of imagenModels) {
     try {
-      console.log(`[Imagen3] predict ${modelId}: "${prompt.slice(0, 80)}..."`);
-      const url = `${GEMINI_API_URL}/${modelId}:predict?key=${apiKey}`;
+      console.log(`[Imagen3] Attempt: ${modelId} generateImages...`);
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelId}:generateImages?key=${apiKey}`;
       const r = await axios.post(url, {
-        instances: [{ prompt: prompt.slice(0, 1000) }],
-        parameters: {
-          sampleCount: numberOfImages,
-          aspectRatio,
-          personGeneration: 'dont_allow',
-          safetySetting: 'block_medium_and_above',
-        },
-      }, { headers: { 'Content-Type': 'application/json' }, timeout: 60000 });
+        instances: [{ prompt: cleanPrompt }],
+        parameters: { sampleCount: numberOfImages, aspectRatio },
+      }, { headers: { 'Content-Type': 'application/json' }, timeout: 90000 });
 
       const predictions = r.data?.predictions;
       if (predictions && predictions.length > 0) {
         const images = predictions.filter(p => p.bytesBase64Encoded).map(p => ({
-          base64: p.bytesBase64Encoded,
-          mimeType: p.mimeType || 'image/png',
+          base64: p.bytesBase64Encoded, mimeType: p.mimeType || 'image/png',
         }));
-        if (images.length > 0) {
-          console.log(`[Imagen3] OK predict ${modelId} — ${images.length} image(s)`);
-          return images;
-        }
+        if (images.length > 0) { console.log(`[Imagen3] OK ${modelId} predictions — ${images.length} image(s)`); return images; }
       }
+      const generated = r.data?.generatedImages;
+      if (generated && generated.length > 0) {
+        const images = generated.filter(g => g.image?.imageBytes).map(g => ({
+          base64: g.image.imageBytes, mimeType: g.image?.mimeType || 'image/png',
+        }));
+        if (images.length > 0) { console.log(`[Imagen3] OK ${modelId} generatedImages — ${images.length} image(s)`); return images; }
+      }
+      console.warn(`[Imagen3] ${modelId} returned empty. Keys: ${Object.keys(r.data || {}).join(', ')}`);
     } catch (err) {
       const status = err.response?.status;
       const msg = err.response?.data?.error?.message || err.message;
-      console.error(`[Imagen3] X predict ${modelId}: ${status || 'net'} - ${msg}`);
+      console.error(`[Imagen3] X ${modelId} generateImages: ${status || 'net'} - ${msg}`);
+      if (status === 404 || status === 400 || status === 403) continue;
+      if (status === 429 || (status && status >= 500)) break;
+    }
+  }
+
+  // ── ATTEMPT 2: Imagen 3 via predict endpoint (Vertex-style) ──
+  for (const modelId of imagenModels) {
+    try {
+      console.log(`[Imagen3] Attempt: ${modelId} predict...`);
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelId}:predict?key=${apiKey}`;
+      const r = await axios.post(url, {
+        instances: [{ prompt: cleanPrompt }],
+        parameters: { sampleCount: numberOfImages, aspectRatio, personGeneration: 'dont_allow', safetySetting: 'block_medium_and_above' },
+      }, { headers: { 'Content-Type': 'application/json' }, timeout: 90000 });
+
+      const predictions = r.data?.predictions;
+      if (predictions && predictions.length > 0) {
+        const images = predictions.filter(p => p.bytesBase64Encoded).map(p => ({
+          base64: p.bytesBase64Encoded, mimeType: p.mimeType || 'image/png',
+        }));
+        if (images.length > 0) { console.log(`[Imagen3] OK ${modelId} predict — ${images.length} image(s)`); return images; }
+      }
+    } catch (err) {
+      const status = err.response?.status;
+      console.error(`[Imagen3] X ${modelId} predict: ${status || 'net'} - ${err.response?.data?.error?.message || err.message}`);
+      if (status === 404 || status === 400 || status === 403) continue;
+      if (status === 429 || (status && status >= 500)) break;
+    }
+  }
+
+  // ── ATTEMPT 3: Gemini Flash native image generation ──
+  // Uses standard generateContent with responseModalities=IMAGE
+  // Works with any Gemini API key that has Flash access
+  const flashModels = [
+    'gemini-2.0-flash-preview-image-generation',
+    'gemini-2.0-flash-exp',
+    'gemini-2.0-flash',
+  ];
+  for (const flashModel of flashModels) {
+    try {
+      console.log(`[Imagen3] Attempt: ${flashModel} native image gen...`);
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${flashModel}:generateContent?key=${apiKey}`;
+      const r = await axios.post(url, {
+        contents: [{ role: 'user', parts: [{ text: `Generate an image with no text overlay: ${cleanPrompt}` }] }],
+        generationConfig: { responseModalities: ['TEXT', 'IMAGE'] },
+      }, { headers: { 'Content-Type': 'application/json' }, timeout: 90000 });
+
+      const parts = r.data?.candidates?.[0]?.content?.parts || [];
+      const imgParts = parts.filter(p => p.inlineData?.data);
+      if (imgParts.length > 0) {
+        const images = imgParts.map(p => ({ base64: p.inlineData.data, mimeType: p.inlineData.mimeType || 'image/png' }));
+        console.log(`[Imagen3] OK ${flashModel} native — ${images.length} image(s)`);
+        return images;
+      }
+      console.warn(`[Imagen3] ${flashModel} no image parts. Types: ${parts.map(p => p.text ? 'text' : p.inlineData ? 'image' : 'other').join(', ')}`);
+    } catch (err) {
+      const status = err.response?.status;
+      console.error(`[Imagen3] X ${flashModel}: ${status || 'net'} - ${err.response?.data?.error?.message || err.message}`);
       if (status === 404 || status === 400) continue;
       if (status === 429 || (status && status >= 500)) break;
     }
   }
 
-  // ── Attempt 2: generateImages endpoint (newer API format) ──
-  for (const modelId of predictModels) {
-    try {
-      console.log(`[Imagen3] generateImages ${modelId}...`);
-      const url = `${GEMINI_API_URL}/${modelId}:generateImages?key=${apiKey}`;
-      const r = await axios.post(url, {
-        prompt: prompt.slice(0, 1000),
-        config: {
-          numberOfImages,
-          aspectRatio,
-          personGeneration: 'DONT_ALLOW',
-        },
-      }, { headers: { 'Content-Type': 'application/json' }, timeout: 60000 });
-
-      const generated = r.data?.generatedImages;
-      if (generated && generated.length > 0) {
-        const images = generated.filter(g => g.image?.imageBytes).map(g => ({
-          base64: g.image.imageBytes,
-          mimeType: 'image/png',
-        }));
-        if (images.length > 0) {
-          console.log(`[Imagen3] OK generateImages ${modelId} — ${images.length} image(s)`);
-          return images;
-        }
-      }
-    } catch (err) {
-      const status = err.response?.status;
-      console.error(`[Imagen3] X generateImages ${modelId}: ${err.response?.data?.error?.message || err.message}`);
-      if (status === 404 || status === 400) continue;
-      break;
-    }
-  }
-
-  // ── Attempt 3: Gemini 2.0 Flash native image generation ──
-  try {
-    console.log('[Imagen3] Trying Gemini 2.0 Flash image gen...');
-    const url = `${GEMINI_API_URL}/gemini-2.0-flash-exp:generateContent?key=${apiKey}`;
-    const r = await axios.post(url, {
-      contents: [{ role: 'user', parts: [{ text: `Generate an image: ${prompt.slice(0, 500)}` }] }],
-      generationConfig: { responseModalities: ['TEXT', 'IMAGE'] },
-    }, { headers: { 'Content-Type': 'application/json' }, timeout: 60000 });
-
-    const parts = r.data?.candidates?.[0]?.content?.parts || [];
-    const imgParts = parts.filter(p => p.inlineData?.data);
-    if (imgParts.length > 0) {
-      const images = imgParts.map(p => ({
-        base64: p.inlineData.data,
-        mimeType: p.inlineData.mimeType || 'image/png',
-      }));
-      console.log(`[Imagen3] OK Flash native — ${images.length} image(s)`);
-      return images;
-    }
-  } catch (err) {
-    console.error(`[Imagen3] X Flash native: ${err.response?.data?.error?.message || err.message}`);
-  }
-
-  console.warn('[Imagen3] All attempts failed — no image generated');
+  console.warn('[Imagen3] ALL attempts failed — no image produced');
   return null;
 }
 
@@ -387,17 +379,11 @@ function dedup(files) { const seen = new Map(); for (const f of files) { if (!se
 async function verifyAIStatus() {
   const result = {
     groq: { available: false, models: [], error: null },
-    'gemini-2.5-flash': { available: false, error: null },
-    'gemini-3.1-pro': { available: false, error: null },
-    'haiku-4.5': { available: false, error: null },
-    'sonnet-4.6': { available: false, error: null },
-    'opus-4.6': { available: false, error: null },
-    'imagen-3': { available: false, error: null },
-    // Legacy aliases
-    'gemini-flash': { available: false, error: null },
-    'gemini-pro': { available: false, error: null },
-    'haiku': { available: false, error: null },
-    'sonnet': { available: false, error: null },
+    'gemini-2.5-flash': { available: false, error: null }, 'gemini-3.1-pro': { available: false, error: null },
+    'haiku-4.5': { available: false, error: null }, 'sonnet-4.6': { available: false, error: null },
+    'opus-4.6': { available: false, error: null }, 'imagen-3': { available: false, error: null },
+    'gemini-flash': { available: false, error: null }, 'gemini-pro': { available: false, error: null },
+    'haiku': { available: false, error: null }, 'sonnet': { available: false, error: null },
   };
   const gKey = process.env.GROQ_API_KEY;
   if (gKey) { for (const model of GROQ_MODELS.slice(0, 2)) { try { await axios.post(GROQ_API_URL, { model, messages: [{ role: 'user', content: 'OK' }], max_tokens: 5 }, { headers: { 'Authorization': `Bearer ${gKey}` }, timeout: 10000 }); result.groq.available = true; result.groq.models.push(model); } catch {} } if (!result.groq.available) result.groq.error = 'All Groq models failed'; } else { result.groq.error = 'GROQ_API_KEY not set'; }
@@ -406,15 +392,14 @@ async function verifyAIStatus() {
     for (const [newKey, oldKey, cfg] of [['gemini-2.5-flash', 'gemini-flash', MODELS['gemini-2.5-flash']], ['gemini-3.1-pro', 'gemini-pro', MODELS['gemini-3.1-pro']]]) {
       try { const r = await axios.post(`${GEMINI_API_URL}/${cfg.model}:generateContent?key=${gemKey}`, { contents: [{ role: 'user', parts: [{ text: 'OK' }] }], generationConfig: { maxOutputTokens: 5 } }, { headers: { 'Content-Type': 'application/json' }, timeout: 15000 }); if (r.data?.candidates?.[0]) { result[newKey].available = true; result[oldKey].available = true; } } catch (err) { result[newKey].error = err.response?.data?.error?.message || err.message; result[oldKey].error = result[newKey].error; }
     }
-    // Check Imagen 3 availability
-    result['imagen-3'].available = true; // Assume available if Gemini key exists — actual gen may still fail
+    result['imagen-3'].available = true;
+    result['imagen-3'].note = 'Imagen 3 + Gemini Flash native fallback';
   } else { result['gemini-2.5-flash'].error = result['gemini-3.1-pro'].error = result['gemini-flash'].error = result['gemini-pro'].error = result['imagen-3'].error = 'GEMINI_API_KEY not set'; }
   const aKey = process.env.ANTHROPIC_API_KEY;
   if (aKey) {
     for (const [newKey, oldKey, cfg] of [['haiku-4.5', 'haiku', MODELS['haiku-4.5']], ['sonnet-4.6', 'sonnet', MODELS['sonnet-4.6']]]) {
       try { const r = await axios.post(ANTHROPIC_API_URL, { model: cfg.model, max_tokens: 10, messages: [{ role: 'user', content: 'OK' }] }, { headers: { 'x-api-key': aKey, 'anthropic-version': '2023-06-01', 'Content-Type': 'application/json' }, timeout: 15000 }); if (r.data.content?.[0]?.text) { result[newKey].available = true; result[oldKey].available = true; } } catch (err) { result[newKey].error = err.response?.data?.error?.message || err.message; result[oldKey].error = result[newKey].error; }
     }
-    // Opus 4.6 (admin-only, separate check)
     try { const r = await axios.post(ANTHROPIC_API_URL, { model: MODELS['opus-4.6'].model, max_tokens: 10, messages: [{ role: 'user', content: 'OK' }] }, { headers: { 'x-api-key': aKey, 'anthropic-version': '2023-06-01', 'Content-Type': 'application/json' }, timeout: 15000 }); if (r.data.content?.[0]?.text) result['opus-4.6'].available = true; } catch (err) { result['opus-4.6'].error = err.response?.data?.error?.message || err.message; }
   } else { result['haiku-4.5'].error = result['sonnet-4.6'].error = result['opus-4.6'].error = result.haiku.error = result.sonnet.error = 'ANTHROPIC_API_KEY not set'; }
   return result;
