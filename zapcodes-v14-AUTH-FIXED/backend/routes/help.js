@@ -5,17 +5,25 @@ const { callAI } = require('../services/ai');
 const User = require('../models/User');
 
 // ══════════════════════════════════════════════════════════════
-// ZapCodes Help AI — Tier-based chat support with memory
-// Conversations persist in user's MongoDB document
+// ZapCodes Help AI — Tier-based chat + code file delivery
+// - Persistent conversations in MongoDB
+// - AI returns downloadable complete code files
+// - Real-time sync via Socket.IO (web ↔ mobile)
+// - Admin default: Claude Opus 4.6
 // ══════════════════════════════════════════════════════════════
 
-// Tier → AI model config
 const HELP_AI_CONFIG = {
-  free:    { primary: 'groq',             fallback: 'gemini-2.5-flash', maxFileSize: 0,                canUpload: false, maxHistory: 20,  maxStored: 200 },
-  bronze:  { primary: 'groq',             fallback: 'gemini-2.5-flash', maxFileSize: 2 * 1024 * 1024,  canUpload: true,  maxHistory: 30,  maxStored: 300 },
-  silver:  { primary: 'gemini-2.5-flash', fallback: 'gemini-3.1-pro',   maxFileSize: 5 * 1024 * 1024,  canUpload: true,  maxHistory: 40,  maxStored: 400 },
-  gold:    { primary: 'gemini-2.5-flash', fallback: 'gemini-3.1-pro',   maxFileSize: 10 * 1024 * 1024, canUpload: true,  maxHistory: 40,  maxStored: 500 },
-  diamond: { primary: 'gemini-3.1-pro',   fallback: 'sonnet-4.6',        maxFileSize: 25 * 1024 * 1024, canUpload: true,  maxHistory: 50,  maxStored: 1000 },
+  free:    { primary: 'groq',             fallback: 'gemini-2.5-flash', maxFileSize: 0,                canUpload: false, maxHistory: 20,  maxStored: 200,  maxOut: 2048 },
+  bronze:  { primary: 'groq',             fallback: 'gemini-2.5-flash', maxFileSize: 2 * 1024 * 1024,  canUpload: true,  maxHistory: 30,  maxStored: 300,  maxOut: 4096 },
+  silver:  { primary: 'gemini-2.5-flash', fallback: 'gemini-3.1-pro',   maxFileSize: 5 * 1024 * 1024,  canUpload: true,  maxHistory: 40,  maxStored: 400,  maxOut: 8192 },
+  gold:    { primary: 'gemini-2.5-flash', fallback: 'gemini-3.1-pro',   maxFileSize: 10 * 1024 * 1024, canUpload: true,  maxHistory: 40,  maxStored: 500,  maxOut: 16384 },
+  diamond: { primary: 'gemini-3.1-pro',   fallback: 'sonnet-4.6',       maxFileSize: 25 * 1024 * 1024, canUpload: true,  maxHistory: 50,  maxStored: 1000, maxOut: 16384 },
+};
+
+const ADMIN_CONFIG = {
+  primary: 'opus-4.6', fallback: 'sonnet-4.6',
+  maxFileSize: 100 * 1024 * 1024, canUpload: true,
+  maxHistory: 100, maxStored: Infinity, maxOut: 32000,
 };
 
 const MODEL_DISPLAY = {
@@ -24,218 +32,212 @@ const MODEL_DISPLAY = {
   'haiku-4.5': 'Haiku 4.5', 'opus-4.6': 'Claude Opus 4.6',
 };
 
-// Admin gets all models including Opus 4.6 (Opus is ONLY available to admin)
-const ADMIN_MODELS = ['groq', 'gemini-2.5-flash', 'gemini-3.1-pro', 'haiku-4.5', 'sonnet-4.6', 'opus-4.6'];
+const ADMIN_MODELS = ['opus-4.6', 'sonnet-4.6', 'gemini-3.1-pro', 'haiku-4.5', 'gemini-2.5-flash', 'groq'];
 
-// ── System Prompts ──
-const HELP_SYSTEM_PROMPT = `You are ZapCodes Help AI — a friendly, knowledgeable support assistant for ZapCodes.net (AI website builder) and BlendLink.net (social commerce platform).
+// ── Code file instructions (appended to all system prompts) ──
+const CODE_RULES = `
+RETURNING CODE FILES — CRITICAL RULES:
+When the user asks you to fix, update, build, or add features to code, you MUST return COMPLETE ready-to-paste files.
 
-Your personality:
-- Warm, helpful, and conversational — talk like a friendly human support agent, not a robot
-- Explain things simply. Avoid jargon unless the user is technical.
-- Give direct, actionable answers — 2-4 paragraphs max unless user asks for detail
-- Use occasional emojis naturally (not excessively)
-- If you don't know something specific, say so honestly
-- Remember past conversations — reference them naturally when relevant ("Last time you asked about...")
+Format each file EXACTLY like this:
+\`\`\`filepath:filename.ext
+(entire file content — every single line)
+\`\`\`
 
-What you help with:
-- Building websites with ZapCodes AI (prompts, templates, editing, fixing bugs)
+Rules:
+1. Return the ENTIRE file — not snippets, not diffs, not "add this after line 42"
+2. NEVER use "// ... rest of code" or "// unchanged" or any placeholder
+3. The user copies your file and pastes it into GitHub. Partial code = useless
+4. Multiple files = multiple \`\`\`filepath: blocks
+5. After code blocks, briefly explain what changed and why`;
+
+const HELP_SYSTEM_PROMPT = `You are ZapCodes Help AI — a friendly support assistant and coding partner for ZapCodes.net (AI website builder) and BlendLink.net (social commerce platform).
+
+Personality: Warm, helpful, conversational. Explain simply. Use emojis sparingly. Remember past conversations.
+
+You help with:
+- Building/editing/fixing websites with ZapCodes AI
 - Deploying sites to .zapcodes.net subdomains
-- Subscription tiers: Free, Bronze ($4.99/mo), Silver ($14.99/mo), Gold ($39.99/mo), Diamond ($99.99/mo)
-- BL Coins: virtual currency for AI generations, code fixes, GitHub pushes
-- Daily BL Coin claims: Free=2K, Bronze=20K, Silver=80K, Gold=200K, Diamond=500K
-- AI models per tier (Free: Groq+Flash, Bronze: +Pro trial, Silver: +Haiku, Gold: +Sonnet, Diamond: all unlimited)
-- Edit mode: preserves existing website, only changes what user asks
-- Fix Bugs: goes to Build tab, AI fixes bugs without changing design
-- Form submissions: contact forms on deployed sites email the site owner automatically
-- BlendLink: marketplace, photo minting, casino games, referral program
-- Account settings, GitHub integration, PWA installable app
+- Subscriptions: Free, Bronze ($4.99), Silver ($14.99), Gold ($39.99), Diamond ($99.99)
+- BL Coins: daily claims (Free=2K, Bronze=20K, Silver=80K, Gold=200K, Diamond=500K)
+- AI models, edit mode, fix bugs, form submissions, BlendLink features, account settings
+- FIXING/UPDATING CODE — return complete files users can paste directly into GitHub
 
-Pricing details if asked:
-- Free: 2K BL/day, Groq + Gemini Flash, 1 site, basic features
-- Bronze ($4.99): 20K BL/day, + Gemini Pro trial, 3 sites, file uploads in Help AI
-- Silver ($14.99): 80K BL/day, + Haiku 4.5, 10 sites, badge removal
-- Gold ($39.99): 200K BL/day, + Sonnet 4.6, 25 sites, PWA support, priority
-- Diamond ($99.99): 500K BL/day, all models unlimited, 100 sites, white-label ready
+${CODE_RULES}
 
-IMPORTANT: You are a ZapCodes/BlendLink specialist. Keep answers focused on helping users succeed with these platforms. If asked about unrelated topics, briefly answer but gently redirect to how you can help with their ZapCodes projects.`;
+Stay focused on ZapCodes/BlendLink help. For unrelated topics, briefly answer then redirect.`;
 
-const ADMIN_SYSTEM_PROMPT = `You are ZapCodes Admin AI — an unrestricted advanced assistant for the platform administrator. You can:
-- Answer ANY question on ANY topic (tech, business, strategy, coding, marketing, legal, etc.)
-- Recommend external tools, services, and solutions outside ZapCodes/BlendLink
-- Provide detailed technical analysis, architecture advice, code reviews
-- Help with business strategy, competitor analysis, pricing, growth tactics
-- Assist with debugging, deployment, server configuration, DevOps
-- Discuss anything — no topic restrictions
+const ADMIN_SYSTEM_PROMPT = `You are ZapCodes Admin AI — the admin's senior development partner. You work as a team. No restrictions on topics.
+
+Your approach:
+- Return COMPLETE ready-to-paste files for every code request
+- Be direct, technical, thorough — like a real senior dev teammate
+- Give honest opinions, push back when something won't work
+- Remember all past conversations and build on previous work
+- Recommend external tools/services when appropriate
+
+${CODE_RULES}
 
 Platform knowledge:
 - Stack: Node.js/Express backend, React 19/Vite frontend, MongoDB Atlas, Render + Cloudflare Pages
-- AI: Groq (llama-3.3-70b), Gemini 2.5 Flash, Gemini 3.1 Pro, Haiku 4.5, Sonnet 4.6
+- AI: Groq, Gemini Flash, Gemini Pro, Haiku 4.5, Sonnet 4.6, Opus 4.6
 - Repo: github.com/zapcodesnet/Zapcodes/tree/main/zapcodes-v14-AUTH-FIXED
-- Features: AI builder, staging architecture, form submissions, BL Coins, Stripe payments, referral system
+- 5 subscription tiers, BL Coin economy, Stripe payments, referral system
+- The admin does not write code — you return complete files, admin pastes into GitHub`;
 
-Be direct, technical when appropriate, and give your honest opinions. The admin knows what they're doing.`;
+// ── Extract code files from AI response ──
+function extractCodeFiles(text) {
+  const files = [];
+  const p1 = /```filepath:([^\n]+)\n([\s\S]*?)```/g;
+  let m;
+  while ((m = p1.exec(text)) !== null) {
+    if (m[1].trim() && m[2].trim().length > 5) files.push({ name: m[1].trim(), content: m[2].trim() });
+  }
+  if (files.length) return files;
+  const p2 = /```(?:javascript|jsx|tsx|typescript|json|html|css|js|ts|python|py|bash|sh|text|markdown|md)?\s+([^\n`]+\.[a-z]{1,6})\n([\s\S]*?)```/g;
+  while ((m = p2.exec(text)) !== null) {
+    if (m[1].trim() && m[2].trim().length > 5) files.push({ name: m[1].trim(), content: m[2].trim() });
+  }
+  return files;
+}
+
+function stripCodeBlocks(text) {
+  return text
+    .replace(/```filepath:[^\n]+\n[\s\S]*?```/g, '[📄 File attached below]')
+    .replace(/```(?:javascript|jsx|tsx|typescript|json|html|css|js|ts|python|py|bash|sh|text|markdown|md)?\s+[^\n`]+\.[a-z]{1,6}\n[\s\S]*?```/g, '[📄 File attached below]')
+    .replace(/\[📄 File attached below\](\s*\[📄 File attached below\])+/g, '[📄 Files attached below]')
+    .trim();
+}
 
 // ══════════ GET /api/help/config ══════════
 router.get('/config', auth, (req, res) => {
   const tier = req.user.subscription_tier || 'free';
   const isAdmin = req.user.role === 'super-admin';
-  const config = HELP_AI_CONFIG[tier] || HELP_AI_CONFIG.free;
-
+  const config = isAdmin ? ADMIN_CONFIG : (HELP_AI_CONFIG[tier] || HELP_AI_CONFIG.free);
   res.json({
     tier, isAdmin,
-    canUpload: config.canUpload || isAdmin,
-    maxFileSize: isAdmin ? 100 * 1024 * 1024 : config.maxFileSize,
-    maxFileSizeMB: isAdmin ? 100 : Math.round(config.maxFileSize / (1024 * 1024)),
+    canUpload: config.canUpload,
+    maxFileSize: config.maxFileSize,
+    maxFileSizeMB: Math.round(config.maxFileSize / (1024 * 1024)),
     primaryModel: MODEL_DISPLAY[config.primary] || config.primary,
+    defaultModel: isAdmin ? 'opus-4.6' : null,
     availableModels: isAdmin ? ADMIN_MODELS.map(m => ({ id: m, name: MODEL_DISPLAY[m] || m })) : null,
   });
 });
 
-// ══════════ GET /api/help/history — Load saved conversations ══════════
+// ══════════ GET /api/help/history ══════════
 router.get('/history', auth, (req, res) => {
-  const history = req.user.help_chat_history || [];
-  res.json({ messages: history });
+  res.json({ messages: req.user.help_chat_history || [] });
 });
 
-// ══════════ DELETE /api/help/history — Clear conversation history ══════════
+// ══════════ DELETE /api/help/history ══════════
 router.delete('/history', auth, async (req, res) => {
-  try {
-    req.user.help_chat_history = [];
-    await req.user.save();
-    res.json({ success: true });
-  } catch { res.status(500).json({ error: 'Failed to clear history' }); }
+  try { req.user.help_chat_history = []; await req.user.save(); res.json({ success: true }); }
+  catch { res.status(500).json({ error: 'Failed to clear history' }); }
 });
 
-// ══════════ POST /api/help/chat — Main chat endpoint with memory ══════════
+// ══════════ POST /api/help/chat ══════════
 router.post('/chat', auth, async (req, res) => {
   try {
     const user = req.user;
-    const tier = user.subscription_tier || 'free';
     const isAdmin = user.role === 'super-admin';
-    const config = HELP_AI_CONFIG[tier] || HELP_AI_CONFIG.free;
-
+    const tier = user.subscription_tier || 'free';
+    const config = isAdmin ? ADMIN_CONFIG : (HELP_AI_CONFIG[tier] || HELP_AI_CONFIG.free);
     const { message, model: requestedModel, fileData, fileType, fileName } = req.body;
 
-    if (!message || !message.trim()) {
-      return res.status(400).json({ error: 'Message is required' });
-    }
+    if (!message || !message.trim()) return res.status(400).json({ error: 'Message is required' });
 
-    // ── Select model ──
+    // ── Model selection (admin defaults to Opus 4.6) ──
     let primaryModel = config.primary;
     let fallbackModel = config.fallback;
-
-    // Only admin can override model
     if (isAdmin && requestedModel && ADMIN_MODELS.includes(requestedModel)) {
       primaryModel = requestedModel;
       fallbackModel = null;
     }
 
-    // ── System prompt ──
+    const maxTokens = config.maxOut || 4096;
     const systemPrompt = isAdmin ? ADMIN_SYSTEM_PROMPT : HELP_SYSTEM_PROMPT;
 
-    // ── Load persistent history from DB ──
-    const savedHistory = user.help_chat_history || [];
-    const recentHistory = savedHistory.slice(-config.maxHistory);
-
+    // ── Persistent history ──
+    const recentHistory = (user.help_chat_history || []).slice(-config.maxHistory);
     let userMessage = message;
 
-    // ── Handle file/image upload ──
+    // ── File upload ──
     if (fileData && fileType && fileName) {
-      if (!config.canUpload && !isAdmin) {
-        return res.status(403).json({ error: 'File uploads require Bronze tier or higher. Upgrade to unlock!' });
-      }
+      if (!config.canUpload) return res.status(403).json({ error: 'File uploads require Bronze tier or higher.' });
       const rawSize = Math.round(fileData.length * 0.75);
-      const maxSize = isAdmin ? 100 * 1024 * 1024 : config.maxFileSize;
-      if (rawSize > maxSize) {
-        const maxMB = Math.round(maxSize / (1024 * 1024));
-        return res.status(413).json({ error: `File too large. Your ${tier} plan allows up to ${maxMB}MB.` });
-      }
+      if (rawSize > config.maxFileSize) return res.status(413).json({ error: `File too large. Max ${Math.round(config.maxFileSize / (1024 * 1024))}MB for ${tier}.` });
 
       if (fileType.startsWith('image/')) {
-        if (primaryModel === 'groq') {
-          primaryModel = 'gemini-2.5-flash';
-          fallbackModel = 'gemini-3.1-pro';
-        }
+        if (primaryModel === 'groq') { primaryModel = 'gemini-2.5-flash'; fallbackModel = 'gemini-3.1-pro'; }
         userMessage = `[User uploaded image: ${fileName}]\n\n${message}`;
       } else {
         try {
-          const textContent = Buffer.from(fileData, 'base64').toString('utf-8');
-          userMessage = `[User uploaded file: ${fileName}]\n\nFile contents:\n\`\`\`\n${textContent.slice(0, 50000)}\n\`\`\`\n\nUser's question: ${message}`;
-        } catch {
-          userMessage = `[User uploaded file: ${fileName} — could not read as text]\n\n${message}`;
-        }
+          const text = Buffer.from(fileData, 'base64').toString('utf-8');
+          userMessage = `[User uploaded file: ${fileName}]\n\nFile contents:\n\`\`\`\n${text.slice(0, 80000)}\n\`\`\`\n\nUser's request: ${message}`;
+        } catch { userMessage = `[User uploaded file: ${fileName} — could not read]\n\n${message}`; }
       }
     }
 
-    // ── Build context with persistent history ──
+    // ── Build context ──
     let contextPrompt = '';
     if (recentHistory.length > 0) {
-      contextPrompt = 'Previous conversation:\n\n';
-      contextPrompt += recentHistory.map(m =>
-        `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content.slice(0, 500)}`
-      ).join('\n\n');
-      contextPrompt += `\n\n---\nCurrent message:\nUser: ${userMessage}`;
+      contextPrompt = 'Previous conversation:\n\n' +
+        recentHistory.map(m => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content.slice(0, 800)}`).join('\n\n') +
+        `\n\n---\nCurrent message:\nUser: ${userMessage}`;
     } else {
       contextPrompt = userMessage;
     }
 
-    // ── Call AI with fallback ──
-    // callAI now routes all models including opus-4.6 with correct model ID
+    // ── Call AI ──
     let response = null;
     let usedModel = primaryModel;
 
-    try {
-      response = await callAI(systemPrompt, contextPrompt, primaryModel, 4096);
-    } catch (err) {
-      console.error(`[HelpAI] Primary ${primaryModel} failed: ${err.message}`);
-    }
+    try { response = await callAI(systemPrompt, contextPrompt, primaryModel, maxTokens); }
+    catch (err) { console.error(`[HelpAI] Primary ${primaryModel} failed: ${err.message}`); }
 
     if (!response && fallbackModel) {
       usedModel = fallbackModel;
       console.log(`[HelpAI] Falling back ${primaryModel} → ${fallbackModel}`);
-      try {
-        response = await callAI(systemPrompt, contextPrompt, fallbackModel, 4096);
-      } catch (err) {
-        console.error(`[HelpAI] Fallback ${fallbackModel} also failed: ${err.message}`);
-      }
+      try { response = await callAI(systemPrompt, contextPrompt, fallbackModel, maxTokens); }
+      catch (err) { console.error(`[HelpAI] Fallback also failed: ${err.message}`); }
     }
 
-    if (!response) {
-      return res.status(500).json({ error: "I'm having trouble right now. Please try again in a moment." });
-    }
+    if (!response) return res.status(500).json({ error: "I'm having trouble right now. Please try again in a moment." });
 
-    // ── Save to persistent history ──
+    // ── Extract code files ──
+    const codeFiles = extractCodeFiles(response);
+    const textReply = codeFiles.length > 0 ? stripCodeBlocks(response) : response;
+
+    // ── Save history ──
     if (!user.help_chat_history) user.help_chat_history = [];
+    user.help_chat_history.push({ role: 'user', content: message + (fileName ? ` [📎 ${fileName}]` : ''), timestamp: new Date() });
+    user.help_chat_history.push({ role: 'assistant', content: response, model: MODEL_DISPLAY[usedModel] || usedModel, timestamp: new Date() });
 
-    // Save user message (without file data to keep DB small)
-    user.help_chat_history.push({
-      role: 'user',
-      content: message + (fileName ? ` [📎 ${fileName}]` : ''),
-      timestamp: new Date(),
-    });
-
-    // Save AI response
-    user.help_chat_history.push({
-      role: 'assistant',
-      content: response,
-      model: MODEL_DISPLAY[usedModel] || usedModel,
-      timestamp: new Date(),
-    });
-
-    // Trim to max stored messages (admin = unlimited)
     const maxStored = isAdmin ? Infinity : (config.maxStored || 200);
     if (maxStored !== Infinity && user.help_chat_history.length > maxStored) {
       user.help_chat_history = user.help_chat_history.slice(-maxStored);
     }
-
     await user.save();
 
-    res.json({
-      reply: response,
-      model: MODEL_DISPLAY[usedModel] || usedModel,
-    });
+    // ── Real-time sync to all user devices via Socket.IO ──
+    try {
+      const io = req.app.get('io');
+      if (io) {
+        io.to(`user-${user._id}`).emit('help-ai-message', {
+          role: 'assistant', content: textReply,
+          model: MODEL_DISPLAY[usedModel] || usedModel,
+          files: codeFiles, timestamp: new Date(),
+        });
+      }
+    } catch {}
 
+    res.json({
+      reply: textReply,
+      fullReply: response,
+      model: MODEL_DISPLAY[usedModel] || usedModel,
+      files: codeFiles,
+    });
   } catch (err) {
     console.error('[HelpAI] Error:', err.message);
     res.status(500).json({ error: 'Something went wrong. Please try again.' });
