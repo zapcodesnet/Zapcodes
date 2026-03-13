@@ -178,6 +178,13 @@ const userSchema = new mongoose.Schema({
   // { 'opus-4.6': [...messages], 'sonnet-4.6': [...messages], ... }
   help_chat_histories: { type: mongoose.Schema.Types.Mixed, default: {} },
 
+  // ══════════ ZapCodes Help AI — Compressed Conversation Summaries ══════════
+  // Gemini 2.5 Flash auto-compresses every 20 messages into summaries
+  // Admin: { 'opus-4.6': [{text, messageCount, createdAt}], 'sonnet-4.6': [...] }
+  // Non-admin: { 'default': [{text, messageCount, createdAt}] }
+  // Max 10 summaries per key. Oldest auto-deleted when 11th is created.
+  help_chat_summaries: { type: mongoose.Schema.Types.Mixed, default: {} },
+
   // Legacy usage
   scansUsed: { type: Number, default: 0 },
   scansLimit: { type: Number, default: 5 },
