@@ -11,7 +11,6 @@ const MODELS = {
   'haiku-4.5': { model: 'claude-haiku-4-5-20251001', maxOutput: 16384, contextLimit: 180000 },
   'sonnet-4.6': { model: 'claude-sonnet-4-6-20260217', maxOutput: 16384, contextLimit: 200000 },
   'opus-4.6': { model: 'claude-opus-4-6', maxOutput: 128000, contextLimit: 200000 },
-  // Legacy aliases
   'gemini-flash': { model: 'gemini-2.5-flash', maxOutput: 65536, contextLimit: 1000000 },
   'gemini-pro': { model: 'gemini-2.5-pro-preview-06-05', maxOutput: 16384, contextLimit: 1000000 },
   haiku: { model: 'claude-haiku-4-5-20251001', maxOutput: 16384, contextLimit: 180000 },
@@ -53,13 +52,12 @@ async function callAI(systemPrompt, userPrompt, model = 'groq', maxTokens, opts 
 }
 
 // ================================================================
-// callAIWithImage — Send image to ANY model's vision API
+// callAIWithImage — Send image to ANY model's vision API (AI SEES the image)
 // ================================================================
 async function callAIWithImage(systemPrompt, userPrompt, images, model = 'groq', maxTokens, opts = {}) {
   if (!images || images.length === 0) return callAI(systemPrompt, userPrompt, model, maxTokens, opts);
   const sysText = systemPromptToString(systemPrompt);
 
-  // ── CLAUDE vision ──
   if (['opus', 'opus-4.6', 'sonnet', 'sonnet-4.6', 'haiku', 'haiku-4.5'].includes(model)) {
     const apiKey = process.env.ANTHROPIC_API_KEY;
     if (!apiKey) return callGroqWithImage(sysText, userPrompt, images, { maxTokens: maxTokens || GROQ_MAX_OUTPUT });
@@ -72,7 +70,6 @@ async function callAIWithImage(systemPrompt, userPrompt, images, model = 'groq',
     } catch (err) { if (err.message === 'Generation cancelled') throw err; console.error(`[Claude+Vision] X: ${err.response?.data?.error?.message || err.message}`); throw err; }
   }
 
-  // ── GEMINI vision ──
   if (['gemini-flash', 'gemini-2.5-flash', 'gemini-pro', 'gemini-3.1-pro'].includes(model)) {
     const apiKey = process.env.GEMINI_API_KEY; if (!apiKey) return callGroqWithImage(sysText, userPrompt, images, { maxTokens: maxTokens || GROQ_MAX_OUTPUT });
     let modelId; switch (model) { case 'gemini-pro': case 'gemini-3.1-pro': modelId = MODELS['gemini-3.1-pro'].model; break; default: modelId = MODELS['gemini-2.5-flash'].model; }
@@ -84,7 +81,6 @@ async function callAIWithImage(systemPrompt, userPrompt, images, model = 'groq',
     } catch (err) { if (err.message === 'Generation cancelled') throw err; console.error(`[Gemini+Vision] X: ${err.response?.data?.error?.message || err.message}`); throw err; }
   }
 
-  // ── GROQ vision ──
   return callGroqWithImage(sysText, userPrompt, images, { maxTokens: maxTokens || GROQ_MAX_OUTPUT, signal: opts.signal });
 }
 
@@ -92,8 +88,8 @@ async function callGroqWithImage(systemText, userPrompt, images, options = {}) {
   const key = process.env.GROQ_API_KEY; if (!key) throw new Error('No GROQ_API_KEY');
   const blocks = []; for (const img of images) blocks.push({ type: 'image_url', image_url: { url: `data:${img.mimeType || 'image/png'};base64,${img.base64}` } }); blocks.push({ type: 'text', text: userPrompt });
   for (const vm of GROQ_VISION_MODELS) {
-    try { console.log(`[Groq+Vision] ${vm}`); const r = await axios.post(GROQ_API_URL, { model: vm, messages: [{ role: 'system', content: systemText }, { role: 'user', content: blocks }], temperature: 0.2, max_tokens: options.maxTokens || GROQ_MAX_OUTPUT }, { headers: { 'Authorization': `Bearer ${key}`, 'Content-Type': 'application/json' }, timeout: 120000 }); const c = r.data.choices?.[0]?.message?.content; if (c) { console.log(`[Groq+Vision] OK (${c.length}c)`); return c; } }
-    catch (err) { const s = err.response?.status; console.error(`[Groq+Vision] X ${vm}: ${s}`); if (s === 401) break; }
+    try { const r = await axios.post(GROQ_API_URL, { model: vm, messages: [{ role: 'system', content: systemText }, { role: 'user', content: blocks }], temperature: 0.2, max_tokens: options.maxTokens || GROQ_MAX_OUTPUT }, { headers: { 'Authorization': `Bearer ${key}`, 'Content-Type': 'application/json' }, timeout: 120000 }); const c = r.data.choices?.[0]?.message?.content; if (c) { console.log(`[Groq+Vision] OK (${c.length}c)`); return c; } }
+    catch (err) { const s = err.response?.status; if (s === 401) break; }
   }
   throw new Error('All Groq vision models failed');
 }
@@ -145,16 +141,49 @@ async function callGroq(systemPrompt, userPrompt, options = {}) {
 }
 
 // ================================================================
-// IMAGE GENERATION
+// IMAGE EDITING — Sends user's original photo + edit instruction
+// to gemini-3.1-flash-image-preview so it EDITS the actual photo
+// instead of generating a completely new image
 //
-// VERTEX_AI_API_KEY = billing-enabled key for image generation
-// GEMINI_API_KEY = text-only key (no billing, no image gen)
-//
-// Strategy (VERTEX_AI_API_KEY):
-//   1. gemini-3.1-flash-image-preview — THE model from Vertex AI Studio
-//   2. Imagen 3 (imagen-3.0-generate-002) — Vertex body format
-//   3. Imagen 3 — Google AI body format
-//   4. GEMINI_API_KEY fallback (if billing added later)
+// sourceImage = { base64, mimeType } — the user's uploaded photo
+// editPrompt = "add Super Saiyan hair to the person"
+// ================================================================
+async function editImage(sourceImage, editPrompt) {
+  const vertexKey = process.env.VERTEX_AI_API_KEY;
+  if (!vertexKey) { console.warn('[ImageEdit] No VERTEX_AI_API_KEY'); return null; }
+  if (!sourceImage?.base64) { console.warn('[ImageEdit] No source image'); return null; }
+
+  try {
+    console.log(`[ImageEdit] gemini-3.1-flash-image-preview — editing uploaded photo...`);
+    const url = `${GEMINI_API_URL}/gemini-3.1-flash-image-preview:generateContent?key=${vertexKey}`;
+    const r = await axios.post(url, {
+      contents: [{
+        role: 'user',
+        parts: [
+          { inlineData: { mimeType: sourceImage.mimeType || 'image/jpeg', data: sourceImage.base64 } },
+          { text: `Edit this exact photo: ${editPrompt}. Keep the same person, same background, same pose. Only apply the requested edit. Return the edited photo.` },
+        ],
+      }],
+      generationConfig: { responseModalities: ['TEXT', 'IMAGE'], temperature: 0.8 },
+    }, { headers: { 'Content-Type': 'application/json' }, timeout: 120000 });
+
+    const parts = r.data?.candidates?.[0]?.content?.parts || [];
+    const imgParts = parts.filter(p => p.inlineData?.data);
+    if (imgParts.length > 0) {
+      console.log(`[ImageEdit] SUCCESS — edited photo returned (${imgParts.length} image(s))`);
+      return imgParts.map(p => ({ base64: p.inlineData.data, mimeType: p.inlineData.mimeType || 'image/png' }));
+    }
+    console.warn(`[ImageEdit] No image in response. Parts: ${parts.map(p => p.text ? 'text' : 'other').join(',')}`);
+    return null;
+  } catch (err) {
+    console.error(`[ImageEdit] FAIL: ${err.response?.status} — ${(err.response?.data?.error?.message || err.message).slice(0, 200)}`);
+    return null;
+  }
+}
+
+// ================================================================
+// IMAGE GENERATION — Creates NEW images from text descriptions
+// Uses VERTEX_AI_API_KEY with gemini-3.1-flash-image-preview
 // ================================================================
 async function generateImageImagen3(prompt, options = {}) {
   const vertexKey = process.env.VERTEX_AI_API_KEY;
@@ -164,142 +193,53 @@ async function generateImageImagen3(prompt, options = {}) {
   const cleanPrompt = prompt.slice(0, 1000);
   const errors = [];
 
-  // ══════════════════════════════════════════════════════════
   // ATTEMPT 1: gemini-3.1-flash-image-preview via VERTEX_AI_API_KEY
-  // This is the EXACT model shown working in Vertex AI Studio
-  // Uses generateContent with responseModalities: ['TEXT', 'IMAGE']
-  // ══════════════════════════════════════════════════════════
   if (vertexKey) {
     try {
-      console.log(`[ImageGen] ATTEMPT 1: gemini-3.1-flash-image-preview + VERTEX_AI_API_KEY`);
-      const url = `${GEMINI_API_URL}/gemini-3.1-flash-image-preview:generateContent?key=${vertexKey}`;
-      const r = await axios.post(url, {
+      console.log(`[ImageGen] gemini-3.1-flash-image-preview + VERTEX_AI_API_KEY`);
+      const r = await axios.post(`${GEMINI_API_URL}/gemini-3.1-flash-image-preview:generateContent?key=${vertexKey}`, {
         contents: [{ role: 'user', parts: [{ text: `Generate an image: ${cleanPrompt}` }] }],
         generationConfig: { responseModalities: ['TEXT', 'IMAGE'], temperature: 0.8 },
       }, { headers: { 'Content-Type': 'application/json' }, timeout: 90000 });
-
       const parts = r.data?.candidates?.[0]?.content?.parts || [];
-      const imgParts = parts.filter(p => p.inlineData?.data && p.inlineData?.mimeType?.startsWith('image/'));
-      if (imgParts.length > 0) {
-        console.log(`[ImageGen] SUCCESS — gemini-3.1-flash-image-preview (${imgParts.length} image(s))`);
-        return imgParts.map(p => ({ base64: p.inlineData.data, mimeType: p.inlineData.mimeType || 'image/png' }));
-      }
-      // Check if there's inlineData without explicit mimeType check
-      const anyInline = parts.filter(p => p.inlineData?.data);
-      if (anyInline.length > 0) {
-        console.log(`[ImageGen] SUCCESS — gemini-3.1-flash-image-preview (${anyInline.length} inline data)`);
-        return anyInline.map(p => ({ base64: p.inlineData.data, mimeType: p.inlineData.mimeType || 'image/png' }));
-      }
-      errors.push({ model: 'gemini-3.1-flash-image-preview', status: 200, note: `No images. Parts: ${parts.map(p => p.text ? 'text' : p.inlineData ? 'data' : 'other').join(',')}` });
-    } catch (err) {
-      const s = err.response?.status; const msg = (err.response?.data?.error?.message || err.message).slice(0, 200);
-      errors.push({ model: 'gemini-3.1-flash-image-preview', status: s, error: msg });
-      console.error(`[ImageGen] ATTEMPT 1 FAIL: ${s} — ${msg}`);
-    }
+      const imgParts = parts.filter(p => p.inlineData?.data);
+      if (imgParts.length) { console.log(`[ImageGen] SUCCESS — gemini-3.1-flash-image-preview`); return imgParts.map(p => ({ base64: p.inlineData.data, mimeType: p.inlineData.mimeType || 'image/png' })); }
+      errors.push({ model: 'gemini-3.1-flash-image-preview', status: 200, note: 'No images' });
+    } catch (err) { errors.push({ model: 'gemini-3.1-flash-image-preview', status: err.response?.status, error: (err.response?.data?.error?.message || err.message).slice(0, 150) }); }
   }
 
-  // ══════════════════════════════════════════════════════════
-  // ATTEMPT 2: Imagen 3 via VERTEX_AI_API_KEY (Vertex body format)
-  // ══════════════════════════════════════════════════════════
+  // ATTEMPT 2: Imagen 3 via VERTEX_AI_API_KEY
   if (vertexKey) {
     for (const mid of ['imagen-3.0-generate-002', 'imagen-3.0-generate-001']) {
       try {
-        console.log(`[ImageGen] ATTEMPT 2: ${mid} + VERTEX_AI_API_KEY (vertex format)`);
-        const r = await axios.post(`${GEMINI_API_URL}/${mid}:predict?key=${vertexKey}`, {
-          instances: [{ prompt: cleanPrompt }],
-          parameters: { sampleCount: options.numberOfImages || 1, aspectRatio: options.aspectRatio || '1:1', personGeneration: 'dont_allow' },
-        }, { headers: { 'Content-Type': 'application/json' }, timeout: 90000 });
-        if (r.data?.predictions?.length) {
-          const imgs = r.data.predictions.filter(p => p.bytesBase64Encoded).map(p => ({ base64: p.bytesBase64Encoded, mimeType: p.mimeType || 'image/png' }));
-          if (imgs.length) { console.log(`[ImageGen] SUCCESS — ${mid} (vertex format)`); return imgs; }
-        }
-        errors.push({ model: mid, method: 'vertex-fmt', status: 200, note: 'Empty predictions' });
-      } catch (err) {
-        const s = err.response?.status; errors.push({ model: mid, method: 'vertex-fmt', status: s, error: (err.response?.data?.error?.message || err.message).slice(0, 150) });
-        console.error(`[ImageGen] ATTEMPT 2 ${mid}: ${s} — ${(err.response?.data?.error?.message || err.message).slice(0, 100)}`);
-        if (s === 429 || (s && s >= 500)) break;
-      }
+        console.log(`[ImageGen] ${mid} + VERTEX_AI_API_KEY`);
+        const r = await axios.post(`${GEMINI_API_URL}/${mid}:predict?key=${vertexKey}`, { instances: [{ prompt: cleanPrompt }], parameters: { sampleCount: options.numberOfImages || 1, aspectRatio: options.aspectRatio || '1:1', personGeneration: 'dont_allow' } }, { headers: { 'Content-Type': 'application/json' }, timeout: 90000 });
+        if (r.data?.predictions?.length) { const imgs = r.data.predictions.filter(p => p.bytesBase64Encoded).map(p => ({ base64: p.bytesBase64Encoded, mimeType: 'image/png' })); if (imgs.length) { console.log(`[ImageGen] SUCCESS — ${mid}`); return imgs; } }
+      } catch (err) { errors.push({ model: mid, status: err.response?.status, error: (err.response?.data?.error?.message || err.message).slice(0, 150) }); if (err.response?.status === 429) break; }
     }
   }
 
-  // ══════════════════════════════════════════════════════════
-  // ATTEMPT 3: Imagen 3 via VERTEX_AI_API_KEY (Google AI body format)
-  // ══════════════════════════════════════════════════════════
-  if (vertexKey) {
-    try {
-      console.log(`[ImageGen] ATTEMPT 3: imagen-3.0-generate-002 + VERTEX_AI_API_KEY (google-ai format)`);
-      const r = await axios.post(`${GEMINI_API_URL}/imagen-3.0-generate-002:predict?key=${vertexKey}`, {
-        prompt: cleanPrompt,
-        config: { numberOfImages: options.numberOfImages || 1, aspectRatio: options.aspectRatio || '1:1', personGeneration: 'DONT_ALLOW', outputOptions: { mimeType: 'image/png' } },
-      }, { headers: { 'Content-Type': 'application/json' }, timeout: 90000 });
-      if (r.data?.predictions?.length) {
-        const imgs = r.data.predictions.filter(p => p.bytesBase64Encoded).map(p => ({ base64: p.bytesBase64Encoded, mimeType: 'image/png' }));
-        if (imgs.length) { console.log(`[ImageGen] SUCCESS — imagen google-ai format`); return imgs; }
-      }
-      if (r.data?.generatedImages?.length) {
-        const imgs = r.data.generatedImages.filter(g => g.image?.imageBytes).map(g => ({ base64: g.image.imageBytes, mimeType: 'image/png' }));
-        if (imgs.length) { console.log(`[ImageGen] SUCCESS — imagen generatedImages`); return imgs; }
-      }
-    } catch (err) { errors.push({ model: 'imagen-google-fmt', status: err.response?.status, error: (err.response?.data?.error?.message || err.message).slice(0, 150) }); }
-  }
-
-  // ══════════════════════════════════════════════════════════
-  // ATTEMPT 4: Imagen 3 via GEMINI_API_KEY (fallback)
-  // ══════════════════════════════════════════════════════════
+  // ATTEMPT 3: Imagen 3 via GEMINI_API_KEY
   if (geminiKey && geminiKey !== vertexKey) {
     try {
-      console.log(`[ImageGen] ATTEMPT 4: imagen + GEMINI_API_KEY`);
-      const r = await axios.post(`${GEMINI_API_URL}/imagen-3.0-generate-002:predict?key=${geminiKey}`, {
-        instances: [{ prompt: cleanPrompt }], parameters: { sampleCount: 1 },
-      }, { headers: { 'Content-Type': 'application/json' }, timeout: 60000 });
-      if (r.data?.predictions?.length) {
-        const imgs = r.data.predictions.filter(p => p.bytesBase64Encoded).map(p => ({ base64: p.bytesBase64Encoded, mimeType: 'image/png' }));
-        if (imgs.length) { console.log(`[ImageGen] SUCCESS — gemini-key imagen`); return imgs; }
-      }
-    } catch (err) { errors.push({ model: 'imagen-gemini-key', status: err.response?.status, error: (err.response?.data?.error?.message || err.message).slice(0, 100) }); }
+      const r = await axios.post(`${GEMINI_API_URL}/imagen-3.0-generate-002:predict?key=${geminiKey}`, { instances: [{ prompt: cleanPrompt }], parameters: { sampleCount: 1 } }, { headers: { 'Content-Type': 'application/json' }, timeout: 60000 });
+      if (r.data?.predictions?.length) { const imgs = r.data.predictions.filter(p => p.bytesBase64Encoded).map(p => ({ base64: p.bytesBase64Encoded, mimeType: 'image/png' })); if (imgs.length) return imgs; }
+    } catch (err) { errors.push({ model: 'imagen-gemini-key', status: err.response?.status }); }
   }
 
-  console.warn(`[ImageGen] ALL ${errors.length} attempts failed:`);
-  errors.forEach((e, i) => console.warn(`  ${i + 1}. ${e.model}: ${e.status || 'net'} — ${e.error || e.note}`));
+  console.warn(`[ImageGen] ALL ${errors.length} attempts failed`);
+  errors.forEach((e, i) => console.warn(`  ${i + 1}. ${e.model}: ${e.status || 'net'} — ${e.error || e.note || '?'}`));
   return null;
 }
 
-// ── Diagnostic endpoint ──
+// ── Diagnostic ──
 async function testImageGeneration() {
-  const vertexKey = process.env.VERTEX_AI_API_KEY;
-  const geminiKey = process.env.GEMINI_API_KEY;
+  const vertexKey = process.env.VERTEX_AI_API_KEY; const geminiKey = process.env.GEMINI_API_KEY;
   const results = []; const tp = 'a blue circle on white background';
-
-  // Test gemini-3.1-flash-image-preview with VERTEX_AI_API_KEY
   if (vertexKey) {
-    try {
-      const r = await axios.post(`${GEMINI_API_URL}/gemini-3.1-flash-image-preview:generateContent?key=${vertexKey}`, {
-        contents: [{ role: 'user', parts: [{ text: `Generate image: ${tp}` }] }],
-        generationConfig: { responseModalities: ['TEXT', 'IMAGE'] },
-      }, { timeout: 60000 });
-      const parts = r.data?.candidates?.[0]?.content?.parts || [];
-      const hasImage = parts.some(p => p.inlineData);
-      results.push({ method: 'gemini-3.1-flash-image-preview+VERTEX_KEY', status: 200, hasImage, partTypes: parts.map(p => p.text ? 'text' : p.inlineData ? 'IMAGE' : 'other') });
-    } catch (e) { results.push({ method: 'gemini-3.1-flash-image-preview+VERTEX_KEY', status: e.response?.status, error: (e.response?.data?.error?.message || e.message).slice(0, 200) }); }
-
-    // Test Imagen 3 with VERTEX_AI_API_KEY
-    try {
-      const r = await axios.post(`${GEMINI_API_URL}/imagen-3.0-generate-002:predict?key=${vertexKey}`, {
-        instances: [{ prompt: tp }], parameters: { sampleCount: 1 },
-      }, { timeout: 30000 });
-      results.push({ method: 'imagen-3+VERTEX_KEY', status: 200, hasImage: !!r.data?.predictions?.length });
-    } catch (e) { results.push({ method: 'imagen-3+VERTEX_KEY', status: e.response?.status, error: (e.response?.data?.error?.message || e.message).slice(0, 200) }); }
+    try { const r = await axios.post(`${GEMINI_API_URL}/gemini-3.1-flash-image-preview:generateContent?key=${vertexKey}`, { contents: [{ role: 'user', parts: [{ text: `Generate: ${tp}` }] }], generationConfig: { responseModalities: ['TEXT', 'IMAGE'] } }, { timeout: 60000 }); const parts = r.data?.candidates?.[0]?.content?.parts || []; results.push({ method: 'gemini-3.1-flash-image-preview', status: 200, hasImage: parts.some(p => p.inlineData) }); } catch (e) { results.push({ method: 'gemini-3.1-flash-image-preview', status: e.response?.status, error: (e.response?.data?.error?.message || e.message).slice(0, 200) }); }
+    try { const r = await axios.post(`${GEMINI_API_URL}/imagen-3.0-generate-002:predict?key=${vertexKey}`, { instances: [{ prompt: tp }], parameters: { sampleCount: 1 } }, { timeout: 30000 }); results.push({ method: 'imagen-3+VERTEX', status: 200, hasImage: !!r.data?.predictions?.length }); } catch (e) { results.push({ method: 'imagen-3+VERTEX', status: e.response?.status, error: (e.response?.data?.error?.message || e.message).slice(0, 200) }); }
   }
-
-  if (geminiKey) {
-    try {
-      const r = await axios.post(`${GEMINI_API_URL}/imagen-3.0-generate-002:predict?key=${geminiKey}`, {
-        instances: [{ prompt: tp }], parameters: { sampleCount: 1 },
-      }, { timeout: 30000 });
-      results.push({ method: 'imagen-3+GEMINI_KEY', status: 200, hasImage: !!r.data?.predictions?.length });
-    } catch (e) { results.push({ method: 'imagen-3+GEMINI_KEY', status: e.response?.status, error: (e.response?.data?.error?.message || e.message).slice(0, 200) }); }
-  }
-
   return { vertexKeyPresent: !!vertexKey, geminiKeyPresent: !!geminiKey, results };
 }
 
@@ -322,4 +262,4 @@ async function verifyAIStatus() { return { groq: { available: !!process.env.GROQ
 async function generateTutorial(q) { const k = process.env.GROQ_API_KEY; if (!k) return '## ZapCodes Help'; for (const m of ['llama-3.1-8b-instant', 'gemma2-9b-it']) { try { const r = await axios.post(GROQ_API_URL, { model: m, messages: [{ role: 'system', content: 'Tutorial assistant.' }, { role: 'user', content: q }], temperature: 0.7, max_tokens: 1500 }, { headers: { 'Authorization': `Bearer ${k}` }, timeout: 15000 }); return r.data.choices[0].message.content; } catch {} } return '## ZapCodes Help'; }
 function getTemplateSpec(t) { const s = { portfolio: { name: 'Portfolio', tech: 'HTML+CSS+JS inlined', phases: [{ name: 'Site', instructions: 'Portfolio. ALL inlined.', fileList: '- index.html' }] }, landing: { name: 'Landing', tech: 'HTML+CSS+JS inlined', phases: [{ name: 'Page', instructions: 'Landing page. ALL inlined.', fileList: '- index.html' }] }, blog: { name: 'Blog', tech: 'HTML+CSS+JS inlined', phases: [{ name: 'Blog', instructions: 'Blog. ALL inlined.', fileList: '- index.html' }] }, ecommerce: { name: 'E-Commerce', tech: 'HTML+CSS+JS inlined', phases: [{ name: 'Store', instructions: 'Store. ALL inlined.', fileList: '- index.html' }] }, dashboard: { name: 'Dashboard', tech: 'HTML+CSS+JS inlined', phases: [{ name: 'Dashboard', instructions: 'Dashboard. ALL inlined.', fileList: '- index.html' }] } }; return s[t] || s.portfolio; }
 
-module.exports = { callAI, callAIWithImage, callGemini, callClaude, callGroq, callGroqWithImage, streamAI, analyzeCode, generateTutorial, generateProjectMultiStep, parseFilesFromResponse, verifyAndFix, verifyAIStatus, generateImageImagen3, testImageGeneration, MODELS, GROQ_MAX_OUTPUT, GROQ_MODELS };
+module.exports = { callAI, callAIWithImage, callGemini, callClaude, callGroq, callGroqWithImage, editImage, streamAI, analyzeCode, generateTutorial, generateProjectMultiStep, parseFilesFromResponse, verifyAndFix, verifyAIStatus, generateImageImagen3, testImageGeneration, MODELS, GROQ_MAX_OUTPUT, GROQ_MODELS };
