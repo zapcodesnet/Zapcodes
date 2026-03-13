@@ -20,6 +20,7 @@ export default function HelpAI() {
   const [imageZoom, setImageZoom] = useState(null);
   const [loadingHistory, setLoadingHistory] = useState(false);
   const [switchNotice, setSwitchNotice] = useState(null);
+  const [copiedMsgId, setCopiedMsgId] = useState(null);
 
   const chatEndRef = useRef(null);
   const fileInputRef = useRef(null);
@@ -162,6 +163,36 @@ export default function HelpAI() {
   const downloadFile = (f) => { const b = new Blob([f.content], { type: 'text/plain' }); const u = URL.createObjectURL(b); const a = document.createElement('a'); a.href = u; a.download = f.name; a.click(); URL.revokeObjectURL(u); };
   const downloadAllFiles = (files) => files.forEach(f => downloadFile(f));
   const copyFile = (f) => navigator.clipboard.writeText(f.content);
+  const copyMessage = (text, msgId) => { navigator.clipboard.writeText(text).then(() => { setCopiedMsgId(msgId || 'temp'); setTimeout(() => setCopiedMsgId(null), 1500); }).catch(() => {}); };
+  const retryMessage = useCallback(async () => {
+    if (loading) return;
+    const lastUserIdx = messages.findLastIndex(m => m.role === 'user');
+    if (lastUserIdx === -1) return;
+    const retryContent = messages[lastUserIdx].content;
+    // Remove last user message + everything after it (AI response, errors)
+    setMessages(prev => prev.slice(0, lastUserIdx));
+    setLoading(true); setSwitchNotice(null);
+    const localId = `retry-${Date.now()}`;
+    seenMsgIds.current.add(localId);
+    setMessages(prev => [...prev, { role: 'user', content: retryContent, msgId: localId }]);
+    try {
+      const body = { message: retryContent };
+      if (selectedModel) body.model = selectedModel;
+      if (socketIdRef.current) body.socketId = socketIdRef.current;
+      const { data } = await api.post('/api/help/chat', body);
+      if (data.userMsgId) seenMsgIds.current.add(data.userMsgId);
+      if (data.assistantMsgId) seenMsgIds.current.add(data.assistantMsgId);
+      setMessages(prev => {
+        const updated = [...prev];
+        const idx = updated.findLastIndex(m => m.msgId === localId);
+        if (idx !== -1 && data.userMsgId) updated[idx] = { ...updated[idx], msgId: data.userMsgId };
+        return [...updated, { role: 'assistant', content: data.reply, model: data.model, files: data.files || [], images: data.images || [], msgId: data.assistantMsgId }];
+      });
+      if (data.autoSwitched) setSwitchNotice(data.switchReason || 'Switched to backup AI');
+    } catch (err) {
+      setMessages(prev => [...prev, { role: 'assistant', content: err.response?.data?.error || 'Something went wrong.', isError: true }]);
+    } finally { setLoading(false); }
+  }, [messages, loading, selectedModel]);
   const downloadImage = (img, idx) => {
     try { const ext = (img.mimeType || 'image/png').split('/')[1] || 'png'; const b = atob(img.base64); const a = new Uint8Array(b.length); for (let i = 0; i < b.length; i++) a[i] = b.charCodeAt(i); const bl = new Blob([a], { type: img.mimeType || 'image/png' }); const u = URL.createObjectURL(bl); const el = document.createElement('a'); el.href = u; el.download = `zapcodes-ai-image-${idx + 1}.${ext}`; el.click(); URL.revokeObjectURL(u); } catch (e) {}
   };
@@ -236,6 +267,12 @@ export default function HelpAI() {
                     {m.file && <div style={{ fontSize: 10, color: 'rgba(255,255,255,.4)', marginTop: 4 }}>📎 {m.file}</div>}
                     {m.model && m.role === 'assistant' && !m.isError && <div style={{ fontSize: 9, color: 'rgba(255,255,255,.2)', marginTop: 4, textAlign: 'right' }}>{m.model}</div>}
                   </div>
+                </div>
+                {/* ── Copy + Retry action buttons ── */}
+                <div style={{ display: 'flex', justifyContent: m.role === 'user' ? 'flex-end' : 'flex-start', marginLeft: m.role === 'assistant' ? 36 : 0, marginTop: 2, gap: 4, opacity: 0.35 }} className="zcMsgActions" onMouseEnter={e => e.currentTarget.style.opacity = '1'} onMouseLeave={e => e.currentTarget.style.opacity = '0.35'}>
+                  <button onClick={() => copyMessage(m.content, m.msgId || `msg-${i}`)} title="Copy message" style={tinyBtn}>{copiedMsgId === (m.msgId || `msg-${i}`) ? '\u2713' : '\ud83d\udccb'}</button>
+                  {m.role === 'user' && i === messages.findLastIndex(x => x.role === 'user') && <button onClick={retryMessage} title="Retry this message" style={tinyBtn}>{'\u21bb'}</button>}
+                  {m.isError && <button onClick={retryMessage} title="Retry" style={{ ...tinyBtn, color: '#f87171' }}>{'\u21bb'}</button>}
                 </div>
                 {m.images?.length > 0 && (
                   <div style={{ marginLeft: 36, marginTop: 6, display: 'flex', flexDirection: 'column', gap: 6 }}>
@@ -317,3 +354,4 @@ export default function HelpAI() {
 }
 
 const hBtn = { width: 30, height: 30, borderRadius: 15, border: 'none', background: 'rgba(255,255,255,.12)', color: '#fff', cursor: 'pointer', fontSize: 14, display: 'flex', alignItems: 'center', justifyContent: 'center' };
+const tinyBtn = { width: 22, height: 22, borderRadius: 11, border: 'none', background: 'rgba(255,255,255,.06)', color: 'rgba(255,255,255,.5)', cursor: 'pointer', fontSize: 11, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 0, lineHeight: 1, transition: 'background .15s, color .15s' };
