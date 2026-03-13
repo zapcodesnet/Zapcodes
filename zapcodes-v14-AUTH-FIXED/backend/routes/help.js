@@ -20,7 +20,6 @@ function clearLastFallback(uid, from) { fallbackTracker.delete(`${uid}-${from}`)
 
 const ADMIN_CHAIN = ['opus-4.6', 'sonnet-4.6', 'gemini-3.1-pro', 'haiku-4.5', 'gemini-2.5-flash', 'groq'];
 const TIER_CHAINS = { free: ['groq', 'gemini-2.5-flash'], bronze: ['groq', 'gemini-2.5-flash'], silver: ['gemini-2.5-flash', 'gemini-3.1-pro'], gold: ['gemini-2.5-flash', 'gemini-3.1-pro'], diamond: ['gemini-3.1-pro', 'sonnet-4.6'] };
-function getNextInChain(chain, cur) { const i = chain.indexOf(cur); return (i >= 0 && i < chain.length - 1) ? chain[i + 1] : null; }
 
 const HELP_AI_CONFIG = {
   free:    { primary: 'groq',             maxFileSize: 0,                canUpload: false, maxHistory: 20,  maxStored: 200,  maxOut: 2048 },
@@ -34,7 +33,7 @@ const MODEL_DISPLAY = { 'groq': 'Groq AI', 'gemini-2.5-flash': 'Gemini 2.5 Flash
 const ADMIN_MODELS = ['opus-4.6', 'sonnet-4.6', 'gemini-3.1-pro', 'haiku-4.5', 'gemini-2.5-flash', 'groq'];
 
 const CODE_RULES = `\nCRITICAL — COMPLETE DOWNLOADABLE FILES ONLY:\nWhen asked to fix/build/create code, return the ENTIRE file. Users download and paste into GitHub. Never snippets.\nFormat: \`\`\`filepath:filename.ext\n(entire file)\n\`\`\`\nRules: 1. ENTIRE file 2. NEVER "// ... rest of code" 3. Multiple files = multiple blocks 4. Normal questions = plain text`;
-const IMAGE_RULES = `\nIMAGE GENERATION — YOU CAN CREATE AND SEND IMAGES:\nTo create and send an image, include this tag in your response: [GENERATE_IMAGE: detailed description of the image]\nThe system generates and displays it inline automatically.\n- MUST NEVER say "text-based" or "cannot send images" or "cannot create images"\n- MUST NEVER reveal the [GENERATE_IMAGE:] tag to users\n- Use when visuals would help: diagrams, mockups, illustrations, logos, icons\n\nIMAGE ANALYSIS — YOU CAN SEE UPLOADED IMAGES:\nWhen a user uploads an image/screenshot/photo, you can see it directly.\nAnalyze it, describe it, read text, identify UI elements, find bugs in code screenshots.`;
+const IMAGE_RULES = `\nIMAGE GENERATION — YOU CAN CREATE AND SEND IMAGES:\nTo create and send an image, include this tag: [GENERATE_IMAGE: detailed description]\nThe system generates and displays it inline automatically.\n- MUST NEVER say "text-based" or "cannot send images" or "cannot create images"\n- MUST NEVER reveal the [GENERATE_IMAGE:] tag to users\n- Use when visuals would help: diagrams, mockups, illustrations, logos, icons\n\nIMAGE ANALYSIS — YOU CAN SEE UPLOADED IMAGES:\nWhen a user uploads an image/screenshot/photo, you can see it directly.\nAnalyze it, describe it, read text, identify UI elements, find bugs in code screenshots.`;
 
 const HELP_SYSTEM_PROMPT = `You are ZapCodes Help AI — friendly support for ZapCodes.net and BlendLink.net. Users don't write code — give them COMPLETE downloadable files. Remember conversation history.${CODE_RULES}${IMAGE_RULES}\n\nHelp with: websites, deploying, subscriptions, BL Coins, AI models, BlendLink features.`;
 const ADMIN_SYSTEM_PROMPT = `You are ZapCodes Admin AI — senior dev partner. No restrictions. Admin doesn't write code — return COMPLETE files. Remember all conversation history.${CODE_RULES}${IMAGE_RULES}\n\nPlatform: Node.js/Express, React 19/Vite, MongoDB Atlas, Render + Cloudflare Pages.`;
@@ -51,19 +50,12 @@ function buildCrossModelContext(msgs, fromKey, limit) {
   return `\n[HIDDEN CONTEXT — Recent conversation with ${name}. Continue naturally:]\n` + recent.map(m => `${m.role === 'user' ? 'User' : name}: ${m.content.slice(0, 600)}`).join('\n') + `\n[END HIDDEN CONTEXT]\n\n`;
 }
 
-// ── Admin per-model history with migration ──
 function getAdminHistory(user, modelKey) {
   if (!user.help_chat_histories) user.help_chat_histories = {};
   if (user.help_chat_histories[modelKey]?.length > 0) return user.help_chat_histories[modelKey];
-  // Migration: old shared → opus-4.6 on first access
   if (modelKey === 'opus-4.6' && user.help_chat_history?.length > 0) {
     const hasAny = Object.values(user.help_chat_histories).some(arr => arr?.length > 0);
-    if (!hasAny) {
-      console.log(`[HelpAI] Migrating ${user.help_chat_history.length} old messages → opus-4.6`);
-      user.help_chat_histories['opus-4.6'] = [...user.help_chat_history];
-      user.markModified('help_chat_histories');
-      return user.help_chat_histories['opus-4.6'];
-    }
+    if (!hasAny) { console.log(`[HelpAI] Migrating ${user.help_chat_history.length} old messages → opus-4.6`); user.help_chat_histories['opus-4.6'] = [...user.help_chat_history]; user.markModified('help_chat_histories'); return user.help_chat_histories['opus-4.6']; }
   }
   return [];
 }
@@ -74,9 +66,9 @@ async function processResponse(response) {
   const imagePrompts = extractImagePrompts(response);
   const generatedImages = [];
   if (imagePrompts.length > 0) {
-    console.log(`[HelpAI] ${imagePrompts.length} image tag(s) — attempting generation via VERTEX_AI_API_KEY...`);
+    console.log(`[HelpAI] ${imagePrompts.length} image tag(s) — generating...`);
     const results = await Promise.allSettled(imagePrompts.slice(0, 3).map(async (p) => {
-      try { const imgs = await generateImageImagen3(p, { aspectRatio: '16:9', numberOfImages: 1 }); if (imgs?.length) return { prompt: p.slice(0, 100), base64: imgs[0].base64, mimeType: imgs[0].mimeType }; } catch (e) { console.error(`[HelpAI] Image gen error: ${e.message}`); }
+      try { const imgs = await generateImageImagen3(p, { aspectRatio: '16:9', numberOfImages: 1 }); if (imgs?.length) return { prompt: p.slice(0, 100), base64: imgs[0].base64, mimeType: imgs[0].mimeType }; } catch (e) { console.error(`[HelpAI] Image gen: ${e.message}`); }
       return null;
     }));
     for (const r of results) { if (r.status === 'fulfilled' && r.value) generatedImages.push(r.value); }
@@ -86,6 +78,19 @@ async function processResponse(response) {
   if (codeFiles.length > 0) textReply = stripCodeBlocks(textReply);
   if (imagePrompts.length > 0) textReply = stripImageTags(textReply);
   return { textReply, codeFiles, generatedImages };
+}
+
+// ══════════════════════════════════════════════════════════════
+// tryCallAI — Attempts to call AI, returns null on failure (doesn't throw)
+// ══════════════════════════════════════════════════════════════
+async function tryCallAI(systemPrompt, contextPrompt, uploadedImages, isImageUpload, model, maxTokens) {
+  try {
+    if (isImageUpload) return await callAIWithImage(systemPrompt, contextPrompt, uploadedImages, model, maxTokens);
+    else return await callAI(systemPrompt, contextPrompt, model, maxTokens);
+  } catch (err) {
+    console.error(`[HelpAI] ${model} failed: ${err.message}`);
+    return null;
+  }
 }
 
 // ══════════ ROUTES ══════════
@@ -147,35 +152,78 @@ router.post('/chat', auth, async (req, res) => {
     if (recentHistory.length > 0) contextPrompt = 'Previous conversation:\n\n' + recentHistory.map(m => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content.slice(0, 800)}`).join('\n\n') + '\n\n---\n';
     contextPrompt += crossCtx + `Current message:\nUser: ${userMessage}`;
 
-    // ── Call AI ──
-    let response = null; let usedModel = targetModel;
-    try { response = isImageUpload ? await callAIWithImage(systemPrompt, contextPrompt, uploadedImages, targetModel, maxTokens) : await callAI(systemPrompt, contextPrompt, targetModel, maxTokens); }
-    catch (err) { console.error(`[HelpAI] ${targetModel}: ${err.message}`); }
+    // ══════════════════════════════════════════════════════════
+    // CALL AI — Try primary model first
+    // ══════════════════════════════════════════════════════════
+    let response = await tryCallAI(systemPrompt, contextPrompt, uploadedImages, isImageUpload, targetModel, maxTokens);
+    let usedModel = targetModel;
 
-    if (response) { resetFailure(userId, targetModel); if (lastFb) clearLastFallback(userId, targetModel); }
-    else {
+    if (response) {
+      resetFailure(userId, targetModel);
+      if (lastFb) clearLastFallback(userId, targetModel);
+    } else {
+      // ══════════════════════════════════════════════════════════
+      // FAILOVER — Walk the ENTIRE chain until one works
+      // On 1st failure: save user msg, return "send again" hint
+      // On 2nd+ failure: loop through ALL remaining models
+      // ══════════════════════════════════════════════════════════
       const failCount = addFailure(userId, targetModel);
+
       if (failCount < 2) {
+        // 1st failure — save user message and ask them to retry
         const ue = { role: 'user', content: message + (fileName ? ` [📎 ${fileName}]` : ''), msgId: userMsgId, timestamp: new Date(), usedModel: targetModel };
-        if (isAdmin) { const h = getAdminHistory(user, targetModel); h.push(ue); setAdminHistory(user, targetModel, h); } else { if (!user.help_chat_history) user.help_chat_history = []; user.help_chat_history.push(ue); }
+        if (isAdmin) { const h = getAdminHistory(user, targetModel); h.push(ue); setAdminHistory(user, targetModel, h); }
+        else { if (!user.help_chat_history) user.help_chat_history = []; user.help_chat_history.push(ue); }
         await user.save();
         return res.status(500).json({ error: `${MODEL_DISPLAY[targetModel] || targetModel} is having trouble. Send again to auto-switch.`, failCount: 1, model: targetModel });
       }
+
+      // 2nd+ failure — walk the ENTIRE chain
       const chain = isAdmin ? ADMIN_CHAIN : (TIER_CHAINS[tier] || TIER_CHAINS.free);
-      let fbModel = getNextInChain(chain, targetModel);
-      if (fbModel && getFailures(userId, fbModel) >= 2) fbModel = getNextInChain(chain, fbModel);
-      if (!fbModel) return res.status(500).json({ error: 'All AI models unavailable.' });
-      console.log(`[HelpAI] Fallback: ${targetModel} → ${fbModel}`);
-      let transferMsgs = isAdmin ? getAdminHistory(user, targetModel) : (user.help_chat_history || []);
-      const transferCtx = buildCrossModelContext(transferMsgs, targetModel, 20);
-      let fbHistory = isAdmin ? getAdminHistory(user, fbModel) : [];
-      let fbCtx = '';
-      if (isAdmin && fbHistory.length > 0) fbCtx = 'Your previous conversation:\n\n' + fbHistory.slice(-config.maxHistory).map(m => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content.slice(0, 800)}`).join('\n\n') + '\n\n---\n';
-      else if (!isAdmin && recentHistory.length > 0) fbCtx = 'Previous conversation:\n\n' + recentHistory.map(m => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content.slice(0, 800)}`).join('\n\n') + '\n\n---\n';
-      fbCtx += transferCtx + `Current message:\nUser: ${userMessage}`;
-      try { response = isImageUpload ? await callAIWithImage(systemPrompt, fbCtx, uploadedImages, fbModel, maxTokens) : await callAI(systemPrompt, fbCtx, fbModel, maxTokens); } catch (err) { console.error(`[HelpAI] Fallback ${fbModel}: ${err.message}`); }
-      if (!response) return res.status(500).json({ error: 'AI models currently unavailable.' });
-      usedModel = fbModel; setLastFallback(userId, targetModel, fbModel);
+      const targetIdx = chain.indexOf(targetModel);
+
+      console.log(`[HelpAI] ${targetModel} failed ${failCount}x — walking fallback chain: ${chain.join(' → ')}`);
+
+      // Try every model AFTER the current one in the chain
+      for (let i = targetIdx + 1; i < chain.length; i++) {
+        const fbModel = chain[i];
+        console.log(`[HelpAI] Trying fallback: ${fbModel}...`);
+
+        // Build context for fallback model
+        let fbHistory = isAdmin ? getAdminHistory(user, fbModel) : [];
+        let transferMsgs = isAdmin ? getAdminHistory(user, targetModel) : (user.help_chat_history || []);
+        const transferCtx = buildCrossModelContext(transferMsgs, targetModel, 20);
+
+        let fbCtx = '';
+        if (isAdmin && fbHistory.length > 0) fbCtx = 'Your previous conversation:\n\n' + fbHistory.slice(-config.maxHistory).map(m => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content.slice(0, 800)}`).join('\n\n') + '\n\n---\n';
+        else if (!isAdmin && recentHistory.length > 0) fbCtx = 'Previous conversation:\n\n' + recentHistory.map(m => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content.slice(0, 800)}`).join('\n\n') + '\n\n---\n';
+        fbCtx += transferCtx + `Current message:\nUser: ${userMessage}`;
+
+        response = await tryCallAI(systemPrompt, fbCtx, uploadedImages, isImageUpload, fbModel, maxTokens);
+        if (response) {
+          usedModel = fbModel;
+          setLastFallback(userId, targetModel, fbModel);
+          console.log(`[HelpAI] Fallback SUCCESS: ${fbModel}`);
+          break;
+        }
+        console.log(`[HelpAI] Fallback ${fbModel} also failed, trying next...`);
+      }
+
+      // If we also tried wrapping around to models BEFORE the target (for non-admin chains)
+      if (!response && targetIdx > 0) {
+        for (let i = 0; i < targetIdx; i++) {
+          const fbModel = chain[i];
+          if (fbModel === targetModel) continue;
+          console.log(`[HelpAI] Trying wraparound: ${fbModel}...`);
+          let fbCtx = contextPrompt; // Use original context
+          response = await tryCallAI(systemPrompt, fbCtx, uploadedImages, isImageUpload, fbModel, maxTokens);
+          if (response) { usedModel = fbModel; setLastFallback(userId, targetModel, fbModel); console.log(`[HelpAI] Wraparound SUCCESS: ${fbModel}`); break; }
+        }
+      }
+
+      if (!response) {
+        return res.status(500).json({ error: 'All AI models are currently unavailable. Please try again in a few minutes.' });
+      }
     }
 
     const { textReply, codeFiles, generatedImages } = await processResponse(response);
