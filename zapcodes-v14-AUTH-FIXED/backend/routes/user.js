@@ -6,7 +6,9 @@ const ChatHistory = require('../models/ChatHistory');
 
 const router = express.Router();
 
+// ══════════════════════════════════════════════════════════════
 // GET /api/user/stats
+// ══════════════════════════════════════════════════════════════
 router.get('/stats', auth, async (req, res) => {
   try {
     const repos = await Repo.find({ userId: req.userId });
@@ -16,9 +18,14 @@ router.get('/stats', auth, async (req, res) => {
 
     res.json({
       stats: {
-        totalRepos: repos.length, totalIssues, fixedIssues, criticalBugs,
-        scansUsed: req.user.scansUsed, scansLimit: req.user.scansLimit,
-        buildsUsed: req.user.buildsUsed, buildsLimit: req.user.buildsLimit,
+        totalRepos: repos.length,
+        totalIssues,
+        fixedIssues,
+        criticalBugs,
+        scansUsed: req.user.scansUsed,
+        scansLimit: req.user.scansLimit,
+        buildsUsed: req.user.buildsUsed,
+        buildsLimit: req.user.buildsLimit,
         plan: req.user.subscription_tier,
         subscription_tier: req.user.subscription_tier,
       },
@@ -28,7 +35,9 @@ router.get('/stats', auth, async (req, res) => {
   }
 });
 
+// ══════════════════════════════════════════════════════════════
 // PUT /api/user/profile
+// ══════════════════════════════════════════════════════════════
 router.put('/profile', auth, async (req, res) => {
   try {
     const { name, email } = req.body;
@@ -42,11 +51,11 @@ router.put('/profile', auth, async (req, res) => {
   }
 });
 
-// =============================================
-// AI PREFERENCE (Feature 1)
-// =============================================
+// ══════════════════════════════════════════════════════════════
+// AI PREFERENCE
+// ══════════════════════════════════════════════════════════════
 
-// GET /api/user/ai-preference — Get current AI preference
+// GET /api/user/ai-preference
 router.get('/ai-preference', auth, async (req, res) => {
   try {
     const user = await User.findById(req.userId);
@@ -63,7 +72,7 @@ router.get('/ai-preference', auth, async (req, res) => {
   }
 });
 
-// PUT /api/user/ai-preference — Set AI preference
+// PUT /api/user/ai-preference
 router.put('/ai-preference', auth, async (req, res) => {
   try {
     const { preferredAI } = req.body;
@@ -73,7 +82,6 @@ router.put('/ai-preference', auth, async (req, res) => {
 
     const user = await User.findById(req.userId);
 
-    // Claude requires Silver or higher plan
     if (preferredAI === 'claude' && user.subscription_tier === 'free') {
       return res.status(403).json({
         error: 'Claude requires a Silver ($14.99/mo) or higher subscription.',
@@ -84,7 +92,6 @@ router.put('/ai-preference', auth, async (req, res) => {
     user.preferredAI = preferredAI;
     await user.save();
 
-    // Sync via Socket.IO (cross-device sync)
     const io = req.app.get('io');
     if (io) io.to(`user-${user._id}`).emit('ai-preference-updated', { preferredAI });
 
@@ -98,11 +105,10 @@ router.put('/ai-preference', auth, async (req, res) => {
   }
 });
 
-// =============================================
-// DEPLOY PLATFORM PREFERENCE (Feature 4)
-// =============================================
+// ══════════════════════════════════════════════════════════════
+// DEPLOY PLATFORM PREFERENCE
+// ══════════════════════════════════════════════════════════════
 
-// PUT /api/user/deploy-platform — Set deployment platform preference
 router.put('/deploy-platform', auth, async (req, res) => {
   try {
     const { platform } = req.body;
@@ -121,9 +127,9 @@ router.put('/deploy-platform', auth, async (req, res) => {
   }
 });
 
-// =============================================
+// ══════════════════════════════════════════════════════════════
 // GITHUB TOKEN MANAGEMENT
-// =============================================
+// ══════════════════════════════════════════════════════════════
 
 // GET /api/user/github-token/status
 router.get('/github-token/status', auth, async (req, res) => {
@@ -139,7 +145,7 @@ router.get('/github-token/status', auth, async (req, res) => {
   }
 });
 
-// POST /api/user/github-token/test — Test GitHub connection
+// POST /api/user/github-token/test
 router.post('/github-token/test', auth, async (req, res) => {
   try {
     const user = await User.findById(req.userId).select('+githubToken');
@@ -151,7 +157,6 @@ router.post('/github-token/test', auth, async (req, res) => {
       timeout: 10000,
     });
 
-    // Get repos count
     const reposRes = await axios.get('https://api.github.com/user/repos?per_page=1', {
       headers: { Authorization: `token ${user.githubToken}` },
     });
@@ -172,11 +177,11 @@ router.post('/github-token/test', auth, async (req, res) => {
   }
 });
 
-// PUT /api/user/github-token — Save token
+// PUT /api/user/github-token
 router.put('/github-token', auth, async (req, res) => {
   try {
     const { token, keepPermanent } = req.body;
-    if (!token || !token.startsWith('ghp_') && !token.startsWith('github_pat_')) {
+    if (!token || (!token.startsWith('ghp_') && !token.startsWith('github_pat_'))) {
       return res.status(400).json({ error: 'Invalid GitHub token format. Must start with ghp_ or github_pat_' });
     }
 
@@ -186,7 +191,6 @@ router.put('/github-token', auth, async (req, res) => {
     user.githubTokenSetAt = new Date();
     await user.save();
 
-    // Notify via Socket.IO
     const io = req.app.get('io');
     if (io) io.to(`user-${user._id}`).emit('github-token-updated', { connected: true });
 
@@ -196,7 +200,7 @@ router.put('/github-token', auth, async (req, res) => {
   }
 });
 
-// DELETE /api/user/github-token — Delete token
+// DELETE /api/user/github-token
 router.delete('/github-token', auth, async (req, res) => {
   try {
     const user = await User.findById(req.userId);
@@ -214,11 +218,11 @@ router.delete('/github-token', auth, async (req, res) => {
   }
 });
 
-// =============================================
+// ══════════════════════════════════════════════════════════════
 // CHAT HISTORY (Build iterations)
-// =============================================
+// ══════════════════════════════════════════════════════════════
 
-// GET /api/user/chats — List all chats for user
+// GET /api/user/chats
 router.get('/chats', auth, async (req, res) => {
   try {
     const chats = await ChatHistory.find({ user: req.userId })
@@ -230,7 +234,7 @@ router.get('/chats', auth, async (req, res) => {
   }
 });
 
-// GET /api/user/chats/:projectId — Get full chat history
+// GET /api/user/chats/:projectId
 router.get('/chats/:projectId', auth, async (req, res) => {
   try {
     let chat = await ChatHistory.findOne({ user: req.userId, projectId: req.params.projectId, status: 'active' });
@@ -241,7 +245,7 @@ router.get('/chats/:projectId', auth, async (req, res) => {
   }
 });
 
-// POST /api/user/chats/:projectId/message — Send message (counts as build)
+// POST /api/user/chats/:projectId/message
 router.post('/chats/:projectId/message', auth, async (req, res) => {
   try {
     const { content, projectName, template } = req.body;
@@ -256,38 +260,35 @@ router.post('/chats/:projectId/message', auth, async (req, res) => {
       return res.status(403).json({
         error: 'Build limit reached',
         message: `Your ${tier} plan allows ${limit} builds/month. Upgrade for more.`,
-        buildsUsed: user.buildsUsed, buildsLimit: limit,
+        buildsUsed: user.buildsUsed,
+        buildsLimit: limit,
       });
     }
 
-    // Estimate tokens (~4 chars per token)
     const tokenEstimate = Math.ceil(content.length / 4);
 
-    // Find or create chat
     let chat = await ChatHistory.findOne({ user: req.userId, projectId: req.params.projectId, status: 'active' });
     if (!chat) {
       chat = await ChatHistory.create({
-        user: req.userId, projectId: req.params.projectId,
-        projectName: projectName || 'Untitled', template: template || 'custom',
+        user: req.userId,
+        projectId: req.params.projectId,
+        projectName: projectName || 'Untitled',
+        template: template || 'custom',
         messages: [{ role: 'system', content: CHAT_INSTRUCTIONS, tokenEstimate: 500 }],
       });
     }
 
-    // Check context size
     const totalContext = chat.totalTokens + tokenEstimate;
     const MAX_TOKENS = 200000;
     const WARNING_THRESHOLD = MAX_TOKENS * 0.8;
 
-    // Add user message
     chat.messages.push({ role: 'user', content, tokenEstimate });
     chat.totalTokens = totalContext;
     chat.buildCount += 1;
 
-    // Increment user's build counter
     user.buildsUsed += 1;
     await user.save();
 
-    // Generate AI response (simplified — in production use Groq/Claude)
     const aiResponse = `I've received your request to improve the project. Here's what I'll implement:\n\n${content.slice(0, 100)}...\n\n✅ Changes applied. Builds used: ${user.buildsUsed}/${limit}`;
     const aiTokens = Math.ceil(aiResponse.length / 4);
 
@@ -295,7 +296,6 @@ router.post('/chats/:projectId/message', auth, async (req, res) => {
     chat.totalTokens += aiTokens;
     await chat.save();
 
-    // Sync via Socket.IO
     const io = req.app.get('io');
     if (io) io.to(`user-${user._id}`).emit('build-count-updated', { buildsUsed: user.buildsUsed, buildsLimit: limit });
 
@@ -312,26 +312,26 @@ router.post('/chats/:projectId/message', auth, async (req, res) => {
   }
 });
 
-// POST /api/user/chats/:projectId/fork — Fork to new chat
+// POST /api/user/chats/:projectId/fork
 router.post('/chats/:projectId/fork', auth, async (req, res) => {
   try {
     const oldChat = await ChatHistory.findOne({ user: req.userId, projectId: req.params.projectId, status: 'active' });
     if (!oldChat) return res.status(404).json({ error: 'Chat not found' });
 
-    // Condense summary
     const lastMessages = oldChat.messages.slice(-10);
     const summary = `Previous build: ${oldChat.projectName}. ${oldChat.buildCount} iterations. Key features from last messages: ${lastMessages.filter(m => m.role === 'assistant').map(m => m.content.slice(0, 100)).join('; ')}`;
 
-    // Mark old chat as forked
     oldChat.status = 'forked';
     await oldChat.save();
 
-    // Create new chat with summary
     const newProjectId = req.params.projectId + '-fork-' + Date.now();
     const newChat = await ChatHistory.create({
-      user: req.userId, projectId: newProjectId,
-      projectName: oldChat.projectName + ' (continued)', template: oldChat.template,
-      forkedFrom: oldChat._id, summary,
+      user: req.userId,
+      projectId: newProjectId,
+      projectName: oldChat.projectName + ' (continued)',
+      template: oldChat.template,
+      forkedFrom: oldChat._id,
+      summary,
       messages: [
         { role: 'system', content: CHAT_INSTRUCTIONS },
         { role: 'system', content: `Continuing from previous conversation:\n${summary}` },
