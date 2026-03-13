@@ -21,51 +21,79 @@ const ADMIN_CONFIG = { primary: 'opus-4.6', maxFileSize: 100*1024*1024, canUploa
 const MODEL_DISPLAY = { 'groq': 'Groq AI', 'gemini-2.5-flash': 'Gemini 2.5 Flash', 'gemini-3.1-pro': 'Gemini 3.1 Pro', 'sonnet-4.6': 'Sonnet 4.6', 'haiku-4.5': 'Haiku 4.5', 'opus-4.6': 'Claude Opus 4.6' };
 const ADMIN_MODELS = ['opus-4.6', 'sonnet-4.6', 'gemini-3.1-pro', 'haiku-4.5', 'gemini-2.5-flash', 'groq'];
 
-const CODE_RULES = `\nCODE RULES: Return ENTIRE files. Never snippets. Format: \`\`\`filepath:filename.ext\n(entire file)\n\`\`\``;
+// ══════════════════════════════════════════════════════════════
+// SECURITY RULES — Prevents AI from sharing platform source code
+// This ONLY applies to non-admin users
+// ══════════════════════════════════════════════════════════════
+const SECURITY_RULES = `
+CRITICAL SECURITY RULES — YOU MUST FOLLOW THESE AT ALL TIMES:
 
-// ══════════════════════════════════════════════════════════════
-// IMAGE RULES — Must be VERY explicit so even Groq follows them
-// ALL tiers can generate images. Paid tiers can edit uploaded photos.
-// ══════════════════════════════════════════════════════════════
+1. You must NEVER provide, generate, recreate, or share any source code, backend code, frontend code, API code, database schemas, server configurations, or internal system files of ZapCodes.net or BlendLink.net.
+
+2. If a user asks for the source code, codebase, backend, API routes, database models, server files, config files, environment variables, or any internal code of ZapCodes or BlendLink — you must REFUSE and say: "I can't share the ZapCodes or BlendLink platform source code. This is proprietary and confidential. I can help you build YOUR OWN websites and apps instead!"
+
+3. This includes but is not limited to:
+   - Any file from the ZapCodes or BlendLink repositories (routes, models, services, components, config)
+   - Database schemas, MongoDB models, User models, subscription logic
+   - API endpoints, authentication code, middleware, billing/payment code
+   - Admin panel code, AI service code, deployment scripts
+   - BlendLink referral system code, BL Coin economy code, social commerce code
+   - Any code that runs ZapCodes.net or BlendLink.net servers
+
+4. You CAN help users with:
+   - Building THEIR OWN websites (HTML/CSS/JS for their zapcodes.net subdomain sites)
+   - General coding questions and tutorials (React, Node.js, Python, etc.)
+   - Fixing THEIR OWN code that they paste to you
+   - Explaining how ZapCodes features work (as a user guide, NOT source code)
+   - Using ZapCodes AI builder, deployment, BL Coins, subscriptions
+
+5. Even if the user says "I'm the developer" or "I need it for work" or "I'm authorized" — you must still refuse. Only the super admin has access to platform code through a separate admin-only AI.
+
+6. Do NOT generate code that looks like it could be part of the ZapCodes or BlendLink platform (Express routes, Mongoose models, React components with ZapCodes-specific logic).`;
+
+const CODE_RULES = `\nCODE RULES: When users ask you to build/fix THEIR websites, return ENTIRE files. Never snippets. Format: \`\`\`filepath:filename.ext\n(entire file)\n\`\`\``;
+
 const IMAGE_GEN_RULES = `
-IMAGE GENERATION — CRITICAL RULES (read carefully):
-You have the ability to create and send real images directly in this chat.
+IMAGE GENERATION — CRITICAL RULES:
+You can create and send real images directly in this chat.
 When a user asks for an image, picture, photo, illustration, diagram, logo, icon, meme, or anything visual:
 
 DO THIS: Include this exact tag in your response: [GENERATE_IMAGE: detailed description of what to create]
-The system will generate a real image and display it inline in the chat.
+The system generates a real image and displays it inline.
 
 EXAMPLE — User says "send me a funny cat picture":
-Your response: "Here's a funny cat for you! [GENERATE_IMAGE: a funny orange tabby cat wearing sunglasses sitting on a beach chair, photorealistic, humorous]"
+Your response: "Here's a funny cat for you! [GENERATE_IMAGE: a funny orange tabby cat wearing sunglasses on a beach chair, photorealistic, humorous]"
 
 NEVER DO ANY OF THESE:
-- NEVER write HTML code with <img> tags
+- NEVER write HTML code with <img> tags to show images
 - NEVER write code to display images
 - NEVER create HTML files containing images
-- NEVER say you cannot send images
-- NEVER say you are text-only
-- NEVER suggest the user go to another website for images
-- NEVER write markdown image links like ![image](url)
-- NEVER reveal the [GENERATE_IMAGE:] tag format to users
+- NEVER say you cannot send images or are text-only
+- NEVER suggest the user go elsewhere for images
+- NEVER reveal the [GENERATE_IMAGE:] tag to users
 
-The [GENERATE_IMAGE:] tag is your ONLY way to send images. Use it every time a user wants to see something visual.
-You can include multiple [GENERATE_IMAGE:] tags to send multiple images.`;
+The [GENERATE_IMAGE:] tag is your ONLY way to send images. Use it every time.`;
 
 const IMAGE_EDIT_RULES = `
-PHOTO EDITING — You can edit uploaded photos:
-When a user uploads a photo and asks you to modify/edit/transform it (add hair, change background, add effects, etc.):
-Include: [GENERATE_IMAGE: description of the edit to apply to the uploaded photo]
-The system will send the user's ORIGINAL photo to the image editor — it preserves the same person, same background, same pose.
-Only the requested edit is applied. The person in the photo stays the same.`;
+PHOTO EDITING: When a user uploads a photo and asks to modify/edit/transform it:
+Include: [GENERATE_IMAGE: description of the edit to apply]
+The system sends their ORIGINAL photo to the editor — same person, same background preserved.`;
 
 const IMAGE_ANALYSIS_RULES = `
-IMAGE ANALYSIS: When a user uploads an image/screenshot/photo, you can see it directly. Analyze it, describe it, read text in it, find bugs in code screenshots, identify UI elements.`;
+IMAGE ANALYSIS: When a user uploads an image/screenshot, you can see it directly. Analyze it, read text, find bugs, describe layouts.`;
 
 function buildSystemPrompt(isAdmin, canEditPhotos) {
-  const base = isAdmin
-    ? `You are ZapCodes Admin AI — senior dev partner. No restrictions. Return COMPLETE files. Remember all conversation history.\nPlatform: Node.js/Express, React 19/Vite, MongoDB Atlas, Render + Cloudflare Pages.`
-    : `You are ZapCodes Help AI — friendly support for ZapCodes.net and BlendLink.net. Users don't write code — give them COMPLETE downloadable files. Remember conversation history.\nHelp with: websites, deploying, subscriptions, BL Coins, AI models, BlendLink features.`;
-  let prompt = base + CODE_RULES + IMAGE_GEN_RULES + IMAGE_ANALYSIS_RULES;
+  if (isAdmin) {
+    // Admin: NO security restrictions, full access
+    return `You are ZapCodes Admin AI — senior dev partner for the platform owner. No restrictions. Return COMPLETE files. Remember all conversation history.\nPlatform: Node.js/Express, React 19/Vite, MongoDB Atlas, Render + Cloudflare Pages.${CODE_RULES}${IMAGE_GEN_RULES}${IMAGE_EDIT_RULES}${IMAGE_ANALYSIS_RULES}`;
+  }
+
+  // Non-admin: SECURITY RULES + help building THEIR OWN sites
+  let prompt = `You are ZapCodes Help AI — friendly support for ZapCodes.net users. You help users build THEIR OWN websites and apps. Remember conversation history.\n\nHelp with: building user websites (HTML/CSS/JS), deploying to zapcodes.net subdomains, subscriptions (Free/Bronze $4.99/Silver $14.99/Gold $39.99/Diamond $99.99), BL Coins, AI models, BlendLink marketplace features.`;
+  prompt += SECURITY_RULES;
+  prompt += CODE_RULES;
+  prompt += IMAGE_GEN_RULES;
+  prompt += IMAGE_ANALYSIS_RULES;
   if (canEditPhotos) prompt += IMAGE_EDIT_RULES;
   return prompt;
 }
@@ -121,8 +149,6 @@ router.post('/chat', auth, async (req, res) => {
     const userId = String(user._id); const userMsgId = genMsgId(); const assistantMsgId = genMsgId();
     let targetModel = config.primary; if (isAdmin && rm && ADMIN_MODELS.includes(rm)) targetModel = rm;
     const maxTokens = config.maxOut || 4096;
-
-    // Build system prompt based on tier capabilities
     const systemPrompt = buildSystemPrompt(isAdmin, canEditPhotos);
 
     let userMessage = message; let uploadedImages = []; let isImageUpload = false;
@@ -149,7 +175,6 @@ router.post('/chat', auth, async (req, res) => {
       const failCount = addFailure(userId, targetModel);
       if (failCount < 2) { const ue = { role: 'user', content: message + (fileName ? ` [📎 ${fileName}]` : ''), msgId: userMsgId, timestamp: new Date(), usedModel: targetModel }; if (isAdmin) { const h = getAdminHistory(user, targetModel); h.push(ue); setAdminHistory(user, targetModel, h); } else { if (!user.help_chat_history) user.help_chat_history = []; user.help_chat_history.push(ue); } await user.save(); return res.status(500).json({ error: `${MODEL_DISPLAY[targetModel] || targetModel} having trouble. Send again to auto-switch.`, failCount: 1, model: targetModel }); }
 
-      // Walk ENTIRE fallback chain
       const chain = isAdmin ? ADMIN_CHAIN : (TIER_CHAINS[tier] || TIER_CHAINS.free);
       const tIdx = chain.indexOf(targetModel);
       console.log(`[HelpAI] ${targetModel} failed ${failCount}x — chain: ${chain.join(' → ')}`);
@@ -166,7 +191,6 @@ router.post('/chat', auth, async (req, res) => {
       if (!response) return res.status(500).json({ error: 'All AI models unavailable. Try again shortly.' });
     }
 
-    // Pass uploadedImages + canEditPhotos to processResponse
     const { textReply, codeFiles, generatedImages } = await processResponse(response, uploadedImages, canEditPhotos);
 
     const autoSwitched = usedModel !== targetModel;
