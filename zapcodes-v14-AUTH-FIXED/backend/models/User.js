@@ -162,8 +162,10 @@ const userSchema = new mongoose.Schema({
     createdAt: { type: Date, default: Date.now },
   }],
 
-  // ══════════ ZapCodes Help AI — Persistent Chat History ══════════
-  // Shared history for non-admin users (all tiers)
+  // ══════════ ZapCodes Help AI — Rolling Memory System ══════════
+  // Non-admin: shared single chat history (all messages in one array)
+  // MongoDB keeps raw messages. When count hits 20, Gemini 2.5 Flash
+  // summarizes the oldest 15 → keeps last 5 raw.
   help_chat_history: [{
     role: { type: String },
     content: { type: String },
@@ -171,6 +173,7 @@ const userSchema = new mongoose.Schema({
     msgId: { type: String },
     usedModel: { type: String },
     imageCount: { type: Number, default: 0 },
+    fileCount: { type: Number, default: 0 },
     timestamp: { type: Date, default: Date.now },
   }],
 
@@ -179,10 +182,10 @@ const userSchema = new mongoose.Schema({
   help_chat_histories: { type: mongoose.Schema.Types.Mixed, default: {} },
 
   // ══════════ ZapCodes Help AI — Compressed Conversation Summaries ══════════
-  // Gemini 2.5 Flash auto-compresses every 20 messages into summaries
-  // Admin: { 'opus-4.6': [{text, messageCount, createdAt}], 'sonnet-4.6': [...] }
+  // Gemini 2.5 Flash auto-compresses every 20 messages into summaries.
+  // Admin: { 'opus-4.6': [{text, messageCount, createdAt}], ... }
   // Non-admin: { 'default': [{text, messageCount, createdAt}] }
-  // Max 10 summaries per key. Oldest auto-deleted when 11th is created.
+  // Max 10 summaries per key. 11th+ oldest auto-deleted.
   help_chat_summaries: { type: mongoose.Schema.Types.Mixed, default: {} },
 
   // Legacy usage
@@ -192,7 +195,7 @@ const userSchema = new mongoose.Schema({
   buildsLimit: { type: Number, default: 3 },
   fixesApplied: { type: Number, default: 0 },
 
-  // AI Preferences — UPDATED: includes all 5 model keys
+  // AI Preferences — includes all model keys
   preferredAI: { type: String, enum: ['groq', 'gemini-flash', 'gemini-pro', 'haiku', 'sonnet', 'gemini-2.5-flash', 'gemini-3.1-pro', 'haiku-4.5', 'sonnet-4.6'], default: 'gemini-2.5-flash' },
   deployPlatform: { type: String, enum: ['cloudflare', 'vercel', 'render', 'netlify', 'railway', 'other', null], default: null },
 
@@ -261,7 +264,7 @@ userSchema.methods.hasPermission = function (perm) {
   return this.permissions?.[perm] === true;
 };
 
-// ══════════ TIER CONFIG — UPDATED: New 5-tier pricing with 5 AI models ══════════
+// ══════════ TIER CONFIG — 5-tier pricing with 5 AI models ══════════
 userSchema.methods.getTierConfig = function () {
   const tiers = {
     free: {
