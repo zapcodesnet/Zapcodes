@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { auth } = require('../middleware/auth');
-const { callAI, callAIWithImage, parseFilesFromResponse, generateProjectMultiStep, verifyAndFix, generateImageImagen4, editPhotoVibeEditor, generateVideoVeo } = require('../services/ai');
+const { callAI, callAIWithImage, parseFilesFromResponse, generateProjectMultiStep, verifyAndFix, generateImageImagen4, editPhotoVibeEditor, generateVideoVeo, summarizeProjectMessages, checkPromptClarity } = require('../services/ai');
 const User = require('../models/User');
 const axios = require('axios');
 
@@ -40,6 +40,49 @@ const BL_COSTS = {
 const MODEL_DISPLAY = { 'gemini-3.1-pro': 'Gemini 3.1 Pro', 'gemini-2.5-flash': 'Gemini 2.5 Flash', 'haiku-4.5': 'Haiku 4.5', 'sonnet-4.6': 'Sonnet 4.6', 'groq': 'Groq AI', 'gemini-pro': 'Gemini 3.1 Pro', 'gemini-flash': 'Gemini 2.5 Flash', 'haiku': 'Haiku 4.5', 'sonnet': 'Sonnet 4.6' };
 const NORMALIZE_MODEL_KEY = { 'gemini-pro': 'gemini-3.1-pro', 'gemini-flash': 'gemini-2.5-flash', 'haiku': 'haiku-4.5', 'sonnet': 'sonnet-4.6', 'groq': 'groq', 'gemini-3.1-pro': 'gemini-3.1-pro', 'gemini-2.5-flash': 'gemini-2.5-flash', 'haiku-4.5': 'haiku-4.5', 'sonnet-4.6': 'sonnet-4.6' };
 function normalizeModelKey(key) { return NORMALIZE_MODEL_KEY[key] || key; }
+
+// ── Per-tier fallback chains ─────────────────────────────────────────────
+// new_website: never Groq (except Free after trial, Bronze not at all)
+// edit/fix:    Groq allowed as last resort for Silver/Gold/Diamond with warning
+const TIER_FALLBACK_CHAINS = {
+  free: {
+    new_website: ['gemini-2.5-flash'], // trial only, then groq from getTierConfig
+    edit:        ['gemini-2.5-flash', 'groq'],
+    fix:         ['gemini-2.5-flash', 'groq'],
+  },
+  bronze: {
+    new_website: ['gemini-3.1-pro', 'gemini-2.5-flash'], // never groq for new website
+    edit:        ['gemini-3.1-pro', 'gemini-2.5-flash', 'groq'],
+    fix:         ['gemini-3.1-pro', 'gemini-2.5-flash', 'groq'],
+  },
+  silver: {
+    new_website: ['gemini-3.1-pro', 'gemini-2.5-flash', 'haiku-4.5'], // no groq
+    edit:        ['gemini-3.1-pro', 'gemini-2.5-flash', 'haiku-4.5', 'groq'],
+    fix:         ['gemini-3.1-pro', 'gemini-2.5-flash', 'haiku-4.5', 'groq'],
+  },
+  gold: {
+    new_website: ['gemini-3.1-pro', 'sonnet-4.6', 'gemini-2.5-flash', 'haiku-4.5'], // no groq
+    edit:        ['gemini-3.1-pro', 'sonnet-4.6', 'gemini-2.5-flash', 'haiku-4.5', 'groq'],
+    fix:         ['gemini-3.1-pro', 'sonnet-4.6', 'gemini-2.5-flash', 'haiku-4.5', 'groq'],
+  },
+  diamond: {
+    new_website: ['gemini-3.1-pro', 'sonnet-4.6', 'gemini-2.5-flash', 'haiku-4.5'], // no groq
+    edit:        ['gemini-3.1-pro', 'sonnet-4.6', 'gemini-2.5-flash', 'haiku-4.5', 'groq'],
+    fix:         ['gemini-3.1-pro', 'sonnet-4.6', 'gemini-2.5-flash', 'haiku-4.5', 'groq'],
+  },
+};
+function getTierFallbackChain(tier, operationType) {
+  const t = (tier || 'free').toLowerCase();
+  const op = operationType || 'new_website';
+  return (TIER_FALLBACK_CHAINS[t] || TIER_FALLBACK_CHAINS.free)[op] || ['groq'];
+}
+function isGroqFallback(tier, model, operationType) {
+  return model === 'groq' && operationType !== 'new_website';
+}
+function isLastFallback(tier, model, operationType) {
+  const chain = getTierFallbackChain(tier, operationType);
+  return chain[chain.length - 1] === model;
+}
 
 const RESERVED = ['www', 'api', 'app', 'admin', 'mail', 'ftp', 'cdn', 'dev', 'staging', 'test', 'blog', 'docs', 'status', 'support', 'help', 'zapcodes', 'blendlink'];
 
@@ -607,5 +650,291 @@ function injectVideoIntoHTML(html, videoUrl) {
   }
   return html;
 }
+
+
+// ══════════════════════════════════════════════════════════════════
+// MEMORY ENDPOINTS
+// ══════════════════════════════════════════════════════════════════
+
+// POST /api/build/save-message — save a chat message to project memory
+router.post('/save-message', auth, async (req, res) => {
+  try {
+    const user = req.user;
+    const { projectId, message } = req.body;
+    if (!projectId || !message) return res.status(400).json({ error: 'projectId and message required' });
+
+    const projIdx = (user.saved_projects || []).findIndex(p => p.projectId === projectId);
+    if (projIdx === -1) return res.status(404).json({ error: 'Project not found' });
+
+    const proj = user.saved_projects[projIdx];
+    if (!proj.projectMemory) proj.projectMemory = { rawMessages: [], summaries: [], totalMessageCount: 0 };
+
+    const mem = proj.projectMemory;
+    // Never save system prompts
+    if (message.role === 'system') return res.json({ ok: true, skipped: true });
+
+    mem.rawMessages.push({
+      role: message.role || 'user',
+      content: (message.content || '').slice(0, 2000), // cap per message
+      mediaPrompts: message.mediaPrompts || {},
+      timestamp: message.timestamp || new Date().toISOString(),
+    });
+    mem.totalMessageCount = (mem.totalMessageCount || 0) + 1;
+
+    // Keep max 20 raw messages — trigger summarization at exactly 20
+    if (mem.rawMessages.length >= 20) {
+      // Summarize in background (non-blocking)
+      const messagesToSummarize = [...mem.rawMessages];
+      const messageRange = `${Math.max(1, mem.totalMessageCount - 19)}-${mem.totalMessageCount}`;
+
+      summarizeProjectMessages(messagesToSummarize).then(async (summary) => {
+        if (!summary) return;
+        try {
+          const freshUser = await User.findById(user._id);
+          const pi = (freshUser.saved_projects || []).findIndex(p => p.projectId === projectId);
+          if (pi === -1) return;
+          const m = freshUser.saved_projects[pi].projectMemory;
+          if (!m) return;
+
+          // Add new summary
+          m.summaries.push({ content: summary, messageRange, createdAt: new Date() });
+          // Keep max 5 summaries
+          if (m.summaries.length > 5) m.summaries = m.summaries.slice(-5);
+          // Delete the 20 summarized messages
+          m.rawMessages = m.rawMessages.slice(messagesToSummarize.length);
+
+          freshUser.markModified('saved_projects');
+          await freshUser.save();
+          console.log(`[Memory] Summarized ${messagesToSummarize.length} messages for project ${projectId}`);
+        } catch (err) {
+          console.warn('[Memory] Summarize save failed:', err.message);
+        }
+      }).catch(err => console.warn('[Memory] Summarize failed:', err.message));
+
+      // While summarization runs, trim to 20 in current response
+      mem.rawMessages = mem.rawMessages.slice(-20);
+    }
+
+    user.markModified('saved_projects');
+    await user.save();
+    res.json({ ok: true, rawCount: mem.rawMessages.length, summaryCount: mem.summaries.length });
+  } catch (err) {
+    console.error('[Memory/save-message]', err.message);
+    res.status(500).json({ error: 'Failed to save message' });
+  }
+});
+
+// POST /api/build/check-clarity — quick check before full generation
+router.post('/check-clarity', auth, async (req, res) => {
+  try {
+    const { prompt, projectId, isEditMode } = req.body;
+    if (!prompt) return res.json({ needsClarification: false });
+
+    // Get recent messages for context
+    let recentMessages = [];
+    if (projectId) {
+      const proj = (req.user.saved_projects || []).find(p => p.projectId === projectId);
+      recentMessages = proj?.projectMemory?.rawMessages?.slice(-3) || [];
+    }
+
+    const result = await checkPromptClarity(prompt, isEditMode, recentMessages);
+    res.json({
+      needsClarification: !result.clear,
+      question: result.question || null,
+    });
+  } catch (err) {
+    res.json({ needsClarification: false }); // fail open — don't block generation
+  }
+});
+
+// ══════════════════════════════════════════════════════════════════
+// CLONE / ROLLBACK ENDPOINTS
+// ══════════════════════════════════════════════════════════════════
+
+// Helper: create a clone snapshot of a project
+function createCloneSnapshot(sourceProject, cloneVersion) {
+  return {
+    projectId:   `proj-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    name:        sourceProject.name,
+    files:       JSON.parse(JSON.stringify(sourceProject.files || [])),
+    preview:     sourceProject.preview || '',
+    template:    sourceProject.template || 'custom',
+    description: sourceProject.description || '',
+    version:     sourceProject.version || 1,
+    linkedSubdomain: sourceProject.linkedSubdomain || null,
+    cloneOf:     sourceProject.cloneOf || sourceProject.projectId,
+    cloneVersion,
+    isLive:      false,
+    deployedAt:  null,
+    createdAt:   new Date(),
+    updatedAt:   new Date(),
+    // Copy memory independently
+    projectMemory: sourceProject.projectMemory
+      ? JSON.parse(JSON.stringify(sourceProject.projectMemory))
+      : { rawMessages: [], summaries: [], totalMessageCount: 0 },
+  };
+}
+
+// Helper: enforce max 5 clones per root project
+function enforceMaxClones(user, rootProjectId) {
+  const clones = (user.saved_projects || [])
+    .filter(p => (p.cloneOf === rootProjectId || p.projectId === rootProjectId) && p.cloneVersion != null)
+    .sort((a, b) => (b.cloneVersion || 0) - (a.cloneVersion || 0));
+
+  if (clones.length > 5) {
+    // Delete excess oldest clones
+    const toDelete = clones.slice(5).map(c => c.projectId);
+    user.saved_projects = user.saved_projects.filter(p => !toDelete.includes(p.projectId));
+    console.log(`[Clone] Deleted ${toDelete.length} excess clones for root ${rootProjectId}`);
+  }
+}
+
+// POST /api/build/redeploy-from-project — updated to auto-clone before deploying
+router.post('/redeploy-from-project', auth, async (req, res) => {
+  try {
+    const user = req.user;
+    const { projectId } = req.body;
+    if (!projectId) return res.status(400).json({ error: 'Missing projectId' });
+
+    const proj = (user.saved_projects || []).find(p => p.projectId === projectId);
+    if (!proj) return res.status(404).json({ error: 'Project not found' });
+    if (!proj.linkedSubdomain) return res.status(400).json({ error: 'Project not linked to a subdomain' });
+
+    const sub = proj.linkedSubdomain;
+    const site = user.deployed_sites.find(s => s.subdomain === sub);
+    if (!site) return res.status(404).json({ error: `${sub}.zapcodes.net not found` });
+
+    const config = user.getTierConfig();
+    const shouldBadge = !config.canRemoveBadge;
+
+    // ── Auto-clone BEFORE deploying ───────────────────────────────────────
+    const rootId = proj.cloneOf || proj.projectId;
+
+    // Shift existing clone versions up by 1
+    (user.saved_projects || []).forEach(p => {
+      if ((p.cloneOf === rootId || p.projectId === rootId) && p.cloneVersion != null) {
+        p.cloneVersion += 1;
+      }
+    });
+
+    // Create new Clone 1 from current state
+    const newClone = createCloneSnapshot(proj, 1);
+    if (!user.saved_projects) user.saved_projects = [];
+    user.saved_projects.push(newClone);
+
+    // Enforce max 5 clones
+    enforceMaxClones(user, rootId);
+
+    // Deploy files
+    let deployFiles = proj.files || [];
+    if (shouldBadge) deployFiles = deployFiles.map(f => f.name.endsWith('.html') ? { ...f, content: f.content.replace('</body>', `${BADGE_SCRIPT}</body>`) } : f);
+
+    site.files = deployFiles;
+    site.title = proj.name || site.title;
+    site.lastUpdated = new Date();
+    site.hasBadge = shouldBadge;
+
+    proj.updatedAt = new Date();
+    proj.version = (proj.version || 1) + 1;
+    proj.deployedAt = new Date();
+
+    user.markModified('saved_projects');
+    await user.save();
+
+    res.json({
+      success: true,
+      url: `https://${sub}.zapcodes.net`,
+      subdomain: sub,
+      version: proj.version,
+      cloneId: newClone.projectId,
+    });
+  } catch (err) {
+    console.error('[Redeploy]', err.message);
+    res.status(500).json({ error: 'Re-deploy failed' });
+  }
+});
+
+// POST /api/build/rollback — roll back to a specific clone
+router.post('/rollback', auth, async (req, res) => {
+  try {
+    const user = req.user;
+    const { cloneProjectId } = req.body;
+    if (!cloneProjectId) return res.status(400).json({ error: 'cloneProjectId required' });
+
+    const clone = (user.saved_projects || []).find(p => p.projectId === cloneProjectId);
+    if (!clone) return res.status(404).json({ error: 'Clone not found' });
+
+    const sub = clone.linkedSubdomain;
+    if (!sub) return res.status(400).json({ error: 'Clone has no linked subdomain' });
+
+    const site = user.deployed_sites.find(s => s.subdomain === sub);
+    if (!site) return res.status(404).json({ error: `${sub}.zapcodes.net not found` });
+
+    const rootId = clone.cloneOf || clone.projectId;
+    const config = user.getTierConfig();
+    const shouldBadge = !config.canRemoveBadge;
+
+    // Shift existing clone versions up
+    (user.saved_projects || []).forEach(p => {
+      if ((p.cloneOf === rootId || p.projectId === rootId) && p.cloneVersion != null) {
+        p.cloneVersion += 1;
+      }
+    });
+
+    // Create new Clone 1 from the rolled-back clone
+    const newClone = createCloneSnapshot(clone, 1);
+    user.saved_projects.push(newClone);
+
+    // Enforce max 5
+    enforceMaxClones(user, rootId);
+
+    // Deploy rolled-back files
+    let deployFiles = clone.files || [];
+    if (shouldBadge) deployFiles = deployFiles.map(f => f.name.endsWith('.html') ? { ...f, content: f.content.replace('</body>', `${BADGE_SCRIPT}</body>`) } : f);
+
+    site.files = deployFiles;
+    site.title = clone.name || site.title;
+    site.lastUpdated = new Date();
+    site.hasBadge = shouldBadge;
+
+    user.markModified('saved_projects');
+    await user.save();
+
+    res.json({
+      success: true,
+      url: `https://${sub}.zapcodes.net`,
+      subdomain: sub,
+      cloneId: newClone.projectId,
+      message: `Rolled back to version from ${clone.createdAt ? new Date(clone.createdAt).toLocaleDateString() : 'previous version'}`,
+    });
+  } catch (err) {
+    console.error('[Rollback]', err.message);
+    res.status(500).json({ error: 'Rollback failed' });
+  }
+});
+
+// GET /api/build/project-clones/:rootId — get all clones for timeline
+router.get('/project-clones/:rootId', auth, (req, res) => {
+  try {
+    const rootId = req.params.rootId;
+    const allProjects = req.user.saved_projects || [];
+    const clones = allProjects
+      .filter(p => (p.cloneOf === rootId || p.projectId === rootId) && p.cloneVersion != null)
+      .sort((a, b) => (a.cloneVersion || 0) - (b.cloneVersion || 0))
+      .map(p => ({
+        projectId:    p.projectId,
+        cloneVersion: p.cloneVersion,
+        name:         p.name,
+        createdAt:    p.createdAt,
+        updatedAt:    p.updatedAt,
+        deployedAt:   p.deployedAt,
+        fileCount:    (p.files || []).length,
+        hasMemory:    (p.projectMemory?.rawMessages?.length || 0) + (p.projectMemory?.summaries?.length || 0) > 0,
+      }));
+    res.json({ clones });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to get clones' });
+  }
+});
 
 module.exports = router;
