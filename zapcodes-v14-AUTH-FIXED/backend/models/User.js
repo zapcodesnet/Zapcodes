@@ -90,6 +90,12 @@ const userSchema = new mongoose.Schema({
   disclaimer_accepted: { type: Boolean, default: false },
   disclaimer_accepted_at: { type: String },
 
+  // ══════════ NEW: Guest Site Claim ══════════
+  claimedGuestSiteId: { type: mongoose.Schema.Types.ObjectId, ref: 'GuestSite', default: null },
+  subdomain: { type: String, default: null, lowercase: true, trim: true },
+  stripeConnectId: { type: String, default: null },
+  stripeConnectedAt: { type: Date, default: null },
+
   // ══════════ Zapcodes Daily Usage Tracking ══════════
   daily_usage: {
     date: { type: String },
@@ -149,6 +155,7 @@ const userSchema = new mongoose.Schema({
     template: { type: String, default: 'custom' },
     description: { type: String, default: '' },
     version: { type: Number, default: 1 },
+    linkedSubdomain: { type: String, default: null },
     createdAt: { type: Date, default: Date.now },
     updatedAt: { type: Date, default: Date.now },
   }],
@@ -163,9 +170,6 @@ const userSchema = new mongoose.Schema({
   }],
 
   // ══════════ ZapCodes Help AI — Rolling Memory System ══════════
-  // Non-admin: shared single chat history (all messages in one array)
-  // MongoDB keeps raw messages. When count hits 20, Gemini 2.5 Flash
-  // summarizes the oldest 15 → keeps last 5 raw.
   help_chat_history: [{
     role: { type: String },
     content: { type: String },
@@ -177,15 +181,7 @@ const userSchema = new mongoose.Schema({
     timestamp: { type: Date, default: Date.now },
   }],
 
-  // Admin only: separate chat history per AI model
-  // { 'opus-4.6': [...messages], 'sonnet-4.6': [...messages], ... }
   help_chat_histories: { type: mongoose.Schema.Types.Mixed, default: {} },
-
-  // ══════════ ZapCodes Help AI — Compressed Conversation Summaries ══════════
-  // Gemini 2.5 Flash auto-compresses every 20 messages into summaries.
-  // Admin: { 'opus-4.6': [{text, messageCount, createdAt}], ... }
-  // Non-admin: { 'default': [{text, messageCount, createdAt}] }
-  // Max 10 summaries per key. 11th+ oldest auto-deleted.
   help_chat_summaries: { type: mongoose.Schema.Types.Mixed, default: {} },
 
   // Legacy usage
@@ -195,17 +191,14 @@ const userSchema = new mongoose.Schema({
   buildsLimit: { type: Number, default: 3 },
   fixesApplied: { type: Number, default: 0 },
 
-  // AI Preferences — includes all model keys
   preferredAI: { type: String, enum: ['groq', 'gemini-flash', 'gemini-pro', 'haiku', 'sonnet', 'gemini-2.5-flash', 'gemini-3.1-pro', 'haiku-4.5', 'sonnet-4.6'], default: 'gemini-2.5-flash' },
   deployPlatform: { type: String, enum: ['cloudflare', 'vercel', 'render', 'netlify', 'railway', 'other', null], default: null },
 
-  // Status
   status: { type: String, enum: ['active', 'suspended', 'banned'], default: 'active' },
   suspendedUntil: { type: Date },
   suspendReason: { type: String },
   banReason: { type: String },
 
-  // Tracking
   last_activity: { type: String },
   lastLoginAt: { type: Date },
   lastLoginIP: { type: String },
@@ -217,7 +210,7 @@ const userSchema = new mongoose.Schema({
   updatedAt: { type: Date, default: Date.now },
 }, { timestamps: true, strict: false });
 
-// Password hashing — writes BOTH fields for cross-platform compatibility
+// Password hashing
 userSchema.pre('save', async function (next) {
   if (!this.isModified('password') || !this.password) return next();
   const hashed = await bcrypt.hash(this.password, 12);
@@ -238,7 +231,6 @@ userSchema.methods.toSafeObject = function () {
   delete obj.password_hash;
   delete obj.githubToken;
   delete obj.twoFactorSecret;
-  // Backward-compatible aliases for frontend
   obj.plan = obj.subscription_tier;
   obj.blCoins = obj.bl_coins;
   obj.referralCode = obj.referral_code;
@@ -256,7 +248,6 @@ userSchema.methods.toSafeObject = function () {
   return obj;
 };
 
-// Role checks
 userSchema.methods.isAdmin = function () { return ['super-admin', 'co-admin'].includes(this.role) || this.is_admin === true; };
 userSchema.methods.isSuperAdmin = function () { return this.role === 'super-admin'; };
 userSchema.methods.hasPermission = function (perm) {
@@ -264,7 +255,7 @@ userSchema.methods.hasPermission = function (perm) {
   return this.permissions?.[perm] === true;
 };
 
-// ══════════ TIER CONFIG — 5-tier pricing with 5 AI models ══════════
+// ══════════ TIER CONFIG — 5-tier pricing ══════════
 userSchema.methods.getTierConfig = function () {
   const tiers = {
     free: {
@@ -274,14 +265,9 @@ userSchema.methods.getTierConfig = function () {
       monthlyFixCap: 1, monthlyFixType: 'one_time_trial',
       monthlyPushCap: 1, monthlyPushType: 'one_time_trial',
       modelChain: ['gemini-2.5-flash', 'groq'],
-      monthlyLimits: {
-        'gemini-2.5-flash': 3,
-        'groq': 20,
-      },
+      monthlyLimits: { 'gemini-2.5-flash': 3, 'groq': 20 },
       trialModels: ['gemini-2.5-flash'],
-      blCosts: {
-        'gemini-2.5-flash': 10000, 'groq': 5000,
-      },
+      blCosts: { 'gemini-2.5-flash': 10000, 'groq': 5000 },
       dailyPhotoMinting: 5, memberPages: 1, monthlyListingLimit: 300,
       referralL1: 2, referralL2: 1, xpMultiplier: 1,
     },
@@ -292,15 +278,9 @@ userSchema.methods.getTierConfig = function () {
       monthlyFixCap: 90, monthlyFixType: 'monthly',
       monthlyPushCap: 90, monthlyPushType: 'monthly',
       modelChain: ['gemini-3.1-pro', 'gemini-2.5-flash', 'groq'],
-      monthlyLimits: {
-        'gemini-3.1-pro': 3,
-        'gemini-2.5-flash': 200,
-        'groq': 500,
-      },
+      monthlyLimits: { 'gemini-3.1-pro': 3, 'gemini-2.5-flash': 200, 'groq': 500 },
       trialModels: ['gemini-3.1-pro'],
-      blCosts: {
-        'gemini-3.1-pro': 50000, 'gemini-2.5-flash': 10000, 'groq': 5000,
-      },
+      blCosts: { 'gemini-3.1-pro': 50000, 'gemini-2.5-flash': 10000, 'groq': 5000 },
       dailyPhotoMinting: 20, memberPages: 3, monthlyListingLimit: 2000,
       referralL1: 3, referralL2: 2, xpMultiplier: 2,
     },
@@ -311,17 +291,9 @@ userSchema.methods.getTierConfig = function () {
       monthlyFixCap: 300, monthlyFixType: 'monthly',
       monthlyPushCap: 300, monthlyPushType: 'monthly',
       modelChain: ['gemini-3.1-pro', 'gemini-2.5-flash', 'haiku-4.5', 'groq'],
-      monthlyLimits: {
-        'gemini-3.1-pro': 50,
-        'gemini-2.5-flash': 500,
-        'haiku-4.5': 400,
-        'groq': 1000,
-      },
+      monthlyLimits: { 'gemini-3.1-pro': 50, 'gemini-2.5-flash': 500, 'haiku-4.5': 400, 'groq': 1000 },
       trialModels: [],
-      blCosts: {
-        'gemini-3.1-pro': 50000, 'gemini-2.5-flash': 10000,
-        'haiku-4.5': 20000, 'groq': 5000,
-      },
+      blCosts: { 'gemini-3.1-pro': 50000, 'gemini-2.5-flash': 10000, 'haiku-4.5': 20000, 'groq': 5000 },
       dailyPhotoMinting: 50, memberPages: 10, monthlyListingLimit: 10000,
       referralL1: 3, referralL2: 2, xpMultiplier: 3,
     },
@@ -332,18 +304,9 @@ userSchema.methods.getTierConfig = function () {
       monthlyFixCap: 1500, monthlyFixType: 'monthly',
       monthlyPushCap: 1500, monthlyPushType: 'monthly',
       modelChain: ['sonnet-4.6', 'gemini-3.1-pro', 'gemini-2.5-flash', 'haiku-4.5', 'groq'],
-      monthlyLimits: {
-        'gemini-3.1-pro': 120,
-        'sonnet-4.6': 100,
-        'gemini-2.5-flash': 1000,
-        'haiku-4.5': 800,
-        'groq': 2000,
-      },
+      monthlyLimits: { 'gemini-3.1-pro': 120, 'sonnet-4.6': 100, 'gemini-2.5-flash': 1000, 'haiku-4.5': 800, 'groq': 2000 },
       trialModels: [],
-      blCosts: {
-        'sonnet-4.6': 60000, 'gemini-3.1-pro': 50000,
-        'gemini-2.5-flash': 10000, 'haiku-4.5': 20000, 'groq': 5000,
-      },
+      blCosts: { 'sonnet-4.6': 60000, 'gemini-3.1-pro': 50000, 'gemini-2.5-flash': 10000, 'haiku-4.5': 20000, 'groq': 5000 },
       dailyPhotoMinting: 150, memberPages: 25, monthlyListingLimit: 25000,
       referralL1: 3, referralL2: 2, xpMultiplier: 4,
     },
@@ -354,18 +317,9 @@ userSchema.methods.getTierConfig = function () {
       monthlyFixCap: Infinity, monthlyFixType: 'unlimited',
       monthlyPushCap: Infinity, monthlyPushType: 'unlimited',
       modelChain: ['sonnet-4.6', 'gemini-3.1-pro', 'gemini-2.5-flash', 'haiku-4.5', 'groq'],
-      monthlyLimits: {
-        'gemini-3.1-pro': Infinity,
-        'sonnet-4.6': Infinity,
-        'gemini-2.5-flash': Infinity,
-        'haiku-4.5': Infinity,
-        'groq': Infinity,
-      },
+      monthlyLimits: { 'gemini-3.1-pro': Infinity, 'sonnet-4.6': Infinity, 'gemini-2.5-flash': Infinity, 'haiku-4.5': Infinity, 'groq': Infinity },
       trialModels: [],
-      blCosts: {
-        'sonnet-4.6': 60000, 'gemini-3.1-pro': 50000,
-        'gemini-2.5-flash': 10000, 'haiku-4.5': 20000, 'groq': 5000,
-      },
+      blCosts: { 'sonnet-4.6': 60000, 'gemini-3.1-pro': 50000, 'gemini-2.5-flash': 10000, 'haiku-4.5': 20000, 'groq': 5000 },
       dailyPhotoMinting: Infinity, memberPages: Infinity, monthlyListingLimit: Infinity,
       referralL1: 4, referralL2: 3, xpMultiplier: 5,
     },
@@ -373,61 +327,37 @@ userSchema.methods.getTierConfig = function () {
   return tiers[this.subscription_tier] || tiers.free;
 };
 
-// ══════════ MONTHLY USAGE — auto-resets each month ══════════
+// ══════════ MONTHLY USAGE ══════════
 userSchema.methods.getMonthlyUsage = function () {
   const currentMonth = new Date().toISOString().slice(0, 7);
   if (!this.monthly_usage || this.monthly_usage.month !== currentMonth) {
-    this.monthly_usage = {
-      month: currentMonth,
-      gemini_pro_gens: 0,
-      gemini_flash_gens: 0,
-      haiku_gens: 0,
-      sonnet_gens: 0,
-      groq_gens: 0,
-      code_fixes: 0,
-      github_pushes: 0,
-    };
+    this.monthly_usage = { month: currentMonth, gemini_pro_gens: 0, gemini_flash_gens: 0, haiku_gens: 0, sonnet_gens: 0, groq_gens: 0, code_fixes: 0, github_pushes: 0 };
   }
   return this.monthly_usage;
 };
 
-// Map new model keys to monthly_usage field names
 const MODEL_TO_USAGE_FIELD = {
-  'gemini-3.1-pro': 'gemini_pro_gens',
-  'gemini-pro': 'gemini_pro_gens',
-  'gemini-2.5-flash': 'gemini_flash_gens',
-  'gemini-flash': 'gemini_flash_gens',
-  'haiku-4.5': 'haiku_gens',
-  'haiku': 'haiku_gens',
-  'sonnet-4.6': 'sonnet_gens',
-  'sonnet': 'sonnet_gens',
+  'gemini-3.1-pro': 'gemini_pro_gens', 'gemini-pro': 'gemini_pro_gens',
+  'gemini-2.5-flash': 'gemini_flash_gens', 'gemini-flash': 'gemini_flash_gens',
+  'haiku-4.5': 'haiku_gens', 'haiku': 'haiku_gens',
+  'sonnet-4.6': 'sonnet_gens', 'sonnet': 'sonnet_gens',
   'groq': 'groq_gens',
 };
 
 userSchema.methods.incrementMonthlyUsage = function (model, actionType) {
   const mu = this.getMonthlyUsage();
-  if (actionType === 'generation' || actionType === 'gen') {
-    const field = MODEL_TO_USAGE_FIELD[model];
-    if (field && mu[field] !== undefined) mu[field] += 1;
-  } else if (actionType === 'code_fix') {
-    mu.code_fixes += 1;
-  } else if (actionType === 'push') {
-    mu.github_pushes += 1;
-  }
+  if (actionType === 'generation' || actionType === 'gen') { const field = MODEL_TO_USAGE_FIELD[model]; if (field && mu[field] !== undefined) mu[field] += 1; }
+  else if (actionType === 'code_fix') { mu.code_fixes += 1; }
+  else if (actionType === 'push') { mu.github_pushes += 1; }
   this.monthly_usage = mu;
   this.markModified('monthly_usage');
 };
 
 userSchema.methods.decrementMonthlyUsage = function (model, actionType) {
   const mu = this.getMonthlyUsage();
-  if (actionType === 'generation' || actionType === 'gen') {
-    const field = MODEL_TO_USAGE_FIELD[model];
-    if (field && mu[field] !== undefined) mu[field] = Math.max(0, mu[field] - 1);
-  } else if (actionType === 'code_fix') {
-    mu.code_fixes = Math.max(0, mu.code_fixes - 1);
-  } else if (actionType === 'push') {
-    mu.github_pushes = Math.max(0, mu.github_pushes - 1);
-  }
+  if (actionType === 'generation' || actionType === 'gen') { const field = MODEL_TO_USAGE_FIELD[model]; if (field && mu[field] !== undefined) mu[field] = Math.max(0, mu[field] - 1); }
+  else if (actionType === 'code_fix') { mu.code_fixes = Math.max(0, mu.code_fixes - 1); }
+  else if (actionType === 'push') { mu.github_pushes = Math.max(0, mu.github_pushes - 1); }
   this.monthly_usage = mu;
   this.markModified('monthly_usage');
 };
@@ -453,17 +383,7 @@ userSchema.methods.incrementTrial = function (modelKey) {
 
 userSchema.methods.canPerformAction = function (actionType) {
   if (this.role === 'super-admin') return true;
-  const config = this.getTierConfig();
-  const today = new Date().toISOString().split('T')[0];
-  if (!this.daily_usage || this.daily_usage.date !== today) {
-    this.daily_usage = { date: today, generations: 0, codeFixes: 0, githubPushes: 0 };
-  }
-  switch (actionType) {
-    case 'generation': return true;
-    case 'codeFix': return true;
-    case 'githubPush': return true;
-    default: return false;
-  }
+  return true;
 };
 
 userSchema.methods.spendCoins = function (amount, type, description, aiModel) {
