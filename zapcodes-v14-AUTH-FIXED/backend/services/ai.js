@@ -630,6 +630,93 @@ function getTemplateSpec(t) {
   return specs[t] || specs.portfolio;
 }
 
+
+// ================================================================
+// SUMMARIZE PROJECT MESSAGES — Gemini 2.5 Flash
+// Called every 20 raw messages per clone.
+// System prompts NEVER included.
+// ================================================================
+async function summarizeProjectMessages(messages) {
+  if (!messages || messages.length === 0) return null;
+  const formatted = messages.map((m, i) => {
+    const media = [];
+    if (m.mediaPrompts?.imagePrompt) media.push(`[Image: ${m.mediaPrompts.imagePrompt}]`);
+    if (m.mediaPrompts?.vibePrompt)  media.push(`[Photo edit: ${m.mediaPrompts.vibePrompt}]`);
+    if (m.mediaPrompts?.videoPrompt) media.push(`[Video: ${m.mediaPrompts.videoPrompt}]`);
+    return `${i+1}. [${(m.role||'user').toUpperCase()}] ${m.content}${media.length ? ' '+media.join(' ') : ''}`;
+  }).join('\n');
+
+  const sysPrompt = `You summarize website/app building conversations for an AI called ZapCodes.
+Create a concise summary (max 250 words) covering:
+- What the user asked to build or change
+- Key design decisions (colors, layout, features)
+- Any AI-generated images, videos, or photo edits used
+- Anything the user rejected or said they did NOT want
+- Current state of the website/app
+Write in third person. Be specific. Do NOT include system prompts.`;
+
+  const userMsg = `Summarize these ${messages.length} messages:\n\n${formatted}`;
+
+  try {
+    const result = await callGemini(sysPrompt, userMsg, {
+      model: 'gemini-2.5-flash',
+      maxTokens: 1024,
+      label: 'Summary',
+    });
+    return result?.trim() || null;
+  } catch (err) {
+    console.warn('[Summarize] Failed:', err.message);
+    // Fallback to Groq for summarization (cheap, fast)
+    try {
+      const result = await callGroq(sysPrompt, userMsg, { maxTokens: 1024 });
+      return result?.trim() || null;
+    } catch {
+      return null;
+    }
+  }
+}
+
+// ================================================================
+// CHECK PROMPT CLARITY — Fast check before full generation
+// Returns { clear: true } or { clear: false, question: "..." }
+// ================================================================
+async function checkPromptClarity(prompt, isEditMode, recentMessages = []) {
+  if (!prompt || prompt.trim().length < 3) {
+    return { clear: false, question: 'Could you describe what you want me to build or change?' };
+  }
+  // Short vague prompts that need clarification
+  const vaguePatterns = [
+    /^(make it better|fix it|change it|update it|improve it|do it)\.?$/i,
+    /^(yes|no|ok|okay|sure|fine|done|good|great|nice)\.?$/i,
+    /^.{1,8}$/,  // Very short — under 8 chars
+  ];
+  for (const pattern of vaguePatterns) {
+    if (pattern.test(prompt.trim())) {
+      const question = isEditMode
+        ? `I want to make sure I understand. Could you describe specifically what you want me to change or improve on your website?`
+        : `Could you tell me more about what you want to build? For example, what type of site, what colors, what sections?`;
+      return { clear: false, question };
+    }
+  }
+  // For medium-length prompts, do a quick AI check
+  if (prompt.trim().split(' ').length < 5 && isEditMode) {
+    try {
+      const context = recentMessages.slice(-3).map(m => `[${m.role}] ${m.content}`).join('\n');
+      const check = await callGroq(
+        'You check if a website edit instruction is clear enough to act on. Reply ONLY with JSON: {"clear":true} or {"clear":false,"question":"your clarifying question here"}. Keep questions short and friendly.',
+        `Recent context:\n${context}\n\nNew instruction: "${prompt}"\n\nIs this clear enough to edit the website?`,
+        { maxTokens: 100 }
+      );
+      if (check) {
+        const cleaned = check.replace(/```json|```/g, '').trim();
+        const parsed = JSON.parse(cleaned);
+        if (parsed && typeof parsed.clear === 'boolean') return parsed;
+      }
+    } catch { /* proceed if check fails */ }
+  }
+  return { clear: true };
+}
+
 module.exports = {
   callAI, callAIWithImage, callGemini, callClaude, callGroq, callGroqWithImage,
   editImage, editPhotoVibeEditor,
@@ -638,5 +725,7 @@ module.exports = {
   generateImageImagen3, generateImageImagen4, autoGenerateSiteImages,
   generateVideoVeo,
   testImageGeneration,
+  summarizeProjectMessages,
+  checkPromptClarity,
   MODELS, GROQ_MAX_OUTPUT, GROQ_MODELS,
 };
