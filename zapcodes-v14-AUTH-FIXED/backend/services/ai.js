@@ -369,78 +369,125 @@ async function generateVideoVeo(prompt, options = {}) {
   const cleanPrompt = (prompt || '').slice(0, 1000);
   const durationSeconds = options.durationSeconds || 8;
   const aspectRatio = options.aspectRatio || '16:9';
-  const storageUri = options.storageUri || process.env.GCS_BUCKET_URI;
+  const bucketUri = options.storageUri || process.env.GCS_BUCKET_URI || 'gs://zapcodes-videos';
+  const projectId = process.env.GOOGLE_CLOUD_PROJECT || 'gen-lang-client-0709668137';
+  const location = 'us-central1';
 
-  const models = ['veo-3.1-generate-preview', 'veo-2.0-generate-001'];
+  // Convert gs:// URI to public https:// URL
+  function gcsToPublicUrl(gcsUri) {
+    if (!gcsUri) return null;
+    // gs://bucket-name/path/file.mp4 → https://storage.googleapis.com/bucket-name/path/file.mp4
+    const withoutGs = gcsUri.replace(/^gs:\/\//, '');
+    return `https://storage.googleapis.com/${withoutGs}`;
+  }
+
+  const models = ['veo-3.0-generate-preview', 'veo-2.0-generate-001'];
 
   for (const modelId of models) {
     try {
-      console.log(`[VideoGen] Trying ${modelId}...`);
+      console.log(`[VideoGen] Trying ${modelId} with bucket ${bucketUri}...`);
+
       const body = {
-        instances: [{ prompt: cleanPrompt }],
+        instances: [{
+          prompt: cleanPrompt,
+          ...(options.referenceImage ? {
+            image: { bytesBase64Encoded: options.referenceImage.base64, mimeType: options.referenceImage.mimeType || 'image/png' }
+          } : {}),
+        }],
         parameters: {
           aspectRatio,
           durationSeconds,
           sampleCount: 1,
+          storageUri: bucketUri,
           personGeneration: 'dont_allow',
         },
       };
-      if (storageUri) body.parameters.storageUri = storageUri;
-      if (options.referenceImage) {
-        body.instances[0].image = { bytesBase64Encoded: options.referenceImage.base64, mimeType: options.referenceImage.mimeType || 'image/png' };
-      }
 
-      // Veo uses long-running operations
-      const opRes = await axios.post(
-        `https://us-central1-aiplatform.googleapis.com/v1/projects/${process.env.GOOGLE_CLOUD_PROJECT}/locations/us-central1/publishers/google/models/${modelId}:predictLongRunning`,
-        body,
-        {
-          headers: {
-            'Authorization': `Bearer ${vertexKey}`,
-            'Content-Type': 'application/json',
-          },
-          timeout: 30000,
-        }
-      );
+      // Use Vertex AI REST API with API key
+      const endpoint = `https://${location}-aiplatform.googleapis.com/v1/projects/${projectId}/locations/${location}/publishers/google/models/${modelId}:predictLongRunning`;
+
+      const opRes = await axios.post(endpoint, body, {
+        headers: {
+          'Authorization': `Bearer ${vertexKey}`,
+          'Content-Type': 'application/json',
+          'x-goog-api-key': vertexKey,
+        },
+        timeout: 30000,
+      });
 
       const operationName = opRes.data?.name;
-      if (!operationName) continue;
+      if (!operationName) {
+        console.warn(`[VideoGen] ${modelId} returned no operation name`);
+        continue;
+      }
 
       console.log(`[VideoGen] Operation started: ${operationName}`);
 
-      // Poll for completion (up to 3 minutes)
-      const maxPolls = 36; // 36 * 5s = 3min
+      // Poll for completion — up to 4 minutes (48 × 5s)
+      const maxPolls = 48;
       for (let i = 0; i < maxPolls; i++) {
         await new Promise(r => setTimeout(r, 5000));
         try {
           const pollRes = await axios.get(
-            `https://us-central1-aiplatform.googleapis.com/v1/${operationName}`,
-            { headers: { 'Authorization': `Bearer ${vertexKey}` }, timeout: 10000 }
+            `https://${location}-aiplatform.googleapis.com/v1/${operationName}`,
+            {
+              headers: {
+                'Authorization': `Bearer ${vertexKey}`,
+                'x-goog-api-key': vertexKey,
+              },
+              timeout: 10000,
+            }
           );
+
           if (pollRes.data?.done) {
             const predictions = pollRes.data?.response?.predictions;
             if (predictions?.length) {
-              const videoUrl = predictions[0]?.gcsUri || predictions[0]?.videoUri;
-              if (videoUrl) {
-                console.log(`[VideoGen] SUCCESS via ${modelId}: ${videoUrl}`);
-                return { gcsUri: videoUrl, model: modelId };
+              // Try multiple possible fields for the video URI
+              const gcsUri = predictions[0]?.gcsUri
+                || predictions[0]?.videoUri
+                || predictions[0]?.video?.gcsUri
+                || predictions[0]?.generatedSamples?.[0]?.video?.uri;
+
+              if (gcsUri) {
+                const publicUrl = gcsToPublicUrl(gcsUri);
+                console.log(`[VideoGen] SUCCESS via ${modelId}`);
+                console.log(`[VideoGen] GCS: ${gcsUri}`);
+                console.log(`[VideoGen] Public URL: ${publicUrl}`);
+                return {
+                  gcsUri,
+                  publicUrl,
+                  model: modelId,
+                  durationSeconds,
+                  aspectRatio,
+                };
               }
             }
+            console.warn(`[VideoGen] Operation done but no video URI found`);
+            console.warn(`[VideoGen] Response:`, JSON.stringify(pollRes.data?.response || {}).slice(0, 500));
             break;
           }
-        } catch (_) {}
+        } catch (pollErr) {
+          console.warn(`[VideoGen] Poll error (attempt ${i + 1}):`, pollErr.message);
+        }
       }
     } catch (err) {
       const status = err.response?.status;
-      console.warn(`[VideoGen] ${modelId} failed: ${status} — ${err.message?.slice(0, 100)}`);
-      if (status === 403 || status === 404) continue; // Try next model
-      if (status === 429) break;
+      const msg = err.response?.data?.error?.message || err.message;
+      console.warn(`[VideoGen] ${modelId} failed: ${status} — ${msg.slice(0, 200)}`);
+      if (status === 403) {
+        console.warn(`[VideoGen] 403 — check that Veo API is enabled for project ${projectId}`);
+      }
+      if (status === 400) {
+        console.warn(`[VideoGen] 400 — invalid request, trying next model`);
+        continue;
+      }
     }
   }
 
-  console.warn('[VideoGen] All Veo models failed or returned no video');
+  console.warn('[VideoGen] All Veo models failed');
   return null;
 }
+
 
 // ================================================================
 // Auto-generate site images (called during site generation)
