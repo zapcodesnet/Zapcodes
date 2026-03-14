@@ -2,6 +2,7 @@ import { useState, useEffect, useContext, useRef, useCallback } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { AuthContext } from '../context/AuthContext';
 import api, { API_URL } from '../api';
+import { useSpeechToText } from '../hooks/useSpeechToText';
 
 const TIER_COLORS = { free: '#888', bronze: '#cd7f32', silver: '#c0c0c0', gold: '#ffd700', diamond: '#b9f2ff' };
 const MODEL_LABELS = {
@@ -20,8 +21,6 @@ const TEMPLATES = [
   { id: 'webapp', name: 'Web App', icon: '⚡' },
   { id: 'saas', name: 'SaaS', icon: '💎' },
 ];
-// No artificial timeouts — let every AI completely finish its work.
-// Users can click "Stop" anytime. Backend keepalive detects dead connections.
 const UNLIMITED = 999999999;
 function isUnlimited(n) { return n >= UNLIMITED || n === Infinity; }
 function formatBL(n) {
@@ -30,13 +29,11 @@ function formatBL(n) {
   if (n >= 1000) return `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}K`;
   return n.toLocaleString();
 }
-
 const BL_COST_LABELS = {
   'sonnet-4.6': 60000, 'gemini-3.1-pro': 50000, 'haiku-4.5': 20000,
   'gemini-2.5-flash': 10000, 'groq': 5000,
   'sonnet': 60000, 'gemini-pro': 50000, 'haiku': 20000, 'gemini-flash': 10000,
 };
-
 const ALL_MODELS_DISPLAY = [
   { id: 'sonnet-4.6', name: 'Sonnet 4.6', tier: 'gold' },
   { id: 'gemini-3.1-pro', name: 'Gemini 3.1 Pro', tier: 'bronze' },
@@ -44,13 +41,22 @@ const ALL_MODELS_DISPLAY = [
   { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash', tier: 'free' },
   { id: 'groq', name: 'Groq AI', tier: 'free' },
 ];
-const TIER_ORDER = ['free', 'bronze', 'silver', 'gold', 'diamond'];
+
+const VIBE_PRESETS = [
+  { id: 'professional', label: 'Professional' },
+  { id: 'remove-bg',    label: 'Remove BG' },
+  { id: 'luxury',       label: 'Luxury' },
+  { id: 'cyberpunk',    label: 'Cyberpunk' },
+  { id: 'studio',       label: 'Studio Lighting' },
+  { id: 'oil-painting', label: 'Oil Painting' },
+  { id: 'minimalist',   label: 'Minimalist' },
+];
 
 export default function Build() {
   const { user } = useContext(AuthContext);
   const [searchParams] = useSearchParams();
   const [tab, setTab] = useState('build');
-  const [mobileView, setMobileView] = useState('build'); // 'build' or 'preview' — mobile only
+  const [mobileView, setMobileView] = useState('build');
   const [prompt, setPrompt] = useState('');
   const [files, setFiles] = useState([]);
   const [preview, setPreview] = useState('');
@@ -81,12 +87,42 @@ export default function Build() {
   const [systemPromptText, setSystemPromptText] = useState('');
   const [autoAttachPrompt, setAutoAttachPrompt] = useState(true);
   const [defaultPrompts, setDefaultPrompts] = useState({ gen: '', edit: '', fix: '' });
-  const [activePromptMode, setActivePromptMode] = useState('gen'); // 'gen', 'edit', 'fix'
-  const [editingDeployedSite, setEditingDeployedSite] = useState(null); // subdomain string or null
+  const [activePromptMode, setActivePromptMode] = useState('gen');
+  const [editingDeployedSite, setEditingDeployedSite] = useState(null);
+
+  // ── NEW: AI Media state ────────────────────────────────────────────────────
+  const [showMediaPanel,  setShowMediaPanel]  = useState(false);
+  const [mediaTab,        setMediaTab]        = useState('images');
+  const [imgPrompt,       setImgPrompt]       = useState('');
+  const [imgAspect,       setImgAspect]       = useState('16:9');
+  const [imgStyle,        setImgStyle]        = useState('photorealistic');
+  const [imgResults,      setImgResults]      = useState([]);
+  const [imgGenerating,   setImgGenerating]   = useState(false);
+  const [uploadedPhoto,   setUploadedPhoto]   = useState(null);
+  const [vibePreset,      setVibePreset]      = useState('professional');
+  const [vibeResult,      setVibeResult]      = useState(null);
+  const [vibeGenerating,  setVibeGenerating]  = useState(false);
+  const [videoPrompt,     setVideoPrompt]     = useState('');
+  const [videoDuration,   setVideoDuration]   = useState(8);
+  const [videoResult,     setVideoResult]     = useState(null);
+  const [videoGenerating, setVideoGenerating] = useState(false);
+  const photoInputRef = useRef(null);
+
   const iframeRef = useRef(null);
   const fileInputRef = useRef(null);
   const abortControllerRef = useRef(null);
   const progressEndRef = useRef(null);
+
+  // ── NEW: Voice to text ─────────────────────────────────────────────────────
+  const {
+    isListening: voiceListening,
+    isSupported: voiceSupported,
+    toggleListening: toggleVoice,
+    error: voiceError,
+  } = useSpeechToText({
+    onResult: (text) => setPrompt(text),
+    silenceTimeoutMs: 5000,
+  });
 
   useEffect(() => { api.get('/api/coins/balance').then(r => setCoinData(r.data)).catch(() => {}); }, []);
   useEffect(() => {
@@ -96,7 +132,6 @@ export default function Build() {
     }).catch(() => {});
   }, [coinData?.balance]);
 
-  // Load system prompt settings from localStorage
   useEffect(() => {
     try {
       const saved = localStorage.getItem('zc_system_prompt');
@@ -104,112 +139,48 @@ export default function Build() {
       if (saved) setSystemPromptText(saved);
       if (autoAttach !== null) setAutoAttachPrompt(autoAttach !== 'false');
     } catch {}
-    // Fetch default prompts from backend
     api.get('/api/build/system-prompts').then(r => {
       const prompts = { gen: r.data.gen_prompt || '', edit: r.data.edit_prompt || '', fix: r.data.fix_prompt || '' };
       setDefaultPrompts(prompts);
-      // If no saved custom prompt, auto-select based on mode
-      if (!localStorage.getItem('zc_system_prompt')) {
-        setSystemPromptText(prompts.gen);
-      }
+      if (!localStorage.getItem('zc_system_prompt')) setSystemPromptText(prompts.gen);
     }).catch(() => {});
   }, []);
   useEffect(() => { const h = () => setIsMobile(window.innerWidth < 768); window.addEventListener('resize', h); return () => window.removeEventListener('resize', h); }, []);
-
-  // Auto-select system prompt when mode changes (unless user has a custom saved prompt)
-  useEffect(() => {
-    if (!localStorage.getItem('zc_system_prompt') && defaultPrompts[activePromptMode]) {
-      setSystemPromptText(defaultPrompts[activePromptMode]);
-    }
-  }, [activePromptMode, defaultPrompts]);
-
-  // Auto-scroll progress messages to latest
-  useEffect(() => {
-    if (progressEndRef.current) {
-      progressEndRef.current.scrollIntoView({ behavior: 'smooth', block: 'end' });
-    }
-  }, [progressMessages]);
-
-  // Auto-refresh preview whenever files change
+  useEffect(() => { if (!localStorage.getItem('zc_system_prompt') && defaultPrompts[activePromptMode]) setSystemPromptText(defaultPrompts[activePromptMode]); }, [activePromptMode, defaultPrompts]);
+  useEffect(() => { if (progressEndRef.current) progressEndRef.current.scrollIntoView({ behavior: 'smooth', block: 'end' }); }, [progressMessages]);
   useEffect(() => {
     if (files.length > 0) {
       const htmlFile = files.find(f => f.name === 'index.html') || files.find(f => f.name?.endsWith('.html'));
-      if (htmlFile?.content) {
-        setPreview(htmlFile.content);
-        if (iframeRef.current) iframeRef.current.srcdoc = htmlFile.content;
-      }
+      if (htmlFile?.content) { setPreview(htmlFile.content); if (iframeRef.current) iframeRef.current.srcdoc = htmlFile.content; }
     }
   }, [files]);
-
-  // Auto-set prompt mode to 'gen' when no files loaded
-  useEffect(() => {
-    if (!searchParams.get('project') && !searchParams.get('site') && files.length === 0 && !editingDeployedSite) {
-      setActivePromptMode('gen');
-    }
-  }, [files, searchParams, editingDeployedSite]);
+  useEffect(() => { if (!searchParams.get('project') && !searchParams.get('site') && files.length === 0 && !editingDeployedSite) setActivePromptMode('gen'); }, [files, searchParams, editingDeployedSite]);
 
   useEffect(() => {
     const projId = searchParams.get('project');
     const action = searchParams.get('action') || 'edit';
-    const linkedSub = searchParams.get('subdomain'); // For redeploy
-
+    const linkedSub = searchParams.get('subdomain');
     if (projId) {
       api.get(`/api/build/project/${projId}`).then(({ data }) => {
         const p = data.project;
-        setCurrentProjectId(p.projectId);
-        setProjectName(p.name || '');
+        setCurrentProjectId(p.projectId); setProjectName(p.name || '');
         if (p.files?.length) setFiles(p.files);
-
-        // If project is linked to a deployed site, lock subdomain
         const sub = p.linkedSubdomain || linkedSub;
-        if (sub) {
-          setSubdomain(sub);
-          setEditingDeployedSite(sub);
-        }
-
-        if (action === 'fix') {
-          // Fix Bugs → stay on Build tab in edit mode with fix-oriented prompt
-          // This uses the same EDIT_PROMPT flow which preserves existing code
-          setTab('build');
-          setActivePromptMode('edit');
-          setPrompt(`Here is my existing project "${p.name}".\n\nPlease fix all bugs and issues. Specifically:\n- Fix any broken JavaScript (buttons not working, forms not submitting, etc.)\n- Fix any CSS issues (layout problems, missing styles, responsive issues)\n- Fix any broken links or navigation\n- Make sure all forms submit to https://api.zapcodes.net/api/forms/submit\n\nDo NOT change the design, colors, content, or layout. Only fix what is broken.\n\n`);
-        } else if (action === 'redeploy') {
-          // Re-deploy mode — load files, show preview, user can deploy directly
-          setTab('build');
-          setPrompt('');
-          setActivePromptMode('edit');
-        } else if (action === 'deploy') {
-          // Fresh deploy — no locked subdomain
-          setTab('build');
-          setPrompt('');
-          setActivePromptMode('gen');
-        } else {
-          // Edit mode (default)
-          setTab('build');
-          setActivePromptMode('edit');
-          setPrompt(`Here is my existing project "${p.name}".\n\nPlease make these changes:\n\n`);
-        }
+        if (sub) { setSubdomain(sub); setEditingDeployedSite(sub); }
+        if (action === 'fix') { setTab('build'); setActivePromptMode('edit'); setPrompt(`Here is my existing project "${p.name}".\n\nPlease fix all bugs and issues. Specifically:\n- Fix any broken JavaScript (buttons not working, forms not submitting, etc.)\n- Fix any CSS issues (layout problems, missing styles, responsive issues)\n- Fix any broken links or navigation\n- Make sure all forms submit to https://api.zapcodes.net/api/forms/submit\n\nDo NOT change the design, colors, content, or layout. Only fix what is broken.\n\n`); }
+        else if (action === 'redeploy') { setTab('build'); setPrompt(''); setActivePromptMode('edit'); }
+        else if (action === 'deploy') { setTab('build'); setPrompt(''); setActivePromptMode('gen'); }
+        else { setTab('build'); setActivePromptMode('edit'); setPrompt(`Here is my existing project "${p.name}".\n\nPlease make these changes:\n\n`); }
       }).catch(() => {});
-      return; // Don't also try to load from 'site' param
+      return;
     }
-
-    // Legacy: Load from deployed site directly (backward compatibility)
     const siteSubdomain = searchParams.get('site');
     if (siteSubdomain) {
       api.get(`/api/build/site-content/${siteSubdomain}`).then(({ data }) => {
         if (data.files?.length) {
-          setFiles(data.files);
-          setProjectName(data.title || siteSubdomain);
-          setSubdomain(siteSubdomain);
-          setEditingDeployedSite(siteSubdomain);
-          setActivePromptMode('edit');
-          if (action === 'fix') {
-            setTab('build');
-            setPrompt(`Here is my existing website "${data.title || siteSubdomain}" deployed at ${siteSubdomain}.zapcodes.net.\n\nPlease fix all bugs and issues. Do NOT change the design, colors, content, or layout. Only fix what is broken.\n\n`);
-          } else {
-            setTab('build');
-            setPrompt(`Here is my existing website "${data.title || siteSubdomain}" deployed at ${siteSubdomain}.zapcodes.net.\n\nPlease make these changes:\n\n`);
-          }
+          setFiles(data.files); setProjectName(data.title || siteSubdomain); setSubdomain(siteSubdomain); setEditingDeployedSite(siteSubdomain); setActivePromptMode('edit');
+          if (action === 'fix') { setTab('build'); setPrompt(`Here is my existing website "${data.title || siteSubdomain}" deployed at ${siteSubdomain}.zapcodes.net.\n\nPlease fix all bugs and issues. Do NOT change the design, colors, content, or layout. Only fix what is broken.\n\n`); }
+          else { setTab('build'); setPrompt(`Here is my existing website "${data.title || siteSubdomain}" deployed at ${siteSubdomain}.zapcodes.net.\n\nPlease make these changes:\n\n`); }
         }
       }).catch(() => {});
     }
@@ -231,56 +202,81 @@ export default function Build() {
   const charsUsed = prompt.length;
   const charPct = isUnlimited(maxChars) ? 0 : (charsUsed / maxChars) * 100;
 
-  // ── System Prompt Management ──
-  const saveSystemPrompt = () => {
-    try { localStorage.setItem('zc_system_prompt', systemPromptText); } catch {}
-    alert('System prompt saved!');
+  const saveSystemPrompt = () => { try { localStorage.setItem('zc_system_prompt', systemPromptText); } catch {} alert('System prompt saved!'); };
+  const resetSystemPrompt = () => { setSystemPromptText(defaultPrompts[activePromptMode] || defaultPrompts.gen || ''); try { localStorage.removeItem('zc_system_prompt'); } catch {} };
+  const deleteSystemPrompt = () => { setSystemPromptText(''); try { localStorage.removeItem('zc_system_prompt'); } catch {} };
+  const toggleAutoAttach = () => { const next = !autoAttachPrompt; setAutoAttachPrompt(next); try { localStorage.setItem('zc_auto_attach_prompt', String(next)); } catch {} };
+  const loadDefaultForMode = (mode) => { setActivePromptMode(mode); setSystemPromptText(defaultPrompts[mode] || ''); try { localStorage.removeItem('zc_system_prompt'); } catch {} };
+
+  // ── NEW: AI Media handlers ─────────────────────────────────────────────────
+  const handleGenerateImages = async () => {
+    if (!imgPrompt.trim()) return alert('Enter an image description');
+    setImgGenerating(true); setImgResults([]);
+    try {
+      const { data } = await api.post('/api/build/generate-image', { prompt: imgPrompt, style: imgStyle, aspectRatio: imgAspect, count: 2 });
+      if (data.images?.length) { setImgResults(data.images); setCoinData(p => ({ ...p, balance: data.balanceRemaining })); }
+      else alert('Image generation failed. Please try again.');
+    } catch (e) { alert(e.response?.data?.error || 'Image generation failed'); }
+    finally { setImgGenerating(false); }
   };
-  const resetSystemPrompt = () => {
-    setSystemPromptText(defaultPrompts[activePromptMode] || defaultPrompts.gen || '');
-    try { localStorage.removeItem('zc_system_prompt'); } catch {}
+
+  const handlePhotoUpload = (files) => {
+    const file = files[0]; if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (e) => { const base64 = e.target.result.split(',')[1]; setUploadedPhoto({ base64, mimeType: file.type || 'image/jpeg', preview: e.target.result }); setVibeResult(null); };
+    reader.readAsDataURL(file);
   };
-  const deleteSystemPrompt = () => {
-    setSystemPromptText('');
-    try { localStorage.removeItem('zc_system_prompt'); } catch {}
+
+  const handleVibeTransform = async () => {
+    if (!uploadedPhoto) return alert('Upload a photo first');
+    setVibeGenerating(true); setVibeResult(null);
+    try {
+      const { data } = await api.post('/api/build/edit-photo', { image: { base64: uploadedPhoto.base64, mimeType: uploadedPhoto.mimeType }, preset: vibePreset });
+      if (data.images?.length) { setVibeResult(`data:${data.images[0].mimeType};base64,${data.images[0].base64}`); setCoinData(p => ({ ...p, balance: data.balanceRemaining })); }
+      else alert('Photo transformation failed. Please try again.');
+    } catch (e) { alert(e.response?.data?.error || 'Photo transformation failed'); }
+    finally { setVibeGenerating(false); }
   };
-  const toggleAutoAttach = () => {
-    const next = !autoAttachPrompt;
-    setAutoAttachPrompt(next);
-    try { localStorage.setItem('zc_auto_attach_prompt', String(next)); } catch {}
+
+  const handleGenerateVideo = async () => {
+    if (!videoPrompt.trim()) return alert('Enter a video description');
+    setVideoGenerating(true); setVideoResult(null);
+    try {
+      const { data } = await api.post('/api/build/generate-video', { prompt: videoPrompt, durationSeconds: videoDuration, aspectRatio: '16:9' });
+      if (data.video) { setVideoResult(data.video); setCoinData(p => ({ ...p, balance: data.balanceRemaining })); }
+      else alert(data.error || 'Video generation failed.');
+    } catch (e) { alert(e.response?.data?.error || 'Video generation failed'); }
+    finally { setVideoGenerating(false); }
   };
-  const loadDefaultForMode = (mode) => {
-    setActivePromptMode(mode);
-    setSystemPromptText(defaultPrompts[mode] || '');
-    try { localStorage.removeItem('zc_system_prompt'); } catch {} // Clear custom so auto-select works
+
+  const insertImageIntoSite = (base64, mimeType) => {
+    if (!files.length) return alert('Generate a site first, then insert images.');
+    const dataUrl = `data:${mimeType};base64,${base64}`;
+    setFiles(prev => prev.map(f => {
+      if (!f.name.endsWith('.html')) return f;
+      const updated = f.content.replace(/https?:\/\/picsum\.photos\/[0-9]+(?:\/[0-9]+)?/, dataUrl);
+      return { ...f, content: updated };
+    }));
+    if (iframeRef.current && preview) {
+      const updatedPreview = preview.replace(/https?:\/\/picsum\.photos\/[0-9]+(?:\/[0-9]+)?/, dataUrl);
+      setPreview(updatedPreview);
+      iframeRef.current.srcdoc = updatedPreview;
+    }
+    alert('Image inserted into your site!');
   };
 
   const handleGenerate = useCallback(async () => {
     if (!prompt.trim()) return alert('Enter a description');
     const editFiles = files.length > 0 ? [...files] : null;
-    // When editing: keep preview visible. When new: clear everything.
-    if (editFiles) {
-      setGenerating(true); setGenResult(null); setDeployUrl(''); setProgressMessages([]); setProgressStep('validating');
-    } else {
-      setActivePromptMode('gen');
-      setGenerating(true); setGenResult(null); setFiles([]); setPreview(''); setDeployUrl(''); setProgressMessages([]); setProgressStep('validating');
-    }
+    if (editFiles) { setGenerating(true); setGenResult(null); setDeployUrl(''); setProgressMessages([]); setProgressStep('validating'); }
+    else { setActivePromptMode('gen'); setGenerating(true); setGenResult(null); setFiles([]); setPreview(''); setDeployUrl(''); setProgressMessages([]); setProgressStep('validating'); }
     if (isMobile) setMobileView('build');
     const controller = new AbortController(); abortControllerRef.current = controller;
     try {
       const token = localStorage.getItem('token');
       const requestBody = { prompt, model: effectiveModel, template, projectName: projectName || 'My Website' };
-      if (editFiles) {
-        requestBody.existingFiles = editFiles;
-        requestBody.isEditing = true;
-        // NEVER send customSystemPrompt during edits — backend MUST use EDIT_PROMPT
-        // This was the #1 bug: customSystemPrompt (often GEN_PROMPT) was overriding EDIT_PROMPT
-      } else {
-        // Only attach custom system prompt for NEW website generation
-        if (autoAttachPrompt && systemPromptText && systemPromptText.trim().length > 50) {
-          requestBody.customSystemPrompt = systemPromptText;
-        }
-      }
+      if (editFiles) { requestBody.existingFiles = editFiles; requestBody.isEditing = true; }
+      else { if (autoAttachPrompt && systemPromptText && systemPromptText.trim().length > 50) requestBody.customSystemPrompt = systemPromptText; }
       const response = await fetch(`${API_URL}/api/build/generate-with-progress`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` }, body: JSON.stringify(requestBody), signal: controller.signal });
       if (!response.ok) { let msg = `Server error ${response.status}`; try { msg = (await response.json()).error || msg; } catch {} throw new Error(msg); }
       const reader = response.body.getReader(); const decoder = new TextDecoder(); let buffer = '';
@@ -299,7 +295,6 @@ export default function Build() {
               setProgressStep('done'); setGenResult('done');
               setProgressMessages(p => [...p, { step: 'done', message: `Done! ${data.fileCount} file(s) using ${MODEL_LABELS[data.model] || data.model}. Cost: ${(data.blSpent||0).toLocaleString()} BL.`, time: new Date() }]);
               api.get('/api/build/available-models').then(r => setAvailableModels(r.data.models || [])).catch(() => {});
-              // On mobile, auto-switch to preview after generation
               if (isMobile) setTimeout(() => setMobileView('preview'), 1500);
             }
             else if (data.type === 'error') { setProgressStep('error'); setGenResult('error'); setProgressMessages(p => [...p, { step: 'error', message: data.error + (data.suggestion ? ` — ${data.suggestion}` : ''), time: new Date() }]); }
@@ -319,7 +314,6 @@ export default function Build() {
     if (!files.length) return alert('No files');
     try {
       const payload = { projectId: currentProjectId, name: projectName || 'Untitled', files, preview, template, description: prompt };
-      // Preserve linked subdomain if editing a deployed site's project
       if (editingDeployedSite) payload.subdomain = editingDeployedSite;
       const { data } = await api.post('/api/build/save-project', payload);
       setCurrentProjectId(data.project.projectId);
@@ -332,13 +326,10 @@ export default function Build() {
     setDeploying(true);
     try {
       if (editingDeployedSite && currentProjectId) {
-        // Re-deploy from project — save project first, then push to live
         await api.post('/api/build/save-project', { projectId: currentProjectId, name: projectName || 'Untitled', files, preview, template, description: prompt });
         const { data } = await api.post('/api/build/redeploy-from-project', { projectId: currentProjectId });
-        setDeployUrl(data.url);
-        alert(`Re-deployed to ${data.url}!`);
+        setDeployUrl(data.url); alert(`Re-deployed to ${data.url}!`);
       } else {
-        // Normal deploy — backend auto-saves to project
         if (!subdomain.trim()) return alert('Enter a subdomain');
         const { data } = await api.post('/api/build/deploy', { subdomain: subdomain.toLowerCase(), files, title: projectName || subdomain });
         setDeployUrl(data.url);
@@ -357,23 +348,98 @@ export default function Build() {
     const items = [];
     const availableIds = new Set(availableModels.map(m => m.id));
     for (const m of availableModels) items.push({ ...m, locked: false });
-    for (const m of ALL_MODELS_DISPLAY) {
-      if (!availableIds.has(m.id)) {
-        items.push({ id: m.id, name: m.name, cost: BL_COST_LABELS[m.id] || 5000, available: false, locked: true, requiredTier: m.tier, monthlyLimit: '—', monthlyUsed: 0, type: 'locked' });
-      }
-    }
+    for (const m of ALL_MODELS_DISPLAY) { if (!availableIds.has(m.id)) items.push({ id: m.id, name: m.name, cost: BL_COST_LABELS[m.id] || 5000, available: false, locked: true, requiredTier: m.tier, monthlyLimit: '—', monthlyUsed: 0, type: 'locked' }); }
     return items;
   })();
 
   const showProgress = generating || (genResult && progressMessages.length > 0);
   const pColor = genResult === 'error' ? '#ef4444' : genResult === 'done' ? '#22c55e' : genResult === 'stopped' ? '#f59e0b' : '#6366f1';
-
-  // ── Edit mode detection ──
   const isEditMode = files.length > 0 || editingDeployedSite;
   const existingCodeSize = files.reduce((sum, f) => sum + (f.content?.length || 0), 0);
   const groqTooSmallForEdit = isEditMode && effectiveModel === 'groq' && existingCodeSize > 5000;
 
-  // ── Edit Mode Banner ──
+  // ── AI Media Panel (shared between desktop and mobile) ────────────────────
+  const AIMediaPanel = () => (
+    <div style={{ marginTop: 4 }}>
+      <button style={{ width: '100%', padding: '8px 12px', borderRadius: 8, border: `1px solid ${showMediaPanel ? '#00E5A0' : 'var(--border)'}`, background: showMediaPanel ? 'rgba(0,229,160,0.08)' : 'transparent', color: showMediaPanel ? '#00E5A0' : 'var(--text-secondary)', fontSize: 12, fontWeight: 600, cursor: 'pointer', textAlign: 'left', fontFamily: 'inherit', transition: 'all 0.2s' }} onClick={() => setShowMediaPanel(!showMediaPanel)}>
+        {showMediaPanel ? '▼' : '▶'} 🎨 AI Media — Images · Photo Editor · Video
+      </button>
+      {showMediaPanel && (
+        <div style={{ marginTop: 8, border: '1px solid var(--border)', borderRadius: 10, padding: 12, background: 'rgba(255,255,255,0.02)' }}>
+          <div style={{ display: 'flex', gap: 4, marginBottom: 10 }}>
+            {[['images','🖼️ Images'],['photo','✏️ Photo'],['video','🎬 Video']].map(([id, label]) => (
+              <button key={id} style={{ padding: '4px 10px', borderRadius: 6, border: `1px solid ${mediaTab === id ? '#6366f1' : 'var(--border)'}`, background: mediaTab === id ? 'rgba(99,102,241,0.15)' : 'transparent', color: mediaTab === id ? '#6366f1' : 'var(--text-secondary)', fontSize: 11, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit' }} onClick={() => setMediaTab(id)}>{label}</button>
+            ))}
+          </div>
+
+          {mediaTab === 'images' && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
+              <input style={{ width: '100%', padding: '7px 10px', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg-elevated)', color: 'var(--text-primary)', fontSize: 12, fontFamily: 'inherit', boxSizing: 'border-box' }} placeholder="Describe the image (e.g. 'hero banner for BBQ restaurant at sunset')" value={imgPrompt} onChange={e => setImgPrompt(e.target.value)} />
+              <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                {['photorealistic','illustration','minimalist','luxury','cyberpunk','watercolor'].map(s => (
+                  <button key={s} style={{ padding: '3px 7px', borderRadius: 100, border: `1px solid ${imgStyle === s ? '#00E5A0' : 'var(--border)'}`, background: imgStyle === s ? 'rgba(0,229,160,0.08)' : 'transparent', color: imgStyle === s ? '#00E5A0' : 'var(--text-muted)', fontSize: 10, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit', textTransform: 'capitalize' }} onClick={() => setImgStyle(s)}>{s}</button>
+                ))}
+              </div>
+              <div style={{ display: 'flex', gap: 4 }}>
+                {['16:9','1:1','4:3','9:16'].map(r => (
+                  <button key={r} style={{ padding: '3px 7px', borderRadius: 6, border: `1px solid ${imgAspect === r ? '#6366f1' : 'var(--border)'}`, background: imgAspect === r ? 'rgba(99,102,241,0.15)' : 'transparent', color: imgAspect === r ? '#6366f1' : 'var(--text-muted)', fontSize: 10, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit' }} onClick={() => setImgAspect(r)}>{r}</button>
+                ))}
+              </div>
+              <button style={{ padding: '8px 12px', borderRadius: 8, border: 'none', background: 'linear-gradient(135deg,#6366f1,#8b5cf6)', color: '#fff', fontSize: 12, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit' }} onClick={handleGenerateImages} disabled={imgGenerating}>{imgGenerating ? '⏳ Generating...' : '⚡ Generate Image (Imagen 4) — 5K BL'}</button>
+              {imgResults.length > 0 && (
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
+                  {imgResults.map((img, i) => (
+                    <div key={i} style={{ position: 'relative' }}>
+                      <img src={`data:${img.mimeType};base64,${img.base64}`} alt={`AI ${i}`} style={{ width: '100%', borderRadius: 6, border: '1px solid var(--border)', display: 'block' }} />
+                      <button style={{ position: 'absolute', bottom: 4, right: 4, padding: '3px 6px', borderRadius: 4, border: 'none', background: '#22c55e', color: '#fff', fontSize: 10, fontWeight: 600, cursor: 'pointer' }} onClick={() => insertImageIntoSite(img.base64, img.mimeType)}>Insert</button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          {mediaTab === 'photo' && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
+              <div style={{ border: '2px dashed var(--border)', borderRadius: 8, padding: 14, textAlign: 'center', cursor: 'pointer', background: uploadedPhoto ? 'rgba(0,229,160,0.04)' : 'transparent' }} onClick={() => photoInputRef.current?.click()}>
+                <input ref={photoInputRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={e => handlePhotoUpload(e.target.files)} />
+                {uploadedPhoto ? <img src={uploadedPhoto.preview} alt="Uploaded" style={{ width: '100%', maxHeight: 90, objectFit: 'contain', borderRadius: 4 }} /> : <><div style={{ fontSize: 18, marginBottom: 4 }}>📸</div><div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Upload photo, logo, or product image</div></>}
+              </div>
+              {uploadedPhoto && (
+                <>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                    {VIBE_PRESETS.map(p => (
+                      <button key={p.id} style={{ padding: '3px 7px', borderRadius: 100, border: `1px solid ${vibePreset === p.id ? '#00E5A0' : 'var(--border)'}`, background: vibePreset === p.id ? 'rgba(0,229,160,0.08)' : 'transparent', color: vibePreset === p.id ? '#00E5A0' : 'var(--text-muted)', fontSize: 10, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit' }} onClick={() => setVibePreset(p.id)}>{p.label}</button>
+                    ))}
+                  </div>
+                  <button style={{ padding: '8px 12px', borderRadius: 8, border: 'none', background: '#8b5cf6', color: '#fff', fontSize: 12, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit' }} onClick={handleVibeTransform} disabled={vibeGenerating}>{vibeGenerating ? '⏳ Transforming...' : '✨ Transform Photo — 5K BL'}</button>
+                  {vibeResult && (
+                    <div>
+                      <img src={vibeResult} alt="Transformed" style={{ width: '100%', borderRadius: 6, border: '1px solid var(--border)', display: 'block', marginBottom: 5 }} />
+                      <button style={{ padding: '5px 10px', borderRadius: 6, border: 'none', background: '#22c55e', color: '#fff', fontSize: 11, fontWeight: 600, cursor: 'pointer' }} onClick={() => { const b64 = vibeResult.split(',')[1]; const mime = vibeResult.split(':')[1].split(';')[0]; insertImageIntoSite(b64, mime); }}>Insert into Site</button>
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+          )}
+
+          {mediaTab === 'video' && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
+              <input style={{ width: '100%', padding: '7px 10px', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg-elevated)', color: 'var(--text-primary)', fontSize: 12, fontFamily: 'inherit', boxSizing: 'border-box' }} placeholder="Describe the video (e.g. 'drone shot over restaurant at golden hour')" value={videoPrompt} onChange={e => setVideoPrompt(e.target.value)} />
+              <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>Duration:</span>
+                {[4,6,8].map(d => (<button key={d} style={{ padding: '3px 7px', borderRadius: 6, border: `1px solid ${videoDuration === d ? '#6366f1' : 'var(--border)'}`, background: videoDuration === d ? 'rgba(99,102,241,0.15)' : 'transparent', color: videoDuration === d ? '#6366f1' : 'var(--text-muted)', fontSize: 10, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit' }} onClick={() => setVideoDuration(d)}>{d}s</button>))}
+              </div>
+              <button style={{ padding: '8px 12px', borderRadius: 8, border: 'none', background: 'linear-gradient(135deg,#0f766e,#0891b2)', color: '#fff', fontSize: 12, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit' }} onClick={handleGenerateVideo} disabled={videoGenerating}>{videoGenerating ? '⏳ Generating... (~1-3 min)' : '🎬 Generate Video (Veo) — 50K BL'}</button>
+              {videoResult && (<div style={{ padding: '8px 10px', background: 'rgba(0,229,160,0.06)', borderRadius: 8, fontSize: 11, color: '#00E5A0' }}>✅ Video generated!<br /><span style={{ fontFamily: 'monospace', fontSize: 10, wordBreak: 'break-all', color: 'var(--text-muted)' }}>{videoResult.gcsUri}</span></div>)}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+
   const EditModeBanner = () => {
     if (!isEditMode || tab !== 'build') return null;
     return (
@@ -382,67 +448,32 @@ export default function Build() {
           <span style={{ fontSize: 13, fontWeight: 700, color: '#6366f1' }}>✏️ Edit Mode</span>
           <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>— AI will modify your existing website, not create a new one</span>
         </div>
-        {groqTooSmallForEdit && (
-          <div style={{ fontSize: 11, color: '#f59e0b', background: 'rgba(245,158,11,.1)', padding: '4px 8px', borderRadius: 4 }}>
-            ⚠️ Groq can't handle files this large ({Math.round(existingCodeSize / 1000)}K chars). Use Gemini Flash or higher for better edits.
-          </div>
-        )}
+        {groqTooSmallForEdit && (<div style={{ fontSize: 11, color: '#f59e0b', background: 'rgba(245,158,11,.1)', padding: '4px 8px', borderRadius: 4 }}>⚠️ Groq can't handle files this large ({Math.round(existingCodeSize / 1000)}K chars). Use Gemini Flash or higher for better edits.</div>)}
       </div>
     );
   };
 
-  // ── System Prompt Editor Panel ──
   const SystemPromptPanel = () => (
     <div style={{ marginBottom: 10 }}>
-      {/* Toggle bar */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '6px 10px', borderRadius: 8, background: 'var(--bg-elevated)', cursor: 'pointer', marginBottom: showSystemPrompt ? 8 : 0 }} onClick={() => setShowSystemPrompt(!showSystemPrompt)}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          <span style={{ fontSize: 12, fontWeight: 700, color: autoAttachPrompt ? '#22c55e' : 'var(--text-muted)' }}>
-            {showSystemPrompt ? '▼' : '▶'} System Prompt
-          </span>
-          <span style={{ fontSize: 10, padding: '2px 6px', borderRadius: 4, background: autoAttachPrompt ? 'rgba(34,197,94,.15)' : 'rgba(239,68,68,.15)', color: autoAttachPrompt ? '#22c55e' : '#ef4444', fontWeight: 600 }}>
-            {autoAttachPrompt ? 'ON' : 'OFF'}
-          </span>
+          <span style={{ fontSize: 12, fontWeight: 700, color: autoAttachPrompt ? '#22c55e' : 'var(--text-muted)' }}>{showSystemPrompt ? '▼' : '▶'} System Prompt</span>
+          <span style={{ fontSize: 10, padding: '2px 6px', borderRadius: 4, background: autoAttachPrompt ? 'rgba(34,197,94,.15)' : 'rgba(239,68,68,.15)', color: autoAttachPrompt ? '#22c55e' : '#ef4444', fontWeight: 600 }}>{autoAttachPrompt ? 'ON' : 'OFF'}</span>
         </div>
         <div style={{ display: 'flex', gap: 4 }} onClick={e => e.stopPropagation()}>
-          <button style={{ padding: '3px 8px', borderRadius: 4, border: 'none', fontSize: 10, fontWeight: 600, cursor: 'pointer', background: autoAttachPrompt ? 'rgba(34,197,94,.2)' : 'rgba(255,255,255,.06)', color: autoAttachPrompt ? '#22c55e' : 'var(--text-muted)' }} onClick={toggleAutoAttach}>
-            {autoAttachPrompt ? '✓ Auto' : '✗ Auto'}
-          </button>
+          <button style={{ padding: '3px 8px', borderRadius: 4, border: 'none', fontSize: 10, fontWeight: 600, cursor: 'pointer', background: autoAttachPrompt ? 'rgba(34,197,94,.2)' : 'rgba(255,255,255,.06)', color: autoAttachPrompt ? '#22c55e' : 'var(--text-muted)' }} onClick={toggleAutoAttach}>{autoAttachPrompt ? '✓ Auto' : '✗ Auto'}</button>
         </div>
       </div>
-
-      {/* Editor (expanded) */}
       {showSystemPrompt && (
         <div style={{ border: '1px solid var(--border)', borderRadius: 10, padding: 10, background: 'var(--bg-card)' }}>
-          {/* Mode buttons — active mode is green */}
           <div style={{ display: 'flex', gap: 4, marginBottom: 8, flexWrap: 'wrap' }}>
-            {[
-              { id: 'gen', label: 'New Website' },
-              { id: 'edit', label: 'Edit Website' },
-              { id: 'fix', label: 'Fix Bugs' },
-            ].map(m => (
-              <button key={m.id} style={{
-                padding: '4px 8px', borderRadius: 6, cursor: 'pointer', fontSize: 10, fontWeight: 700,
-                border: activePromptMode === m.id ? '1px solid #22c55e' : '1px solid var(--border)',
-                background: activePromptMode === m.id ? 'rgba(34,197,94,.15)' : 'transparent',
-                color: activePromptMode === m.id ? '#22c55e' : 'var(--text-secondary)',
-              }} onClick={() => loadDefaultForMode(m.id)}>{m.label}</button>
+            {[{id:'gen',label:'New Website'},{id:'edit',label:'Edit Website'},{id:'fix',label:'Fix Bugs'}].map(m => (
+              <button key={m.id} style={{ padding: '4px 8px', borderRadius: 6, cursor: 'pointer', fontSize: 10, fontWeight: 700, border: activePromptMode === m.id ? '1px solid #22c55e' : '1px solid var(--border)', background: activePromptMode === m.id ? 'rgba(34,197,94,.15)' : 'transparent', color: activePromptMode === m.id ? '#22c55e' : 'var(--text-secondary)' }} onClick={() => loadDefaultForMode(m.id)}>{m.label}</button>
             ))}
           </div>
-
-          {/* Textarea */}
-          <textarea
-            value={systemPromptText}
-            onChange={e => setSystemPromptText(e.target.value)}
-            placeholder="System prompt instructions for the AI..."
-            style={{ width: '100%', minHeight: 150, maxHeight: 300, padding: 10, borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg-elevated)', color: 'var(--text-primary)', fontSize: 12, fontFamily: 'Consolas, monospace', resize: 'vertical', boxSizing: 'border-box', lineHeight: 1.5 }}
-          />
-
-          {/* Info + actions */}
+          <textarea value={systemPromptText} onChange={e => setSystemPromptText(e.target.value)} placeholder="System prompt instructions for the AI..." style={{ width: '100%', minHeight: 150, maxHeight: 300, padding: 10, borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg-elevated)', color: 'var(--text-primary)', fontSize: 12, fontFamily: 'Consolas, monospace', resize: 'vertical', boxSizing: 'border-box', lineHeight: 1.5 }} />
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 8, flexWrap: 'wrap', gap: 6 }}>
-            <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>
-              {systemPromptText.length.toLocaleString()} chars · {autoAttachPrompt ? 'Will be sent with your next generation' : 'Auto-attach is OFF — prompt will NOT be sent'}
-            </span>
+            <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>{systemPromptText.length.toLocaleString()} chars</span>
             <div style={{ display: 'flex', gap: 4 }}>
               <button style={{ padding: '4px 10px', borderRadius: 6, border: 'none', background: '#6366f1', color: '#fff', cursor: 'pointer', fontSize: 10, fontWeight: 600 }} onClick={saveSystemPrompt}>💾 Save</button>
               <button style={{ padding: '4px 10px', borderRadius: 6, border: '1px solid var(--border)', background: 'transparent', color: 'var(--text-secondary)', cursor: 'pointer', fontSize: 10, fontWeight: 600 }} onClick={resetSystemPrompt}>↺ Reset</button>
@@ -454,7 +485,6 @@ export default function Build() {
     </div>
   );
 
-  // ── Progress Panel (shared between desktop right panel and mobile build view) ──
   const ProgressPanel = () => showProgress && progressMessages.length > 0 ? (
     <div style={{ padding: 12, background: `${pColor}11`, borderBottom: `1px solid ${pColor}33`, borderRadius: isMobile ? 10 : 0, margin: isMobile ? '0 0 10px 0' : 0 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
@@ -474,38 +504,20 @@ export default function Build() {
         <div ref={progressEndRef} />
       </div>
       {genResult === 'error' && !generating && <button style={{ marginTop: 8, padding: '7px 14px', borderRadius: 8, border: 'none', background: '#6366f1', color: '#fff', cursor: 'pointer', fontWeight: 600, fontSize: 12 }} onClick={() => { handleDismissProgress(); handleGenerate(); }}>🔄 Retry</button>}
-      {/* Mobile: show "View Preview" button after generation completes */}
-      {isMobile && genResult === 'done' && preview && (
-        <button style={{ marginTop: 8, width: '100%', padding: '10px 0', borderRadius: 10, border: 'none', background: '#22c55e', color: '#fff', cursor: 'pointer', fontWeight: 700, fontSize: 14 }} onClick={() => setMobileView('preview')}>
-          👁️ View Preview & Deploy
-        </button>
-      )}
+      {isMobile && genResult === 'done' && preview && (<button style={{ marginTop: 8, width: '100%', padding: '10px 0', borderRadius: 10, border: 'none', background: '#22c55e', color: '#fff', cursor: 'pointer', fontWeight: 700, fontSize: 14 }} onClick={() => setMobileView('preview')}>👁️ View Preview & Deploy</button>)}
     </div>
   ) : null;
 
-  // ── Deploy Bar (shared) ──
-  // Deploy bar JSX is inlined directly where used (not as a component)
-  // This prevents React from unmounting/remounting the input on every render
-
-  // ── MOBILE LAYOUT ──
+  // ── MOBILE LAYOUT ──────────────────────────────────────────────────────────
   if (isMobile) {
     return (
       <div style={{ display: 'flex', flexDirection: 'column', height: 'calc(100vh - 52px)', overflow: 'hidden' }}>
-        {/* Mobile Top Bar — tabs + stats */}
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 12px', borderBottom: '1px solid var(--border)', background: 'var(--bg-card)', flexWrap: 'wrap', gap: 6 }}>
           <div style={{ display: 'flex', gap: 3 }}>
-            {[
-              { id: 'build', label: '💬 Build', view: 'build' },
-              { id: 'clone', label: '🔄 Clone', view: 'build' },
-              { id: 'fix', label: '🔧 Fix', view: 'build' },
-            ].map(t => (
+            {[{id:'build',label:'💬 Build',view:'build'},{id:'clone',label:'🔄 Clone',view:'build'},{id:'fix',label:'🔧 Fix',view:'build'}].map(t => (
               <button key={t.id} style={{ padding: '6px 10px', borderRadius: 8, border: 'none', cursor: 'pointer', fontWeight: 600, fontSize: 12, background: tab === t.id ? '#6366f1' : 'transparent', color: tab === t.id ? '#fff' : 'var(--text-secondary)' }} onClick={() => { setTab(t.id); setMobileView(t.view); }}>{t.label}</button>
             ))}
-            {preview && (
-              <button style={{ padding: '6px 10px', borderRadius: 8, border: 'none', cursor: 'pointer', fontWeight: 600, fontSize: 12, background: mobileView === 'preview' ? '#22c55e' : 'transparent', color: mobileView === 'preview' ? '#fff' : '#22c55e' }} onClick={() => setMobileView('preview')}>
-                👁️ Preview
-              </button>
-            )}
+            {preview && (<button style={{ padding: '6px 10px', borderRadius: 8, border: 'none', cursor: 'pointer', fontWeight: 600, fontSize: 12, background: mobileView === 'preview' ? '#22c55e' : 'transparent', color: mobileView === 'preview' ? '#fff' : '#22c55e' }} onClick={() => setMobileView('preview')}>👁️ Preview</button>)}
           </div>
           <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
             <span style={{ padding: '2px 8px', borderRadius: 10, fontSize: 10, fontWeight: 700, color: '#000', background: TIER_COLORS[plan] }}>{plan.toUpperCase()}</span>
@@ -513,44 +525,30 @@ export default function Build() {
           </div>
         </div>
 
-        {/* Mobile: Build View */}
         {mobileView === 'build' && (
           <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
             <div style={{ flex: 1, overflowY: 'auto', padding: 12 }}>
               {tab === 'build' && (
                 <>
-                  {/* Progress inline on mobile */}
                   <ProgressPanel />
                   <EditModeBanner />
-
-                  {/* Model selector */}
                   <div style={{ marginBottom: 10 }}>
                     <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4 }}>AI Model:</div>
                     <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
-                      {modelSelectorItems.map(m => (
-                        <button key={m.id} style={{ padding: '4px 8px', borderRadius: 6, border: effectiveModel === m.id ? '1px solid #6366f1' : m.locked ? '1px solid rgba(255,255,255,0.08)' : '1px solid var(--border)', cursor: m.available ? 'pointer' : 'default', fontWeight: 600, fontSize: 10, background: effectiveModel === m.id ? 'rgba(99,102,241,.2)' : 'transparent', color: effectiveModel === m.id ? '#6366f1' : m.locked ? 'var(--text-muted)' : 'var(--text-secondary)', opacity: m.locked ? 0.5 : 1 }} onClick={() => m.available && !m.locked && setSelectedModel(m.id)} disabled={!m.available || m.locked}>
-                          {m.locked ? '🔒 ' : ''}{m.name} {!m.locked && `(${formatBL(m.cost)})`}
-                        </button>
-                      ))}
+                      {modelSelectorItems.map(m => (<button key={m.id} style={{ padding: '4px 8px', borderRadius: 6, border: effectiveModel === m.id ? '1px solid #6366f1' : m.locked ? '1px solid rgba(255,255,255,0.08)' : '1px solid var(--border)', cursor: m.available ? 'pointer' : 'default', fontWeight: 600, fontSize: 10, background: effectiveModel === m.id ? 'rgba(99,102,241,.2)' : 'transparent', color: effectiveModel === m.id ? '#6366f1' : m.locked ? 'var(--text-muted)' : 'var(--text-secondary)', opacity: m.locked ? 0.5 : 1 }} onClick={() => m.available && !m.locked && setSelectedModel(m.id)} disabled={!m.available || m.locked}>{m.locked ? '🔒 ' : ''}{m.name} {!m.locked && `(${formatBL(m.cost)})`}</button>))}
                     </div>
                   </div>
-
                   <input style={{ width: '100%', padding: '8px 12px', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg-elevated)', color: 'var(--text-primary)', fontSize: 13, marginBottom: 8, boxSizing: 'border-box' }} placeholder="Project name (optional)" value={projectName} onChange={e => setProjectName(e.target.value)} />
-
-                  {/* Templates */}
                   <div style={{ marginBottom: 8 }}>
                     <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4 }}>Template:</div>
                     <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
                       {TEMPLATES.map(t => <button key={t.id} style={{ padding: '4px 8px', borderRadius: 6, border: template === t.id ? '1px solid #6366f1' : '1px solid var(--border)', cursor: 'pointer', fontWeight: 600, fontSize: 10, background: template === t.id ? 'rgba(99,102,241,.15)' : 'transparent', color: template === t.id ? '#6366f1' : 'var(--text-secondary)' }} onClick={() => setTemplate(t.id)}>{t.icon} {t.name}</button>)}
                     </div>
                   </div>
-
-                  {/* System Prompt Editor */}
                   <SystemPromptPanel />
-
-                  {/* Generated files */}
+                  <AIMediaPanel />
                   {files.length > 0 && (
-                    <div style={{ marginBottom: 8 }}>
+                    <div style={{ marginBottom: 8, marginTop: 8 }}>
                       <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: 4, marginBottom: 4 }}>
                         <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)' }}>Files ({files.length})</span>
                         <div style={{ display: 'flex', gap: 4 }}>
@@ -574,7 +572,7 @@ export default function Build() {
               {tab === 'fix' && (
                 <>
                   <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--text-primary)', marginBottom: 10 }}>🔧 Fix Your Code</div>
-                  <div style={{ border: '2px dashed var(--border)', borderRadius: 10, padding: 16, textAlign: 'center', cursor: 'pointer', marginBottom: 8, ...(dragActive ? { borderColor: '#6366f1' } : {}) }} onClick={() => fileInputRef.current?.click()}>
+                  <div style={{ border: '2px dashed var(--border)', borderRadius: 10, padding: 16, textAlign: 'center', cursor: 'pointer', marginBottom: 8 }} onClick={() => fileInputRef.current?.click()}>
                     <input ref={fileInputRef} type="file" multiple accept=".html,.css,.js,.jsx,.ts,.tsx,.json,.py,.zip" onChange={e => handleFileUpload(e.target.files)} style={{ display: 'none' }} />
                     <p style={{ margin: 0, fontSize: 13, fontWeight: 600, color: 'var(--text-primary)' }}>📁 Tap to upload files</p>
                   </div>
@@ -584,11 +582,18 @@ export default function Build() {
                 </>
               )}
             </div>
-
-            {/* Mobile Input Area — sticky bottom */}
             {tab === 'build' && (
               <div style={{ padding: 12, borderTop: '1px solid var(--border)', background: 'var(--bg-card)' }}>
-                <textarea style={{ width: '100%', padding: 10, borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg-elevated)', color: 'var(--text-primary)', fontSize: 13, resize: 'none', height: 60, fontFamily: 'inherit', boxSizing: 'border-box' }} placeholder={isEditMode ? "Describe what changes you want..." : "Describe what you want to build..."} value={prompt} onChange={e => setPrompt(e.target.value)} />
+                <div style={{ position: 'relative' }}>
+                  {voiceSupported && (
+                    <button onClick={toggleVoice} style={{ position: 'absolute', top: 8, right: 8, zIndex: 2, width: 28, height: 28, borderRadius: '50%', border: 'none', cursor: 'pointer', background: voiceListening ? 'rgba(255,80,80,0.2)' : 'rgba(99,102,241,0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 13 }} title="Voice input">
+                      {voiceListening ? '🔴' : '🎙️'}
+                    </button>
+                  )}
+                  <textarea style={{ width: '100%', padding: 10, paddingRight: voiceSupported ? 44 : 10, borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg-elevated)', color: 'var(--text-primary)', fontSize: 13, resize: 'none', height: 60, fontFamily: 'inherit', boxSizing: 'border-box' }} placeholder={isEditMode ? "Describe what changes you want..." : "Describe what you want to build..."} value={prompt} onChange={e => setPrompt(e.target.value)} />
+                </div>
+                {voiceListening && <div style={{ fontSize: 11, color: '#FFBD2E', marginTop: 3 }}>🔴 Listening… (5s silence stops)</div>}
+                {voiceError && <div style={{ fontSize: 11, color: '#ef4444', marginTop: 3 }}>{voiceError}</div>}
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 6, gap: 8 }}>
                   <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>Cost: <strong style={{ color: '#f59e0b' }}>{cost.toLocaleString()} BL</strong></span>
                   {generating
@@ -601,7 +606,6 @@ export default function Build() {
           </div>
         )}
 
-        {/* Mobile: Preview View */}
         {mobileView === 'preview' && (
           <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
             {preview ? (
@@ -625,7 +629,6 @@ export default function Build() {
           </div>
         )}
 
-        {/* Code viewer modal */}
         {codeViewFile && (
           <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.8)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 10 }} onClick={() => setCodeViewFile(null)}>
             <div style={{ background: 'var(--bg-card, #1e1e2e)', border: '1px solid var(--border, #333)', borderRadius: 14, width: '95%', maxHeight: '85vh', display: 'flex', flexDirection: 'column', overflow: 'hidden' }} onClick={e => e.stopPropagation()}>
@@ -644,7 +647,7 @@ export default function Build() {
     );
   }
 
-  // ── DESKTOP LAYOUT (unchanged) ──
+  // ── DESKTOP LAYOUT ─────────────────────────────────────────────────────────
   const s = {
     page: { display: 'flex', flexDirection: 'column', height: 'calc(100vh - 52px)', overflow: 'hidden' },
     topBar: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 20px', borderBottom: '1px solid var(--border)', background: 'var(--bg-card)', flexWrap: 'wrap', gap: 8 },
@@ -656,21 +659,14 @@ export default function Build() {
     rightPanel: { flex: 1, display: 'flex', flexDirection: 'column', background: '#1a1a2e' },
     chatArea: { flex: 1, padding: 16, overflowY: 'auto' },
     inputArea: { padding: 16, borderTop: '1px solid var(--border)', background: 'var(--bg-card)' },
-    textarea: { width: '100%', padding: 12, borderRadius: 10, border: '1px solid var(--border)', background: 'var(--bg-elevated)', color: 'var(--text-primary)', fontSize: 14, resize: 'vertical', minHeight: 80, fontFamily: 'inherit', boxSizing: 'border-box' },
+    textarea: { width: '100%', padding: 12, paddingRight: 48, borderRadius: 10, border: '1px solid var(--border)', background: 'var(--bg-elevated)', color: 'var(--text-primary)', fontSize: 14, resize: 'vertical', minHeight: 80, fontFamily: 'inherit', boxSizing: 'border-box' },
     genBtn: (d) => ({ padding: '12px 24px', borderRadius: 10, border: 'none', cursor: d ? 'not-allowed' : 'pointer', fontWeight: 700, fontSize: 14, background: d ? 'var(--bg-elevated)' : 'linear-gradient(135deg, #6366f1, #8b5cf6)', color: d ? 'var(--text-muted)' : '#fff', opacity: d ? .5 : 1, flex: 1 }),
     stopBtn: { padding: '12px 20px', borderRadius: 10, border: '2px solid #ef4444', background: 'rgba(239,68,68,.1)', color: '#ef4444', cursor: 'pointer', fontWeight: 700, fontSize: 14 },
     iframe: { width: '100%', height: '100%', border: 'none', background: '#fff' },
     emptyPreview: { display: 'flex', alignItems: 'center', justifyContent: 'center', flex: 1, color: 'rgba(255,255,255,.3)', fontSize: 18, textAlign: 'center', padding: 40 },
     fileItem: { padding: '8px 12px', borderRadius: 8, background: 'var(--bg-elevated)', marginBottom: 4, fontSize: 13, color: 'var(--text-primary)', display: 'flex', justifyContent: 'space-between', cursor: 'pointer' },
     dropZone: { border: '2px dashed var(--border)', borderRadius: 12, padding: 24, textAlign: 'center', cursor: 'pointer', marginBottom: 12 },
-    modelBtn: (selected, available, locked) => ({
-      padding: '6px 10px', borderRadius: 8, border: selected ? '1px solid #6366f1' : locked ? '1px solid rgba(255,255,255,0.08)' : '1px solid var(--border)',
-      cursor: available ? 'pointer' : 'default', fontWeight: 600, fontSize: 11,
-      background: selected ? 'rgba(99,102,241,.2)' : locked ? 'rgba(255,255,255,0.02)' : 'transparent',
-      color: selected ? '#6366f1' : locked ? 'var(--text-muted)' : 'var(--text-secondary)',
-      opacity: locked ? 0.5 : available ? 1 : 0.6, transition: 'all .2s',
-      display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2, minWidth: 80,
-    }),
+    modelBtn: (selected, available, locked) => ({ padding: '6px 10px', borderRadius: 8, border: selected ? '1px solid #6366f1' : locked ? '1px solid rgba(255,255,255,0.08)' : '1px solid var(--border)', cursor: available ? 'pointer' : 'default', fontWeight: 600, fontSize: 11, background: selected ? 'rgba(99,102,241,.2)' : locked ? 'rgba(255,255,255,0.02)' : 'transparent', color: selected ? '#6366f1' : locked ? 'var(--text-muted)' : 'var(--text-secondary)', opacity: locked ? 0.5 : available ? 1 : 0.6, transition: 'all .2s', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2, minWidth: 80 }),
   };
 
   return (
@@ -716,8 +712,9 @@ export default function Build() {
                   </div>
                 </div>
                 <SystemPromptPanel />
+                <AIMediaPanel />
                 {files.length > 0 && (
-                  <div style={{ padding: 12 }}>
+                  <div style={{ padding: '12px 0' }}>
                     <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-secondary)', marginBottom: 8, display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: 6 }}>
                       <span>Generated Files ({files.length})</span>
                       <div style={{ display: 'flex', gap: 6 }}>
@@ -731,7 +728,16 @@ export default function Build() {
                 )}
               </div>
               <div style={s.inputArea}>
-                <textarea style={s.textarea} placeholder={isEditMode ? "Describe what changes you want (e.g. 'add a booking form', 'change hero text to...')" : "Describe the website you want to build..."} value={prompt} onChange={e => setPrompt(e.target.value)} maxLength={isUnlimited(maxChars) ? undefined : maxChars + 100} />
+                <div style={{ position: 'relative' }}>
+                  {voiceSupported && (
+                    <button onClick={toggleVoice} style={{ position: 'absolute', top: 8, right: 8, zIndex: 2, width: 32, height: 32, borderRadius: '50%', border: 'none', cursor: 'pointer', background: voiceListening ? 'rgba(255,80,80,0.2)' : 'rgba(99,102,241,0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 15 }} title={voiceListening ? 'Listening... 5s silence stops' : 'Click to speak your prompt'}>
+                      {voiceListening ? '🔴' : '🎙️'}
+                    </button>
+                  )}
+                  <textarea style={s.textarea} placeholder={isEditMode ? "Describe what changes you want (e.g. 'add a booking form', 'change hero text to...')" : "Describe the website you want to build..."} value={prompt} onChange={e => setPrompt(e.target.value)} maxLength={isUnlimited(maxChars) ? undefined : maxChars + 100} />
+                </div>
+                {voiceListening && <div style={{ fontSize: 11, color: '#FFBD2E', marginTop: 4 }}>🔴 Listening… speak now (5 seconds of silence stops recording)</div>}
+                {voiceError && <div style={{ fontSize: 11, color: '#ef4444', marginTop: 4 }}>{voiceError}</div>}
                 <div style={{ fontSize: 11, textAlign: 'right', marginTop: 4, color: charPct > 100 ? '#ef4444' : 'var(--text-muted)' }}>{isUnlimited(maxChars) ? `${charsUsed} chars` : `${charsUsed}/${maxChars}`}</div>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 8, fontSize: 13, gap: 8 }}>
                   <span style={{ color: 'var(--text-muted)' }}>Cost: <strong style={{ color: '#f59e0b' }}>{cost.toLocaleString()} BL</strong> {balance < cost && <span style={{ color: '#ef4444', fontSize: 11 }}>(insufficient)</span>}</span>
