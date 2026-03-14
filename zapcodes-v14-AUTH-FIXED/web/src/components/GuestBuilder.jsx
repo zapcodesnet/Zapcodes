@@ -410,6 +410,18 @@ export default function GuestBuilder() {
               <div style={{ flex: 1, background: 'rgba(255,255,255,0.04)', borderRadius: 5, padding: '3px 10px', fontSize: 11, color: muted, fontFamily: 'monospace', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                 {buildResult ? `${buildResult.subdomain}.zapcodes.net` : 'building your site…'}
               </div>
+              {buildResult?.preview && (
+                <button
+                  onClick={() => {
+                    const blob = new Blob([buildResult.preview], { type: 'text/html; charset=utf-8' });
+                    const url  = URL.createObjectURL(blob);
+                    const win  = window.open(url, '_blank');
+                    if (win) setTimeout(() => URL.revokeObjectURL(url), 5000);
+                  }}
+                  style={{ background: 'rgba(0,229,160,0.12)', border: `1px solid rgba(0,229,160,0.3)`, color: accent, fontSize: 10, fontWeight: 700, padding: '3px 8px', borderRadius: 5, cursor: 'pointer', fontFamily: 'inherit', whiteSpace: 'nowrap', flexShrink: 0 }}
+                  title="Open full preview in new tab"
+                >⛶ Full</button>
+              )}
               {generating && (
                 <button onClick={handleStop} style={{ background: 'rgba(239,68,68,0.15)', border: '1px solid #ef4444', color: '#ef4444', fontSize: 11, fontWeight: 700, padding: '4px 10px', borderRadius: 6, cursor: 'pointer', fontFamily: 'inherit', whiteSpace: 'nowrap' }}>⛔ Stop</button>
               )}
@@ -517,9 +529,18 @@ export default function GuestBuilder() {
                           ⚡ Claim It Free — Register Now →
                         </Link>
                       )}
-                      <a href={buildResult.url} target="_blank" rel="noreferrer" style={{ flex: 1, minWidth: 100, display: 'block', textAlign: 'center', padding: '10px 16px', borderRadius: 10, border: `1px solid ${border2}`, color: muted, fontSize: 13, textDecoration: 'none' }}>
-                        View Full Site
-                      </a>
+                      <button
+                        onClick={() => {
+                          if (!buildResult?.preview) return;
+                          const blob = new Blob([buildResult.preview], { type: 'text/html; charset=utf-8' });
+                          const url  = URL.createObjectURL(blob);
+                          const win  = window.open(url, '_blank');
+                          if (win) setTimeout(() => URL.revokeObjectURL(url), 5000);
+                        }}
+                        style={{ flex: 1, minWidth: 100, padding: '10px 16px', borderRadius: 10, border: `1px solid ${border2}`, background: 'transparent', color: muted, fontSize: 13, cursor: 'pointer', fontFamily: 'inherit', whiteSpace: 'nowrap' }}
+                      >
+                        🔗 Full Preview
+                      </button>
                     </div>
                     {isLoggedIn && (
                       <div style={{ marginTop: 8, fontSize: 11, color: muted2, textAlign: 'center' }}>
