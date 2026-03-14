@@ -109,12 +109,25 @@ export default function Build() {
   const [vibeCustomPrompt, setVibeCustomPrompt] = useState(''); // custom instruction for photo editor
   const photoInputRef = useRef(null);
 
+  // ── Chat UI state ──────────────────────────────────────────────────────
+  const [chatMessages,      setChatMessages]      = useState([]); // { role, content, timestamp }
+  const [chatInput,         setChatInput]          = useState('');
+  const [memorySummaries,   setMemorySummaries]    = useState([]); // up to 5
+  const [memoryExpanded,    setMemoryExpanded]     = useState(false);
+  const [aiThinking,        setAiThinking]         = useState(false); // clarification check
+  const [awaitingClarify,   setAwaitingClarify]    = useState(false); // waiting for user reply
+  const chatEndRef = useRef(null);
+
+  // ── Fallback dialog state ─────────────────────────────────────────────
+  const [fallbackDialog, setFallbackDialog] = useState(null);
+  // fallbackDialog = { currentModel, nextModel, nextCost, balance, onConfirm, isGroqWarn, noMoreModels }
+
   const iframeRef = useRef(null);
   const fileInputRef = useRef(null);
   const abortControllerRef = useRef(null);
   const progressEndRef = useRef(null);
 
-  // ── NEW: Voice to text ─────────────────────────────────────────────────────
+  // ── Voice to text — main prompt (APPEND mode) ──────────────────────────
   const {
     isListening: voiceListening,
     isSupported: voiceSupported,
@@ -125,6 +138,33 @@ export default function Build() {
     silenceTimeoutMs: 5000,
   });
 
+  // ── Voice for image prompt ───────────────────────────────────────────────
+  const {
+    isListening: imgVoiceListening,
+    toggleListening: toggleImgVoice,
+  } = useSpeechToText({
+    onResult: (text, isInterim) => { if (!isInterim) setImgPrompt(text); },
+    silenceTimeoutMs: 5000,
+  });
+
+  // ── Voice for video prompt ───────────────────────────────────────────────
+  const {
+    isListening: videoVoiceListening,
+    toggleListening: toggleVideoVoice,
+  } = useSpeechToText({
+    onResult: (text, isInterim) => { if (!isInterim) setVideoPrompt(text); },
+    silenceTimeoutMs: 5000,
+  });
+
+  // ── Voice for vibe/photo editor prompt ──────────────────────────────────
+  const {
+    isListening: vibeVoiceListening,
+    toggleListening: toggleVibeVoice,
+  } = useSpeechToText({
+    onResult: (text, isInterim) => { if (!isInterim) setVibeCustomPrompt(text); },
+    silenceTimeoutMs: 5000,
+  });
+
   useEffect(() => { api.get('/api/coins/balance').then(r => setCoinData(r.data)).catch(() => {}); }, []);
   useEffect(() => {
     api.get('/api/build/available-models').then(r => {
@@ -132,6 +172,18 @@ export default function Build() {
       if (r.data.bl_coins !== undefined) setCoinData(p => ({ ...p, balance: r.data.bl_coins }));
     }).catch(() => {});
   }, [coinData?.balance]);
+
+  // Load chat memory when project is set
+  useEffect(() => {
+    if (!currentProjectId) return;
+    api.get(`/api/build/project/${currentProjectId}`).then(({ data }) => {
+      const mem = data.project?.projectMemory;
+      if (mem) {
+        setChatMessages(mem.rawMessages || []);
+        setMemorySummaries(mem.summaries || []);
+      }
+    }).catch(() => {});
+  }, [currentProjectId]);
 
   useEffect(() => {
     try {
@@ -149,6 +201,7 @@ export default function Build() {
   useEffect(() => { const h = () => setIsMobile(window.innerWidth < 768); window.addEventListener('resize', h); return () => window.removeEventListener('resize', h); }, []);
   useEffect(() => { if (!localStorage.getItem('zc_system_prompt') && defaultPrompts[activePromptMode]) setSystemPromptText(defaultPrompts[activePromptMode]); }, [activePromptMode, defaultPrompts]);
   useEffect(() => { if (progressEndRef.current) progressEndRef.current.scrollIntoView({ behavior: 'smooth', block: 'end' }); }, [progressMessages]);
+  useEffect(() => { if (chatEndRef.current) chatEndRef.current.scrollIntoView({ behavior: 'smooth' }); }, [chatMessages]);
   useEffect(() => {
     if (files.length > 0) {
       const htmlFile = files.find(f => f.name === 'index.html') || files.find(f => f.name?.endsWith('.html'));
@@ -345,7 +398,107 @@ export default function Build() {
     else alert('Image added. If you don\'t see it, click a section in the preview to refresh.');
   };
 
+  // ── Save message to project memory ────────────────────────────────────
+  const saveMessageToMemory = useCallback(async (role, content, mediaPrompts = {}) => {
+    if (!currentProjectId) return;
+    const msg = { role, content, mediaPrompts, timestamp: new Date().toISOString() };
+    setChatMessages(prev => [...prev.slice(-19), msg]); // keep last 20 in UI
+    try {
+      await api.post('/api/build/save-message', {
+        projectId: currentProjectId,
+        message: msg,
+      });
+    } catch (_) {}
+  }, [currentProjectId]);
+
+  // ── Collect active AI media prompts ───────────────────────────────────
+  const getActiveMediaPrompts = useCallback(() => ({
+    imagePrompt: imgResults.length > 0 ? imgPrompt : '',
+    vibePrompt:  vibeResult ? vibeCustomPrompt || vibePreset : '',
+    videoPrompt: videoResult ? videoPrompt : '',
+  }), [imgResults, imgPrompt, vibeResult, vibeCustomPrompt, vibePreset, videoResult, videoPrompt]);
+
+  // ── Collect active reference images/video for auto-inject ─────────────
+  const getActiveReferenceMedia = useCallback(() => {
+    const media = [];
+    if (imgResults.length > 0) {
+      imgResults.forEach(img => media.push({ base64: img.base64, mimeType: img.mimeType }));
+    }
+    if (vibeResult) {
+      const b64 = vibeResult.split(',')[1];
+      const mime = vibeResult.split(':')[1]?.split(';')[0] || 'image/png';
+      if (b64) media.push({ base64: b64, mimeType: mime });
+    }
+    return media;
+  }, [imgResults, vibeResult]);
+
+  // ── Fallback dialog confirm handler ───────────────────────────────────
+  const handleFallbackConfirm = useCallback((nextModel, originalPrompt) => {
+    setFallbackDialog(null);
+    setSelectedModel(nextModel);
+    // Re-trigger generation with the next model
+    setTimeout(() => handleGenerate(originalPrompt, nextModel), 100);
+  }, []);
+
+  // ── Chat send handler — checks clarity first ─────────────────────────
+  const handleSendChat = useCallback(async () => {
+    const text = chatInput.trim();
+    if (!text) return;
+    setChatInput('');
+
+    // Add user message to chat immediately
+    const userMsg = { role: 'user', content: text, timestamp: new Date().toISOString() };
+    setChatMessages(prev => [...prev.slice(-19), userMsg]);
+
+    // If already awaiting a clarification reply — skip clarity check, generate directly
+    if (awaitingClarify) {
+      setAwaitingClarify(false);
+      setPrompt(text);
+      setTimeout(() => handleGenerate(text), 50);
+      return;
+    }
+
+    // Quick clarity check via backend before full generation
+    setAiThinking(true);
+    try {
+      const { data } = await api.post('/api/build/check-clarity', {
+        prompt: text,
+        projectId: currentProjectId,
+        isEditMode: isEditMode,
+      });
+
+      if (data.needsClarification && data.question) {
+        // AI has a clarifying question — show it in chat, don't generate yet
+        const aiMsg = {
+          role: 'ai',
+          content: data.question,
+          timestamp: new Date().toISOString(),
+          isQuestion: true,
+        };
+        setChatMessages(prev => [...prev.slice(-19), aiMsg]);
+        setAwaitingClarify(true);
+        setAiThinking(false);
+        return;
+      }
+    } catch (_) {
+      // Clarity check failed — proceed to generate anyway
+    }
+    setAiThinking(false);
+
+    // Proceed to generation
+    setPrompt(text);
+    setTimeout(() => handleGenerate(text), 50);
+  }, [chatInput, awaitingClarify, currentProjectId, isEditMode, handleGenerate]);
+
+  const handleChatKeyDown = (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      handleSendChat();
+    }
+  };
+
   const handleGenerate = useCallback(async () => {
+
     if (!prompt.trim()) return alert('Enter a description');
     const editFiles = files.length > 0 ? [...files] : null;
     if (editFiles) { setGenerating(true); setGenResult(null); setDeployUrl(''); setProgressMessages([]); setProgressStep('validating'); }
@@ -354,9 +507,22 @@ export default function Build() {
     const controller = new AbortController(); abortControllerRef.current = controller;
     try {
       const token = localStorage.getItem('token');
-      const requestBody = { prompt, model: effectiveModel, template, projectName: projectName || 'My Website' };
+      const requestBody = { prompt, model: effectiveModel, template, projectName: projectName || 'My Website', projectId: currentProjectId || undefined };
       if (editFiles) { requestBody.existingFiles = editFiles; requestBody.isEditing = true; }
       else { if (autoAttachPrompt && systemPromptText && systemPromptText.trim().length > 50) requestBody.customSystemPrompt = systemPromptText; }
+
+      // ── Auto-inject AI generated media as reference images ──────────────
+      const refMedia = getActiveReferenceMedia();
+      if (refMedia.length > 0) {
+        requestBody.referenceImages = refMedia;
+        requestBody.hasGeneratedMedia = true;
+      }
+      // ── Pass video URL if generated ──────────────────────────────────────
+      if (videoResult?.publicUrl) requestBody.generatedVideoUrl = videoResult.publicUrl;
+
+      // ── Save user message to project memory ──────────────────────────────
+      const mediaPrompts = getActiveMediaPrompts();
+      saveMessageToMemory('user', prompt, mediaPrompts);
       const response = await fetch(`${API_URL}/api/build/generate-with-progress`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` }, body: JSON.stringify(requestBody), signal: controller.signal });
       if (!response.ok) { let msg = `Server error ${response.status}`; try { msg = (await response.json()).error || msg; } catch {} throw new Error(msg); }
       const reader = response.body.getReader(); const decoder = new TextDecoder(); let buffer = '';
@@ -373,7 +539,15 @@ export default function Build() {
               setCoinData(p => ({ ...p, balance: data.balanceRemaining }));
               if (iframeRef.current && data.preview) iframeRef.current.srcdoc = data.preview;
               setProgressStep('done'); setGenResult('done');
-              setProgressMessages(p => [...p, { step: 'done', message: `Done! ${data.fileCount} file(s) using ${MODEL_LABELS[data.model] || data.model}. Cost: ${(data.blSpent||0).toLocaleString()} BL.`, time: new Date() }]);
+              const doneMsg = `Done! ${data.fileCount} file(s) using ${MODEL_LABELS[data.model] || data.model}. Cost: ${(data.blSpent||0).toLocaleString()} BL.`;
+              setProgressMessages(p => [...p, { step: 'done', message: doneMsg, time: new Date() }]);
+              // Save AI completion message to memory
+              const aiChatMsg = { role: 'ai', content: `✅ ${doneMsg}`, timestamp: new Date().toISOString() };
+              setChatMessages(prev => [...prev.slice(-19), aiChatMsg]);
+              saveMessageToMemory('ai', `Built with ${MODEL_LABELS[data.model] || data.model}. ${data.fileCount} file(s) generated.`);
+              // Clear used media after successful injection
+              if (imgResults.length > 0) setImgResults([]);
+              if (vibeResult) setVibeResult(null);
               api.get('/api/build/available-models').then(r => setAvailableModels(r.data.models || [])).catch(() => {});
               if (isMobile) setTimeout(() => setMobileView('preview'), 1500);
             }
@@ -438,8 +612,11 @@ export default function Build() {
   const existingCodeSize = files.reduce((sum, f) => sum + (f.content?.length || 0), 0);
   const groqTooSmallForEdit = isEditMode && effectiveModel === 'groq' && existingCodeSize > 5000;
 
-  // ── AI Media Panel (shared between desktop and mobile) ────────────────────
-  const AIMediaPanel = () => (
+  // ── AI Media Panel — rendered as inline function to prevent remount on keystroke ──
+  // IMPORTANT: This is a render function (not a React component) so inputs never lose
+  // focus mid-typing. Defining as const Component = () => inside another component
+  // causes React to remount the entire subtree on every parent re-render.
+  const renderAIMediaPanel = () => (
     <div style={{ marginTop: 4 }}>
       <button style={{ width: '100%', padding: '8px 12px', borderRadius: 8, border: `1px solid ${showMediaPanel ? '#00E5A0' : 'var(--border)'}`, background: showMediaPanel ? 'rgba(0,229,160,0.08)' : 'transparent', color: showMediaPanel ? '#00E5A0' : 'var(--text-secondary)', fontSize: 12, fontWeight: 600, cursor: 'pointer', textAlign: 'left', fontFamily: 'inherit', transition: 'all 0.2s' }} onClick={() => setShowMediaPanel(!showMediaPanel)}>
         {showMediaPanel ? '▼' : '▶'} 🎨 AI Media — Images · Photo Editor · Video
@@ -454,7 +631,10 @@ export default function Build() {
 
           {mediaTab === 'images' && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
-              <input style={{ width: '100%', padding: '7px 10px', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg-elevated)', color: 'var(--text-primary)', fontSize: 12, fontFamily: 'inherit', boxSizing: 'border-box' }} placeholder="Describe the image (e.g. 'hero banner for BBQ restaurant at sunset')" value={imgPrompt} onChange={e => setImgPrompt(e.target.value)} />
+              <div style={{ position: 'relative' }}>
+                <input style={{ width: '100%', padding: '7px 10px', paddingRight: voiceSupported ? 32 : 10, borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg-elevated)', color: 'var(--text-primary)', fontSize: 12, fontFamily: 'inherit', boxSizing: 'border-box' }} placeholder="Describe the image (e.g. 'hero banner for BBQ restaurant at sunset')" value={imgPrompt} onChange={e => setImgPrompt(e.target.value)} />
+                {voiceSupported && <button onClick={() => toggleImgVoice(imgPrompt)} style={{ position: 'absolute', top: 5, right: 5, width: 22, height: 22, borderRadius: '50%', border: 'none', background: imgVoiceListening ? 'rgba(255,80,80,0.2)' : 'rgba(99,102,241,0.15)', cursor: 'pointer', fontSize: 11, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{imgVoiceListening ? '🔴' : '🎙️'}</button>}
+              </div>
               <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
                 {['photorealistic','illustration','minimalist','luxury','cyberpunk','watercolor'].map(s => (
                   <button key={s} style={{ padding: '3px 7px', borderRadius: 100, border: `1px solid ${imgStyle === s ? '#00E5A0' : 'var(--border)'}`, background: imgStyle === s ? 'rgba(0,229,160,0.08)' : 'transparent', color: imgStyle === s ? '#00E5A0' : 'var(--text-muted)', fontSize: 10, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit', textTransform: 'capitalize' }} onClick={() => setImgStyle(s)}>{s}</button>
@@ -497,12 +677,15 @@ export default function Build() {
                   </div>
                   <div>
                     <div style={{ fontSize: 10, color: 'var(--text-muted)', marginBottom: 4, fontWeight: 600 }}>OR DESCRIBE EXACTLY WHAT YOU WANT:</div>
-                    <textarea
-                      value={vibeCustomPrompt}
-                      onChange={e => setVibeCustomPrompt(e.target.value)}
-                      placeholder="e.g. Make this cat fishing for shark in the ocean, dramatic waves, sunset sky"
-                      style={{ width: '100%', padding: '8px 10px', borderRadius: 8, border: `1px solid ${vibeCustomPrompt ? '#8b5cf6' : 'var(--border)'}`, background: 'var(--bg-elevated)', color: 'var(--text-primary)', fontSize: 12, fontFamily: 'inherit', resize: 'vertical', minHeight: 56, boxSizing: 'border-box', lineHeight: 1.5 }}
-                    />
+                    <div style={{ position: 'relative' }}>
+                      <textarea
+                        value={vibeCustomPrompt}
+                        onChange={e => setVibeCustomPrompt(e.target.value)}
+                        placeholder="e.g. Make this cat fishing for shark in the ocean, dramatic waves, sunset sky"
+                        style={{ width: '100%', padding: '8px 10px', paddingRight: voiceSupported ? 32 : 10, borderRadius: 8, border: `1px solid ${vibeCustomPrompt ? '#8b5cf6' : 'var(--border)'}`, background: 'var(--bg-elevated)', color: 'var(--text-primary)', fontSize: 12, fontFamily: 'inherit', resize: 'vertical', minHeight: 56, boxSizing: 'border-box', lineHeight: 1.5 }}
+                      />
+                      {voiceSupported && <button onClick={() => toggleVibeVoice(vibeCustomPrompt)} style={{ position: 'absolute', top: 6, right: 6, width: 22, height: 22, borderRadius: '50%', border: 'none', background: vibeVoiceListening ? 'rgba(255,80,80,0.2)' : 'rgba(139,92,246,0.15)', cursor: 'pointer', fontSize: 11, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{vibeVoiceListening ? '🔴' : '🎙️'}</button>}
+                    </div>
                     {vibeCustomPrompt && <div style={{ fontSize: 10, color: '#8b5cf6', marginTop: 3 }}>✓ Custom prompt will override preset</div>}
                   </div>
                   <button style={{ padding: '8px 12px', borderRadius: 8, border: 'none', background: '#8b5cf6', color: '#fff', fontSize: 12, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit' }} onClick={handleVibeTransform} disabled={vibeGenerating}>
@@ -521,7 +704,10 @@ export default function Build() {
 
           {mediaTab === 'video' && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
-              <input style={{ width: '100%', padding: '7px 10px', borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg-elevated)', color: 'var(--text-primary)', fontSize: 12, fontFamily: 'inherit', boxSizing: 'border-box' }} placeholder="Describe the video (e.g. 'drone shot over restaurant at golden hour')" value={videoPrompt} onChange={e => setVideoPrompt(e.target.value)} />
+              <div style={{ position: 'relative' }}>
+                <input style={{ width: '100%', padding: '7px 10px', paddingRight: voiceSupported ? 32 : 10, borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg-elevated)', color: 'var(--text-primary)', fontSize: 12, fontFamily: 'inherit', boxSizing: 'border-box' }} placeholder="Describe the video (e.g. 'drone shot over restaurant at golden hour')" value={videoPrompt} onChange={e => setVideoPrompt(e.target.value)} />
+                {voiceSupported && <button onClick={() => toggleVideoVoice(videoPrompt)} style={{ position: 'absolute', top: 5, right: 5, width: 22, height: 22, borderRadius: '50%', border: 'none', background: videoVoiceListening ? 'rgba(255,80,80,0.2)' : 'rgba(99,102,241,0.15)', cursor: 'pointer', fontSize: 11, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{videoVoiceListening ? '🔴' : '🎙️'}</button>}
+              </div>
               <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
                 <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>Duration:</span>
                 {[4,6,8].map(d => (<button key={d} style={{ padding: '3px 7px', borderRadius: 6, border: `1px solid ${videoDuration === d ? '#6366f1' : 'var(--border)'}`, background: videoDuration === d ? 'rgba(99,102,241,0.15)' : 'transparent', color: videoDuration === d ? '#6366f1' : 'var(--text-muted)', fontSize: 10, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit' }} onClick={() => setVideoDuration(d)}>{d}s</button>))}
@@ -607,6 +793,107 @@ export default function Build() {
     </div>
   );
 
+  // ── Fallback Dialog ───────────────────────────────────────────────────
+  const renderFallbackDialog = () => {
+    if (!fallbackDialog) return null;
+    const { currentModel, nextModel, nextCost, balance, onConfirm, isGroqWarn, noMoreModels } = fallbackDialog;
+    return (
+      <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.75)', zIndex: 2000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
+        <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 16, padding: 28, maxWidth: 400, width: '100%' }}>
+          {noMoreModels ? (
+            <>
+              <div style={{ fontSize: 20, marginBottom: 12 }}>⚠️</div>
+              <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 8, color: '#ef4444' }}>AI is currently unresponsive</div>
+              <p style={{ fontSize: 14, color: 'var(--text-secondary)', marginBottom: 20, lineHeight: 1.6 }}>Please try again in a few minutes. Upgrading your plan gives you access to more AI models as backup.</p>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button style={{ flex: 1, padding: '10px 16px', borderRadius: 8, border: 'none', background: '#6366f1', color: '#fff', fontWeight: 700, cursor: 'pointer', fontSize: 13, fontFamily: 'inherit' }} onClick={() => { setFallbackDialog(null); handleGenerate(); }}>Try Again</button>
+                <button style={{ flex: 1, padding: '10px 16px', borderRadius: 8, border: '1px solid var(--border)', background: 'transparent', color: 'var(--text-secondary)', fontWeight: 600, cursor: 'pointer', fontSize: 13, fontFamily: 'inherit' }} onClick={() => { setFallbackDialog(null); window.location.href = '/pricing'; }}>View Plans</button>
+              </div>
+            </>
+          ) : isGroqWarn ? (
+            <>
+              <div style={{ fontSize: 20, marginBottom: 12 }}>⚠️</div>
+              <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 8, color: '#f59e0b' }}>All preferred AI models unresponsive</div>
+              <p style={{ fontSize: 14, color: 'var(--text-secondary)', marginBottom: 8, lineHeight: 1.6 }}>Last option: <strong style={{ color: '#f59e0b' }}>Groq AI</strong> — Cost: <strong style={{ color: '#f59e0b' }}>{(nextCost || 5000).toLocaleString()} BL</strong></p>
+              <p style={{ fontSize: 12, color: '#ef4444', background: 'rgba(239,68,68,0.08)', padding: '8px 12px', borderRadius: 8, marginBottom: 20, lineHeight: 1.6 }}>⚠️ WARNING: Groq may produce incomplete code for large websites. Some sections may be missing.</p>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button style={{ flex: 1, padding: '10px 16px', borderRadius: 8, border: 'none', background: '#f59e0b', color: '#000', fontWeight: 700, cursor: 'pointer', fontSize: 13, fontFamily: 'inherit' }} onClick={onConfirm}>Try Groq Anyway</button>
+                <button style={{ flex: 1, padding: '10px 16px', borderRadius: 8, border: '1px solid var(--border)', background: 'transparent', color: 'var(--text-secondary)', fontWeight: 600, cursor: 'pointer', fontSize: 13, fontFamily: 'inherit' }} onClick={() => setFallbackDialog(null)}>Cancel</button>
+              </div>
+            </>
+          ) : (
+            <>
+              <div style={{ fontSize: 20, marginBottom: 12 }}>⚠️</div>
+              <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 12, color: '#F0F4F8' }}>{currentModel} is not responding</div>
+              <div style={{ background: 'var(--bg-elevated)', borderRadius: 10, padding: '12px 16px', marginBottom: 16 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginBottom: 6 }}><span style={{ color: 'var(--text-muted)' }}>Next AI:</span><strong style={{ color: '#6366f1' }}>{nextModel}</strong></div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginBottom: 6 }}><span style={{ color: 'var(--text-muted)' }}>Cost:</span><strong style={{ color: '#f59e0b' }}>{(nextCost || 0).toLocaleString()} BL</strong></div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13 }}><span style={{ color: 'var(--text-muted)' }}>Your balance:</span><strong style={{ color: '#22c55e' }}>{(balance || 0).toLocaleString()} BL</strong></div>
+              </div>
+              <p style={{ fontSize: 12, color: '#22c55e', marginBottom: 20 }}>✅ Your last 20 messages and 5 summaries will transfer automatically.</p>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button style={{ flex: 1, padding: '10px 16px', borderRadius: 8, border: 'none', background: '#6366f1', color: '#fff', fontWeight: 700, cursor: 'pointer', fontSize: 13, fontFamily: 'inherit' }} onClick={onConfirm}>Yes, use {nextModel}</button>
+                <button style={{ flex: 1, padding: '10px 16px', borderRadius: 8, border: '1px solid var(--border)', background: 'transparent', color: 'var(--text-secondary)', fontWeight: 600, cursor: 'pointer', fontSize: 13, fontFamily: 'inherit' }} onClick={() => setFallbackDialog(null)}>Cancel</button>
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+    );
+  };
+
+  // ── Memory Panel ──────────────────────────────────────────────────────
+  const renderMemoryPanel = () => {
+    if (!currentProjectId || (memorySummaries.length === 0 && chatMessages.length === 0)) return null;
+    return (
+      <div style={{ marginBottom: 8, border: '1px solid var(--border)', borderRadius: 10, overflow: 'hidden' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 12px', background: 'rgba(99,102,241,0.08)', cursor: 'pointer' }} onClick={() => setMemoryExpanded(!memoryExpanded)}>
+          <span style={{ fontSize: 12, fontWeight: 700, color: '#6366f1' }}>
+            📋 Memory: {memorySummaries.length} summar{memorySummaries.length !== 1 ? 'ies' : 'y'} · {chatMessages.length} message{chatMessages.length !== 1 ? 's' : ''}
+          </span>
+          <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{memoryExpanded ? '▲ collapse' : '▼ expand'}</span>
+        </div>
+        {memoryExpanded && (
+          <div style={{ padding: 12, background: 'var(--bg-elevated)', maxHeight: 200, overflowY: 'auto' }}>
+            {memorySummaries.map((s, i) => (
+              <div key={i} style={{ marginBottom: 10, padding: '8px 10px', background: 'rgba(99,102,241,0.06)', borderRadius: 8, borderLeft: '2px solid #6366f1' }}>
+                <div style={{ fontSize: 10, color: '#6366f1', fontWeight: 700, marginBottom: 4 }}>
+                  Summary {i + 1} — {s.messageRange} · {s.createdAt ? new Date(s.createdAt).toLocaleDateString() : ''}
+                </div>
+                <p style={{ fontSize: 11, color: 'var(--text-secondary)', lineHeight: 1.6, margin: 0 }}>{s.content}</p>
+              </div>
+            ))}
+            {memorySummaries.length === 0 && <p style={{ fontSize: 11, color: 'var(--text-muted)', textAlign: 'center', margin: 0 }}>No summaries yet — summaries are created every 20 messages.</p>}
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  // ── Chat History ──────────────────────────────────────────────────────
+  const renderChatHistory = () => {
+    if (chatMessages.length === 0) return null;
+    return (
+      <div style={{ marginBottom: 8, border: '1px solid var(--border)', borderRadius: 10, overflow: 'hidden' }}>
+        <div style={{ padding: '6px 12px', background: 'var(--bg-elevated)', fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', borderBottom: '1px solid var(--border)' }}>
+          💬 Conversation History
+        </div>
+        <div style={{ maxHeight: 240, overflowY: 'auto', padding: '8px 0' }}>
+          {chatMessages.map((m, i) => (
+            <div key={i} style={{ padding: '6px 12px', display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+              <span style={{ fontSize: 14, flexShrink: 0, marginTop: 1 }}>{m.role === 'user' ? '👤' : '🤖'}</span>
+              <div style={{ flex: 1 }}>
+                <p style={{ fontSize: 12, color: m.role === 'user' ? 'var(--text-primary)' : m.isQuestion ? '#f59e0b' : 'var(--text-secondary)', margin: 0, lineHeight: 1.6 }}>{m.content}</p>
+                {m.timestamp && <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 2 }}>{new Date(m.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</div>}
+              </div>
+            </div>
+          ))}
+          <div ref={chatEndRef} />
+        </div>
+      </div>
+    );
+  };
+
   const ProgressPanel = () => showProgress && progressMessages.length > 0 ? (
     <div style={{ padding: 12, background: `${pColor}11`, borderBottom: `1px solid ${pColor}33`, borderRadius: isMobile ? 10 : 0, margin: isMobile ? '0 0 10px 0' : 0 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
@@ -626,7 +913,12 @@ export default function Build() {
         <div ref={progressEndRef} />
       </div>
       {genResult === 'error' && !generating && <button style={{ marginTop: 8, padding: '7px 14px', borderRadius: 8, border: 'none', background: '#6366f1', color: '#fff', cursor: 'pointer', fontWeight: 600, fontSize: 12 }} onClick={() => { handleDismissProgress(); handleGenerate(); }}>🔄 Retry</button>}
-      {isMobile && genResult === 'done' && preview && (<button style={{ marginTop: 8, width: '100%', padding: '10px 0', borderRadius: 10, border: 'none', background: '#22c55e', color: '#fff', cursor: 'pointer', fontWeight: 700, fontSize: 14 }} onClick={() => setMobileView('preview')}>👁️ View Preview & Deploy</button>)}
+      {isMobile && genResult === 'done' && preview && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 8 }}>
+          <button style={{ width: '100%', padding: '10px 0', borderRadius: 10, border: 'none', background: '#22c55e', color: '#fff', cursor: 'pointer', fontWeight: 700, fontSize: 14 }} onClick={() => setMobileView('preview')}>👁️ View Preview & Deploy</button>
+          <button style={{ width: '100%', padding: '10px 0', borderRadius: 10, border: '1px solid var(--border)', background: 'transparent', color: 'var(--text-secondary)', cursor: 'pointer', fontWeight: 600, fontSize: 13 }} onClick={() => window.location.href = '/projects'}>← Back to Projects</button>
+        </div>
+      )}
     </div>
   ) : null;
 
@@ -668,7 +960,7 @@ export default function Build() {
                     </div>
                   </div>
                   <SystemPromptPanel />
-                  <AIMediaPanel />
+                  {renderAIMediaPanel()}
                   {files.length > 0 && (
                     <div style={{ marginBottom: 8, marginTop: 8 }}>
                       <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: 4, marginBottom: 4 }}>
@@ -708,7 +1000,7 @@ export default function Build() {
               <div style={{ padding: 12, borderTop: '1px solid var(--border)', background: 'var(--bg-card)' }}>
                 <div style={{ position: 'relative' }}>
                   {voiceSupported && (
-                    <button onClick={toggleVoice} style={{ position: 'absolute', top: 8, right: 8, zIndex: 2, width: 28, height: 28, borderRadius: '50%', border: 'none', cursor: 'pointer', background: voiceListening ? 'rgba(255,80,80,0.2)' : 'rgba(99,102,241,0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 13 }} title="Voice input">
+                    <button onClick={() => toggleVoice(prompt)} style={{ position: 'absolute', top: 8, right: 8, zIndex: 2, width: 28, height: 28, borderRadius: '50%', border: 'none', cursor: 'pointer', background: voiceListening ? 'rgba(255,80,80,0.2)' : 'rgba(99,102,241,0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 13 }} title="Voice input">
                       {voiceListening ? '🔴' : '🎙️'}
                     </button>
                   )}
@@ -812,8 +1104,10 @@ export default function Build() {
           {tab === 'build' && (
             <>
               <div style={s.chatArea}>
-                <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--text-primary)', marginBottom: 12 }}>{isEditMode ? '✏️ Edit your website' : 'Describe your website'}</div>
+                <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--text-primary)', marginBottom: 8 }}>{isEditMode ? '✏️ Edit your website' : '💬 Build your website'}</div>
                 <EditModeBanner />
+                {renderMemoryPanel()}
+                {renderChatHistory()}
                 <div style={{ marginBottom: 12 }}>
                   <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 6 }}>AI Model:</div>
                   <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
@@ -834,7 +1128,7 @@ export default function Build() {
                   </div>
                 </div>
                 <SystemPromptPanel />
-                <AIMediaPanel />
+                {renderAIMediaPanel()}
                 {files.length > 0 && (
                   <div style={{ padding: '12px 0' }}>
                     <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-secondary)', marginBottom: 8, display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: 6 }}>
@@ -850,20 +1144,35 @@ export default function Build() {
                 )}
               </div>
               <div style={s.inputArea}>
-                <div style={{ position: 'relative' }}>
-                  {voiceSupported && (
-                    <button onClick={toggleVoice} style={{ position: 'absolute', top: 8, right: 8, zIndex: 2, width: 32, height: 32, borderRadius: '50%', border: 'none', cursor: 'pointer', background: voiceListening ? 'rgba(255,80,80,0.2)' : 'rgba(99,102,241,0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 15 }} title={voiceListening ? 'Listening... 5s silence stops' : 'Click to speak your prompt'}>
-                      {voiceListening ? '🔴' : '🎙️'}
-                    </button>
-                  )}
-                  <textarea style={s.textarea} placeholder={isEditMode ? "Describe what changes you want (e.g. 'add a booking form', 'change hero text to...')" : "Describe the website you want to build..."} value={prompt} onChange={e => setPrompt(e.target.value)} maxLength={isUnlimited(maxChars) ? undefined : maxChars + 100} />
+                {/* ── Chat input box ── */}
+                <div style={{ display: 'flex', gap: 6, alignItems: 'flex-end' }}>
+                  <div style={{ flex: 1, position: 'relative' }}>
+                    <textarea
+                      style={{ ...s.textarea, minHeight: 60, paddingRight: voiceSupported ? 38 : 12 }}
+                      placeholder={awaitingClarify ? "Answer AI's question above, then press Send…" : isEditMode ? "Describe changes, or ask AI anything about your site…" : "Describe your website or app…"}
+                      value={chatInput}
+                      onChange={e => setChatInput(e.target.value)}
+                      onKeyDown={handleChatKeyDown}
+                    />
+                    {voiceSupported && (
+                      <button onClick={() => toggleVoice(chatInput)} style={{ position: 'absolute', bottom: 8, right: 8, width: 28, height: 28, borderRadius: '50%', border: 'none', cursor: 'pointer', background: voiceListening ? 'rgba(255,80,80,0.2)' : 'rgba(99,102,241,0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 13 }} title="Speak — appends to your message">
+                        {voiceListening ? '🔴' : '🎙️'}
+                      </button>
+                    )}
+                  </div>
+                  <button
+                    style={{ padding: '10px 16px', borderRadius: 10, border: 'none', background: aiThinking || generating ? 'var(--bg-elevated)' : awaitingClarify ? '#f59e0b' : '#6366f1', color: aiThinking || generating ? 'var(--text-muted)' : '#fff', fontWeight: 700, fontSize: 13, cursor: aiThinking || generating ? 'not-allowed' : 'pointer', opacity: aiThinking || generating ? 0.6 : 1, flexShrink: 0, fontFamily: 'inherit', height: 60 }}
+                    onClick={handleSendChat}
+                    disabled={aiThinking || generating || !chatInput.trim()}
+                  >
+                    {aiThinking ? '🤔' : generating ? '⚡' : awaitingClarify ? 'Reply ➤' : 'Send ➤'}
+                  </button>
                 </div>
-                {voiceListening && <div style={{ fontSize: 11, color: '#FFBD2E', marginTop: 4 }}>🔴 Listening… speak now (5 seconds of silence stops recording)</div>}
+                {voiceListening && <div style={{ fontSize: 11, color: '#FFBD2E', marginTop: 4 }}>🔴 Listening… (5s silence auto-stops)</div>}
                 {voiceError && <div style={{ fontSize: 11, color: '#ef4444', marginTop: 4 }}>{voiceError}</div>}
-                <div style={{ fontSize: 11, textAlign: 'right', marginTop: 4, color: charPct > 100 ? '#ef4444' : 'var(--text-muted)' }}>{isUnlimited(maxChars) ? `${charsUsed} chars` : `${charsUsed}/${maxChars}`}</div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 8, fontSize: 13, gap: 8 }}>
-                  <span style={{ color: 'var(--text-muted)' }}>Cost: <strong style={{ color: '#f59e0b' }}>{cost.toLocaleString()} BL</strong> {balance < cost && <span style={{ color: '#ef4444', fontSize: 11 }}>(insufficient)</span>}</span>
-                  {generating ? <button style={s.stopBtn} onClick={handleStop}>⛔ Stop</button> : <button style={s.genBtn(generating || balance < cost)} onClick={handleGenerate} disabled={generating || balance < cost}>{isEditMode ? `Apply Changes (${cost.toLocaleString()} BL)` : `Generate (${cost.toLocaleString()} BL)`}</button>}
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 6, fontSize: 11 }}>
+                  <span style={{ color: 'var(--text-muted)' }}>Cost: <strong style={{ color: '#f59e0b' }}>{cost.toLocaleString()} BL</strong> {balance < cost && <span style={{ color: '#ef4444' }}>(insufficient)</span>}</span>
+                  {generating && <button style={{ padding: '5px 12px', borderRadius: 8, border: '2px solid #ef4444', background: 'rgba(239,68,68,.1)', color: '#ef4444', cursor: 'pointer', fontWeight: 700, fontSize: 12, fontFamily: 'inherit' }} onClick={handleStop}>⛔ Stop</button>}
                 </div>
               </div>
             </>
@@ -912,6 +1221,7 @@ export default function Build() {
         </div>
       </div>
 
+      {renderFallbackDialog()}
       {codeViewFile && (
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.8)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }} onClick={() => setCodeViewFile(null)}>
           <div style={{ background: 'var(--bg-card, #1e1e2e)', border: '1px solid var(--border, #333)', borderRadius: 16, width: '90%', maxWidth: 800, maxHeight: '85vh', display: 'flex', flexDirection: 'column', overflow: 'hidden' }} onClick={e => e.stopPropagation()}>
