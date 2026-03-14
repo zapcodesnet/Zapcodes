@@ -148,16 +148,38 @@ const userSchema = new mongoose.Schema({
 
   // ══════════ Zapcodes: Saved Projects ══════════
   saved_projects: [{
-    projectId: { type: String, required: true },
-    name: { type: String, default: 'Untitled Project' },
-    files: { type: mongoose.Schema.Types.Mixed, default: [] },
-    preview: { type: String, default: '' },
-    template: { type: String, default: 'custom' },
-    description: { type: String, default: '' },
-    version: { type: Number, default: 1 },
+    projectId:       { type: String, required: true },
+    name:            { type: String, default: 'Untitled Project' },
+    files:           { type: mongoose.Schema.Types.Mixed, default: [] },
+    preview:         { type: String, default: '' },
+    template:        { type: String, default: 'custom' },
+    description:     { type: String, default: '' },
+    version:         { type: Number, default: 1 },
     linkedSubdomain: { type: String, default: null },
-    createdAt: { type: Date, default: Date.now },
-    updatedAt: { type: Date, default: Date.now },
+    createdAt:       { type: Date, default: Date.now },
+    updatedAt:       { type: Date, default: Date.now },
+
+    // ── Clone / version control ────────────────────────────────
+    isLive:       { type: Boolean, default: false },  // true = this IS the live site copy
+    cloneOf:      { type: String, default: null },    // projectId of the root project
+    cloneVersion: { type: Number, default: null },    // 1 = latest clone, 2-5 = older
+    deployedAt:   { type: Date, default: null },      // when this version went live
+
+    // ── Per-clone AI Memory ────────────────────────────────────
+    // Stores last 20 raw messages + max 5 summaries independently per clone
+    projectMemory: {
+      rawMessages: {
+        type: mongoose.Schema.Types.Mixed,
+        default: [],
+        // Each item: { role, content, mediaPrompts:{imagePrompt,vibePrompt,videoPrompt}, timestamp }
+      },
+      summaries: {
+        type: mongoose.Schema.Types.Mixed,
+        default: [],
+        // Each item: { content, messageRange, createdAt }
+      },
+      totalMessageCount: { type: Number, default: 0 },
+    },
   }],
 
   // ══════════ Zapcodes: Form Submissions ══════════
