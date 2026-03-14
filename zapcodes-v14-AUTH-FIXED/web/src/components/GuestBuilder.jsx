@@ -45,6 +45,22 @@ const BUILD_STEPS = [
   { step: 'finalizing', msg: '🚀 Finalizing your site...' },
 ];
 
+// Check if user is already logged in (has a valid token in localStorage)
+function getIsLoggedIn() {
+  try {
+    const token = localStorage.getItem('token');
+    if (!token) return false;
+    // Basic JWT expiry check (decode payload, check exp)
+    const payload = JSON.parse(atob(token.split('.')[1]));
+    return payload.exp > Date.now() / 1000;
+  } catch { return false; }
+}
+
+function getAuthToken() {
+  try { return localStorage.getItem('token') || ''; }
+  catch { return ''; }
+}
+
 function getDeviceId() {
   try {
     let id = localStorage.getItem('zc_device_id');
@@ -71,6 +87,9 @@ export default function GuestBuilder() {
   const [buildResult,    setBuildResult]    = useState(null);
   const [buildError,     setBuildError]     = useState(null);
   const [existingSite,   setExistingSite]   = useState(null);
+  const [isLoggedIn,     setIsLoggedIn]     = useState(false);
+  const [claiming,       setClaiming]       = useState(false);
+  const [claimSuccess,   setClaimSuccess]   = useState(null);
 
   // Preview panel state — shown above prompt after Build is clicked
   const [showPreview,    setShowPreview]    = useState(false);
@@ -98,6 +117,10 @@ export default function GuestBuilder() {
   const iframeRef      = useRef(null);
 
   useEffect(() => {
+    setIsLoggedIn(getIsLoggedIn());
+  }, []);
+
+  useEffect(() => {
     try {
       const saved = localStorage.getItem('zc_guest_site');
       if (saved) {
@@ -120,6 +143,33 @@ export default function GuestBuilder() {
     onResult: (text) => setPrompt(text),
     silenceTimeoutMs: 5000,
   });
+
+  // Claim site directly if user is already logged in
+  const handleClaimLoggedIn = async () => {
+    if (!buildResult?.claimCode) return;
+    setClaiming(true);
+    try {
+      const res = await fetch(`${API_URL}/api/guest/claim-code`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${getAuthToken()}`,
+        },
+        body: JSON.stringify({ claimCode: buildResult.claimCode }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setClaimSuccess(data);
+        try { localStorage.removeItem('zc_guest_site'); } catch {}
+      } else {
+        alert(data.error || 'Claim failed. Please try again.');
+      }
+    } catch (err) {
+      alert('Claim failed: ' + err.message);
+    } finally {
+      setClaiming(false);
+    }
+  };
 
   const handleGenerate = useCallback(async () => {
     if (!prompt.trim()) {
@@ -414,23 +464,57 @@ export default function GuestBuilder() {
             {/* Claim bar — shown after build completes */}
             {buildResult && !generating && (
               <div style={{ background: 'linear-gradient(90deg,rgba(0,229,160,0.08),rgba(0,100,200,0.06))', borderTop: `1px solid rgba(0,229,160,0.2)`, padding: '14px 16px', animation: 'slideDown 0.3s ease' }}>
-                <div style={{ marginBottom: 10 }}>
-                  <div style={{ fontSize: 14, color: '#F0F4F8', fontWeight: 600, marginBottom: 3 }}>
-                    🎉 Live at <a href={buildResult.url} target="_blank" rel="noreferrer" style={{ color: accent, fontWeight: 800 }}>{buildResult.subdomain}.zapcodes.net</a>
+
+                {/* Claim success state */}
+                {claimSuccess ? (
+                  <div style={{ textAlign: 'center' }}>
+                    <div style={{ fontSize: 22, marginBottom: 8 }}>🎉</div>
+                    <div style={{ fontSize: 14, color: '#F0F4F8', fontWeight: 700, marginBottom: 4 }}>Site claimed successfully!</div>
+                    <div style={{ fontSize: 12, color: muted, marginBottom: 12 }}>
+                      Now pick your permanent subdomain in your <Link to="/dashboard" style={{ color: accent, textDecoration: 'none', fontWeight: 700 }}>Dashboard →</Link>
+                    </div>
+                    <a href={buildResult.url} target="_blank" rel="noreferrer" style={{ display: 'inline-block', padding: '8px 16px', borderRadius: 8, border: `1px solid ${border2}`, color: muted, fontSize: 12, textDecoration: 'none' }}>
+                      View Preview
+                    </a>
                   </div>
-                  <div style={{ fontSize: 12, color: muted2 }}>
-                    ⏰ <strong style={{ color: '#FFBD2E' }}>{buildResult.daysLeft} days</strong> left to claim
-                    {buildResult.claimCode && <> · Code: <strong style={{ color: accent, fontFamily: 'monospace' }}>{buildResult.claimCode}</strong></>}
-                  </div>
-                </div>
-                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                  <Link to="/register" style={{ flex: 1, minWidth: 160, display: 'block', textAlign: 'center', padding: '10px 16px', borderRadius: 10, background: accent, color: '#07090B', fontSize: 13, fontWeight: 800, textDecoration: 'none' }}>
-                    ⚡ Claim It Free — Register →
-                  </Link>
-                  <a href={buildResult.url} target="_blank" rel="noreferrer" style={{ flex: 1, minWidth: 120, display: 'block', textAlign: 'center', padding: '10px 16px', borderRadius: 10, border: `1px solid ${border2}`, color: muted, fontSize: 13, textDecoration: 'none' }}>
-                    View Full Site
-                  </a>
-                </div>
+                ) : (
+                  <>
+                    <div style={{ marginBottom: 10 }}>
+                      <div style={{ fontSize: 14, color: '#F0F4F8', fontWeight: 600, marginBottom: 3 }}>
+                        🎉 Live at <a href={buildResult.url} target="_blank" rel="noreferrer" style={{ color: accent, fontWeight: 800 }}>{buildResult.subdomain}.zapcodes.net</a>
+                      </div>
+                      <div style={{ fontSize: 12, color: muted2 }}>
+                        ⏰ <strong style={{ color: '#FFBD2E' }}>{buildResult.daysLeft} days</strong> left to claim
+                        {buildResult.claimCode && <> · Code: <strong style={{ color: accent, fontFamily: 'monospace' }}>{buildResult.claimCode}</strong></>}
+                      </div>
+                    </div>
+                    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                      {isLoggedIn ? (
+                        /* Already logged in — claim directly without re-registering */
+                        <button
+                          onClick={handleClaimLoggedIn}
+                          disabled={claiming}
+                          style={{ flex: 1, minWidth: 160, padding: '10px 16px', borderRadius: 10, background: claiming ? muted2 : accent, color: '#07090B', fontSize: 13, fontWeight: 800, border: 'none', cursor: claiming ? 'not-allowed' : 'pointer', fontFamily: 'inherit' }}
+                        >
+                          {claiming ? '⏳ Claiming...' : '⚡ Claim This Site — Add to Dashboard'}
+                        </button>
+                      ) : (
+                        /* Not logged in — go register to claim */
+                        <Link to="/register" style={{ flex: 1, minWidth: 160, display: 'block', textAlign: 'center', padding: '10px 16px', borderRadius: 10, background: accent, color: '#07090B', fontSize: 13, fontWeight: 800, textDecoration: 'none' }}>
+                          ⚡ Claim It Free — Register Now →
+                        </Link>
+                      )}
+                      <a href={buildResult.url} target="_blank" rel="noreferrer" style={{ flex: 1, minWidth: 100, display: 'block', textAlign: 'center', padding: '10px 16px', borderRadius: 10, border: `1px solid ${border2}`, color: muted, fontSize: 13, textDecoration: 'none' }}>
+                        View Full Site
+                      </a>
+                    </div>
+                    {isLoggedIn && (
+                      <div style={{ marginTop: 8, fontSize: 11, color: muted2, textAlign: 'center' }}>
+                        ✓ Signed in — click above to claim instantly, no re-registration needed
+                      </div>
+                    )}
+                  </>
+                )}
               </div>
             )}
           </div>
