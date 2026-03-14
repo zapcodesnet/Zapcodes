@@ -17,34 +17,47 @@ const generateToken = (user) => {
   );
 };
 
-// Register — auto-login for regular users, verification only for super admin
-// Temporarily disabled email verification for non-super-admin users per client request - 2026-03
-// Previously: all users created as emailVerified: false and required verification code
+// ── Helper: attempt to claim a guest site by fingerprint hash ─────────────
+async function attemptGuestClaim(userId, ip, deviceId) {
+  try {
+    if (!deviceId || !ip) return null;
+    const GuestSite = require('../models/GuestSite');
+    const hash = crypto.createHash('sha256').update(`${ip}||${deviceId}`).digest('hex');
+    const site = await GuestSite.findActiveByHash(hash);
+    if (!site) return null;
+    site.status = 'claimed';
+    site.claimedBy = userId;
+    site.claimedAt = new Date();
+    site.claimedVia = 'zapcodes';
+    await site.save();
+    console.log(`[GuestClaim] Site ${site.subdomain} auto-claimed by user ${userId}`);
+    return { subdomain: site.subdomain, url: `https://${site.subdomain}.zapcodes.net`, claimCode: site.claimCode };
+  } catch (err) {
+    console.warn('[GuestClaim] Auto-claim failed (non-fatal):', err.message);
+    return null;
+  }
+}
+
+// ── Register ──────────────────────────────────────────────────────────────
 router.post('/register', async (req, res) => {
   try {
-    const { email, password, name, referralCode: refCode } = req.body;
+    const { email, password, name, referralCode: refCode, deviceId } = req.body;
     if (!email || !password || !name) return res.status(400).json({ error: 'Email, password, and name are required' });
 
     const existing = await User.findOne({ email: email.toLowerCase() });
     if (existing) return res.status(409).json({ error: 'Email already registered' });
 
-    // Generate unique referral code
     const userReferralCode = crypto.randomBytes(4).toString('hex');
-
     const SUPER_ADMIN_EMAIL = 'zapcodesnet@gmail.com';
     const isSuperAdmin = email.toLowerCase() === SUPER_ADMIN_EMAIL;
 
-    // Regular users: auto-verified. Super admin: must verify email.
     const user = await User.create({
-      email,
-      password,
-      name,
-      provider: 'local',
+      email, password, name, provider: 'local',
       emailVerified: !isSuperAdmin,
       referral_code: userReferralCode,
     });
 
-    // Handle referral bonus — 50K BL to BOTH new user and referrer
+    // Handle referral bonus
     if (refCode) {
       const referrer = await User.findOne({ referral_code: refCode });
       if (referrer && referrer._id.toString() !== user._id.toString()) {
@@ -59,21 +72,17 @@ router.post('/register', async (req, res) => {
         await referrer.save();
         console.log(`[Referral] ${referrer.email} → ${user.email} (50K BL each)`);
       } else {
-        // Invalid referral code — still give signup bonus to new user only
         user.creditCoins(50000, 'signup_bonus', 'Welcome bonus: 50,000 BL');
         user.signup_bonus_claimed = true;
         await user.save();
-        console.log(`[Signup Bonus] ${user.email} (50K BL — invalid referral code ignored)`);
       }
     } else {
-      // No referral code — give signup bonus to new user
       user.creditCoins(50000, 'signup_bonus', 'Welcome bonus: 50,000 BL');
       user.signup_bonus_claimed = true;
       await user.save();
-      console.log(`[Signup Bonus] ${user.email} (50K BL — no referral)`);
     }
 
-    // Super admin still requires email verification on registration
+    // Super admin: requires email verification
     if (isSuperAdmin) {
       const result = await sendVerificationCode(email.toLowerCase(), 'registration');
       return res.status(201).json({
@@ -84,34 +93,34 @@ router.post('/register', async (req, res) => {
       });
     }
 
-    // Regular users: auto-login immediately (no email verification needed)
+    // ── NEW: Auto-claim any guest site by fingerprint ─────────────────────
+    const clientIp = req.ip || req.headers['x-forwarded-for']?.split(',')[0]?.trim() || 'unknown';
+    const claimedSite = await attemptGuestClaim(user._id, clientIp, deviceId);
+
     const token = generateToken(user);
     res.status(201).json({
       message: 'Account created successfully!',
       token,
       user: user.toSafeObject(),
+      // Include claimed site info if found — frontend shows subdomain picker
+      claimedGuestSite: claimedSite || null,
     });
   } catch (err) {
     res.status(500).json({ error: 'Registration failed', details: err.message });
   }
 });
 
-// Verify email code (registration or login)
+// ── Verify email code ──────────────────────────────────────────────────────
 router.post('/verify-email', async (req, res) => {
   try {
     const { email, code } = req.body;
     if (!email || !code) return res.status(400).json({ error: 'Email and code required' });
-
     const result = verifyCode(email.toLowerCase(), code);
     if (!result.valid) return res.status(401).json({ error: result.error, attemptsLeft: result.attemptsLeft });
-
     const user = await User.findOne({ email: email.toLowerCase() });
     if (!user) return res.status(404).json({ error: 'User not found' });
-
-    // Mark email as verified
     user.emailVerified = true;
     await user.save();
-
     const token = generateToken(user);
     res.json({ token, user: user.toSafeObject(), message: 'Email verified successfully' });
   } catch (err) {
@@ -119,25 +128,19 @@ router.post('/verify-email', async (req, res) => {
   }
 });
 
-// Resend verification code
+// ── Resend verification code ───────────────────────────────────────────────
 router.post('/resend-code', async (req, res) => {
   try {
     const { email, type } = req.body;
     if (!email) return res.status(400).json({ error: 'Email required' });
-
-    // Verify user exists
     const user = await User.findOne({ email: email.toLowerCase() });
     if (!user) return res.status(404).json({ error: 'No account found with this email' });
-
-    // Only allow resend for unverified users (registration/login) or admin 2FA
     const codeType = type || 'registration';
-    // Temporarily modified: allow resend for super admin (who verifies every login) - 2026-03
     const SUPER_ADMIN_EMAIL = 'zapcodesnet@gmail.com';
     const isSuperAdmin = user.email.toLowerCase() === SUPER_ADMIN_EMAIL;
     if (codeType !== 'admin' && !isSuperAdmin && user.emailVerified) {
       return res.status(400).json({ error: 'Email is already verified' });
     }
-
     const result = await sendVerificationCode(email.toLowerCase(), codeType);
     res.json({ message: 'Verification code sent! Check your email.', ...(result.devCode ? { devCode: result.devCode } : {}) });
   } catch (err) {
@@ -145,29 +148,21 @@ router.post('/resend-code', async (req, res) => {
   }
 });
 
-// Admin verify login — complete login after admin 2FA code
-// Also issues adminSessionToken so super admin can access /admin directly after login - 2026-03
+// ── Admin verify login ──────────────────────────────────────────────────────
 router.post('/verify-admin-login', async (req, res) => {
   try {
     const { email, code } = req.body;
     if (!email || !code) return res.status(400).json({ error: 'Email and code required' });
-
     const result = verifyCode(email.toLowerCase(), code);
     if (!result.valid) return res.status(401).json({ error: result.error, attemptsLeft: result.attemptsLeft });
-
     const user = await User.findOne({ email: email.toLowerCase() });
     if (!user) return res.status(404).json({ error: 'User not found' });
-
     user.lastLoginAt = new Date();
     user.lastLoginIP = req.ip || req.headers['x-forwarded-for'] || 'unknown';
     user.lastLoginDevice = req.headers['user-agent'] || 'unknown';
     user.loginCount = (user.loginCount || 0) + 1;
     await user.save();
-
     const token = generateToken(user);
-
-    // If this is a super admin, also issue an admin session token so they can
-    // navigate to /admin directly without a second verification step
     let adminSessionToken = null;
     if (['super-admin', 'co-admin', 'moderator'].includes(user.role)) {
       adminSessionToken = jwt.sign(
@@ -176,104 +171,43 @@ router.post('/verify-admin-login', async (req, res) => {
         { expiresIn: '4h' }
       );
     }
-
-    res.json({
-      token,
-      user: user.toSafeObject(),
-      message: 'Admin login verified',
-      ...(adminSessionToken ? { adminSessionToken } : {}),
-    });
+    res.json({ token, user: user.toSafeObject(), message: 'Admin login verified', ...(adminSessionToken ? { adminSessionToken } : {}) });
   } catch (err) {
     res.status(500).json({ error: 'Verification failed' });
   }
 });
 
-// Login
+// ── Login ──────────────────────────────────────────────────────────────────
 router.post('/login', async (req, res) => {
   try {
     const { email, password } = req.body;
     const user = await User.findOne({ email: email.toLowerCase() }).select('+password +password_hash');
-
     if (!user || (!user.password && !user.password_hash)) {
       trackFailedLogin(req.ip, email, req.headers['user-agent']);
       return res.status(401).json({ error: 'Invalid credentials' });
     }
-
-    // Check account status
-    if (user.status === 'banned') {
-      return res.status(403).json({ error: 'Account banned', reason: user.banReason || 'Contact support' });
-    }
+    if (user.status === 'banned') return res.status(403).json({ error: 'Account banned', reason: user.banReason || 'Contact support' });
     if (user.status === 'suspended') {
-      if (user.suspendedUntil && user.suspendedUntil > new Date()) {
-        return res.status(403).json({
-          error: 'Account suspended',
-          reason: user.suspendReason,
-          until: user.suspendedUntil,
-        });
-      } else {
-        // Suspension expired, reactivate
-        user.status = 'active';
-        user.suspendReason = null;
-        user.suspendedUntil = null;
-      }
+      if (user.suspendedUntil && user.suspendedUntil > new Date()) return res.status(403).json({ error: 'Account suspended', reason: user.suspendReason, until: user.suspendedUntil });
+      else { user.status = 'active'; user.suspendReason = null; user.suspendedUntil = null; }
     }
-
     const isMatch = await user.comparePassword(password);
-    if (!isMatch) {
-      trackFailedLogin(req.ip, email, req.headers['user-agent']);
-      return res.status(401).json({ error: 'Invalid credentials' });
-    }
-
+    if (!isMatch) { trackFailedLogin(req.ip, email, req.headers['user-agent']); return res.status(401).json({ error: 'Invalid credentials' }); }
     const SUPER_ADMIN_EMAIL = 'zapcodesnet@gmail.com';
     const isSuperAdmin = user.email.toLowerCase() === SUPER_ADMIN_EMAIL;
-
-    // Temporarily disabled email verification for non-super-admin users per client request - 2026-03
-    // Previously: all unverified local users were blocked from login
-    // if (!user.emailVerified && user.provider === 'local') {
-    //   return res.status(403).json({ error: 'Email not verified', needsVerification: true, ... });
-    // }
-
-    // Only check email verification for super admin
     if (isSuperAdmin && !user.emailVerified && user.provider === 'local') {
-      return res.status(403).json({
-        error: 'Email not verified',
-        needsVerification: true,
-        email: email.toLowerCase(),
-        message: 'Please verify your email. Check your inbox for the verification code sent during registration, or click "Resend code" to get a new one.',
-      });
+      return res.status(403).json({ error: 'Email not verified', needsVerification: true, email: email.toLowerCase(), message: 'Please verify your email.' });
     }
-
-    // Auto-verify existing unverified regular users on login (retroactive fix for users
-    // who registered before this change and never completed email verification)
-    if (!isSuperAdmin && !user.emailVerified && user.provider === 'local') {
-      user.emailVerified = true;
-    }
-
-    // Super admin: always require email verification on every login
+    if (!isSuperAdmin && !user.emailVerified && user.provider === 'local') user.emailVerified = true;
     if (isSuperAdmin) {
       const adminResult = await sendVerificationCode(email.toLowerCase(), 'admin');
-      return res.status(200).json({
-        needsAdminVerification: true,
-        email: email.toLowerCase(),
-        message: 'Admin verification code sent to your email.',
-        ...(adminResult.devCode ? { devCode: adminResult.devCode } : {}),
-      });
+      return res.status(200).json({ needsAdminVerification: true, email: email.toLowerCase(), message: 'Admin verification code sent to your email.', ...(adminResult.devCode ? { devCode: adminResult.devCode } : {}) });
     }
-
-    // Temporarily disabled admin verification for co-admin/moderator per client request - 2026-03
-    // Previously: all admin roles required email verification on every login
-    // if (['super-admin', 'co-admin', 'moderator'].includes(user.role)) {
-    //   const adminResult = await sendVerificationCode(email.toLowerCase(), 'admin');
-    //   return res.status(200).json({ needsAdminVerification: true, ... });
-    // }
-
-    // Track login metadata
     user.lastLoginAt = new Date();
     user.lastLoginIP = req.ip || req.headers['x-forwarded-for'] || 'unknown';
     user.lastLoginDevice = req.headers['user-agent'] || 'unknown';
     user.loginCount = (user.loginCount || 0) + 1;
     await user.save();
-
     const token = generateToken(user);
     res.json({ token, user: user.toSafeObject() });
   } catch (err) {
@@ -281,71 +215,44 @@ router.post('/login', async (req, res) => {
   }
 });
 
-// Get current user
-router.get('/me', auth, async (req, res) => {
-  res.json({ user: req.user.toSafeObject() });
-});
+// ── Get current user ──────────────────────────────────────────────────────
+router.get('/me', auth, async (req, res) => res.json({ user: req.user.toSafeObject() }));
 
-// GitHub OAuth
+// ── GitHub OAuth ──────────────────────────────────────────────────────────
 router.get('/github', (req, res, next) => {
-  if (!process.env.GITHUB_CLIENT_ID) {
-    return res.status(503).json({ error: 'GitHub login is not configured yet. Please use email/password.' });
-  }
+  if (!process.env.GITHUB_CLIENT_ID) return res.status(503).json({ error: 'GitHub login is not configured yet.' });
   passport.authenticate('github', { scope: ['user:email', 'repo'] })(req, res, next);
 });
-
-router.get('/github/callback',
-  (req, res, next) => {
-    if (!process.env.GITHUB_CLIENT_ID) {
-      return res.redirect(`${process.env.WEB_URL || 'http://localhost:5173'}/login?error=github_not_configured`);
-    }
-    passport.authenticate('github', { session: false, failureRedirect: `${process.env.WEB_URL || 'http://localhost:5173'}/login?error=github` })(req, res, next);
-  },
-  (req, res) => {
-    const token = generateToken(req.user);
-    const webUrl = process.env.WEB_URL || 'http://localhost:5173';
-    res.redirect(`${webUrl}/auth/callback?token=${token}`);
-  }
-);
-
-// Google OAuth
-router.get('/google', (req, res, next) => {
-  if (!process.env.GOOGLE_CLIENT_ID) {
-    return res.status(503).json({ error: 'Google login is not configured yet. Please use email/password.' });
-  }
-  passport.authenticate('google', { scope: ['profile', 'email'] })(req, res, next);
+router.get('/github/callback', (req, res, next) => {
+  if (!process.env.GITHUB_CLIENT_ID) return res.redirect(`${process.env.WEB_URL || 'http://localhost:5173'}/login?error=github_not_configured`);
+  passport.authenticate('github', { session: false, failureRedirect: `${process.env.WEB_URL || 'http://localhost:5173'}/login?error=github` })(req, res, next);
+}, (req, res) => {
+  const token = generateToken(req.user);
+  res.redirect(`${process.env.WEB_URL || 'http://localhost:5173'}/auth/callback?token=${token}`);
 });
 
-router.get('/google/callback',
-  (req, res, next) => {
-    if (!process.env.GOOGLE_CLIENT_ID) {
-      return res.redirect(`${process.env.WEB_URL || 'http://localhost:5173'}/login?error=google_not_configured`);
-    }
-    passport.authenticate('google', { session: false, failureRedirect: `${process.env.WEB_URL || 'http://localhost:5173'}/login?error=google` })(req, res, next);
-  },
-  (req, res) => {
-    const token = generateToken(req.user);
-    const webUrl = process.env.WEB_URL || 'http://localhost:5173';
-    res.redirect(`${webUrl}/auth/callback?token=${token}`);
-  }
-);
+// ── Google OAuth ──────────────────────────────────────────────────────────
+router.get('/google', (req, res, next) => {
+  if (!process.env.GOOGLE_CLIENT_ID) return res.status(503).json({ error: 'Google login is not configured yet.' });
+  passport.authenticate('google', { scope: ['profile', 'email'] })(req, res, next);
+});
+router.get('/google/callback', (req, res, next) => {
+  if (!process.env.GOOGLE_CLIENT_ID) return res.redirect(`${process.env.WEB_URL || 'http://localhost:5173'}/login?error=google_not_configured`);
+  passport.authenticate('google', { session: false, failureRedirect: `${process.env.WEB_URL || 'http://localhost:5173'}/login?error=google` })(req, res, next);
+}, (req, res) => {
+  const token = generateToken(req.user);
+  res.redirect(`${process.env.WEB_URL || 'http://localhost:5173'}/auth/callback?token=${token}`);
+});
 
-// POST /api/auth/logout — Server-side logout (auto-delete ephemeral tokens)
+// ── Logout ─────────────────────────────────────────────────────────────────
 router.post('/logout', auth, async (req, res) => {
   try {
     const user = await User.findById(req.userId).select('+githubToken');
-    if (user) {
-      // Auto-delete GitHub token if not permanent
-      if (user.githubToken && !user.githubTokenPermanent) {
-        user.githubToken = null;
-        user.githubTokenSetAt = null;
-        await user.save();
-      }
+    if (user && user.githubToken && !user.githubTokenPermanent) {
+      user.githubToken = null; user.githubTokenSetAt = null; await user.save();
     }
     res.json({ message: 'Logged out successfully' });
-  } catch (err) {
-    res.json({ message: 'Logged out' });
-  }
+  } catch (err) { res.json({ message: 'Logged out' }); }
 });
 
 module.exports = router;
