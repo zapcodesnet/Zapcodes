@@ -17,7 +17,6 @@ import AuthCallback from './pages/AuthCallback';
 import HelpAI from './components/HelpAI';
 import MyProjects from './pages/MyProjects';
 import RepairCode from './pages/RepairCode';
-import { useInactivityTimer } from './hooks/useInactivityTimer';
 
 function ProtectedRoute({ children }) {
   const { user, loading } = useAuth();
@@ -30,16 +29,9 @@ function ProtectedRoute({ children }) {
   return children;
 }
 
-// Wrapper that activates the inactivity timer for authenticated users
-function AuthenticatedApp({ children }) {
-  const { user } = useAuth();
-  useInactivityTimer(!!user);
-  return children;
-}
-
 export default function App() {
   return (
-    <AuthenticatedApp>
+    <>
       <Navbar />
       <Routes>
         <Route path="/"              element={<Landing />} />
@@ -49,22 +41,16 @@ export default function App() {
         <Route path="/pricing"       element={<Pricing />} />
         <Route path="/privacy"       element={<Privacy />} />
         <Route path="/terms"         element={<Terms />} />
-
-        <Route path="/build"    element={<ProtectedRoute><Build /></ProtectedRoute>} />
-        <Route path="/settings" element={<ProtectedRoute><Settings /></ProtectedRoute>} />
-        <Route path="/admin"    element={<Admin />} />
-        <Route path="/dashboard" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
-
-        {/* Projects page — clone timeline, memory, rollback */}
-        <Route path="/projects" element={<ProtectedRoute><MyProjects /></ProtectedRoute>} />
-
-        {/* Repair Code */}
-        <Route path="/repair"   element={<ProtectedRoute><RepairCode /></ProtectedRoute>} />
-        <Route path="/repo/:repoId" element={<ProtectedRoute><RepoDetail /></ProtectedRoute>} />
-
-        <Route path="*" element={<Navigate to="/" />} />
+        <Route path="/build"         element={<ProtectedRoute><Build /></ProtectedRoute>} />
+        <Route path="/settings"      element={<ProtectedRoute><Settings /></ProtectedRoute>} />
+        <Route path="/admin"         element={<Admin />} />
+        <Route path="/dashboard"     element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
+        <Route path="/projects"      element={<ProtectedRoute><MyProjects /></ProtectedRoute>} />
+        <Route path="/repair"        element={<ProtectedRoute><RepairCode /></ProtectedRoute>} />
+        <Route path="/repo/:repoId"  element={<ProtectedRoute><RepoDetail /></ProtectedRoute>} />
+        <Route path="*"              element={<Navigate to="/" />} />
       </Routes>
       <HelpAI />
-    </AuthenticatedApp>
+    </>
   );
 }
