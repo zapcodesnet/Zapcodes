@@ -141,7 +141,7 @@ export default function GuestBuilder() {
 
   // Voice to text
   const { isListening, isSupported: voiceSupported, toggleListening, error: voiceError } = useSpeechToText({
-    onResult: (text) => setPrompt(text),
+    onResult: (text) => setPrompt(text), // useSpeechToText hook handles appending via baseTextRef
     silenceTimeoutMs: 5000,
   });
 
@@ -551,7 +551,7 @@ export default function GuestBuilder() {
             <div style={{ fontSize: 11, color: muted2, textTransform: 'uppercase', letterSpacing: 1, fontWeight: 700, marginBottom: 8, textAlign: 'center' }}>Describe what you want</div>
             <div style={{ position: 'relative' }}>
               {voiceSupported && (
-                <button onClick={toggleListening} style={{ position: 'absolute', top: 10, right: 10, zIndex: 2, width: 32, height: 32, borderRadius: '50%', border: 'none', cursor: 'pointer', background: isListening ? 'rgba(255,80,80,0.2)' : 'rgba(0,229,160,0.12)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 16 }} title="Tap to speak">
+                <button onClick={() => toggleListening(prompt)} style={{ position: 'absolute', top: 10, right: 10, zIndex: 2, width: 32, height: 32, borderRadius: '50%', border: 'none', cursor: 'pointer', background: isListening ? 'rgba(255,80,80,0.2)' : 'rgba(0,229,160,0.12)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 16 }} title="Tap to speak">
                   {isListening ? '🔴' : '🎙️'}
                 </button>
               )}
