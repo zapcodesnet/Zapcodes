@@ -106,6 +106,7 @@ export default function Build() {
   const [videoDuration,   setVideoDuration]   = useState(8);
   const [videoResult,     setVideoResult]     = useState(null);
   const [videoGenerating, setVideoGenerating] = useState(false);
+  const [vibeCustomPrompt, setVibeCustomPrompt] = useState(''); // custom instruction for photo editor
   const photoInputRef = useRef(null);
 
   const iframeRef = useRef(null);
@@ -231,7 +232,11 @@ export default function Build() {
     if (!uploadedPhoto) return alert('Upload a photo first');
     setVibeGenerating(true); setVibeResult(null);
     try {
-      const { data } = await api.post('/api/build/edit-photo', { image: { base64: uploadedPhoto.base64, mimeType: uploadedPhoto.mimeType }, preset: vibePreset });
+      const { data } = await api.post('/api/build/edit-photo', {
+        image: { base64: uploadedPhoto.base64, mimeType: uploadedPhoto.mimeType },
+        preset: vibeCustomPrompt.trim() ? null : vibePreset,
+        customPrompt: vibeCustomPrompt.trim() || null,
+      });
       if (data.images?.length) { setVibeResult(`data:${data.images[0].mimeType};base64,${data.images[0].base64}`); setCoinData(p => ({ ...p, balance: data.balanceRemaining })); }
       else alert('Photo transformation failed. Please try again.');
     } catch (e) { alert(e.response?.data?.error || 'Photo transformation failed'); }
@@ -242,27 +247,102 @@ export default function Build() {
     if (!videoPrompt.trim()) return alert('Enter a video description');
     setVideoGenerating(true); setVideoResult(null);
     try {
-      const { data } = await api.post('/api/build/generate-video', { prompt: videoPrompt, durationSeconds: videoDuration, aspectRatio: '16:9' });
-      if (data.video) { setVideoResult(data.video); setCoinData(p => ({ ...p, balance: data.balanceRemaining })); }
-      else alert(data.error || 'Video generation failed.');
-    } catch (e) { alert(e.response?.data?.error || 'Video generation failed'); }
-    finally { setVideoGenerating(false); }
+      // Get current HTML to inject video into
+      const htmlFile = files.find(f => f.name.endsWith('.html'));
+      const existingHtml = htmlFile?.content || null;
+
+      const { data } = await api.post('/api/build/generate-video', {
+        prompt: videoPrompt,
+        durationSeconds: videoDuration,
+        aspectRatio: '16:9',
+        injectIntoSite: !!existingHtml,
+        existingHtml,
+      });
+
+      if (data.video) {
+        setVideoResult(data.video);
+        setCoinData(p => ({ ...p, balance: data.balanceRemaining }));
+
+        // Auto-inject into site if we got updated HTML back
+        if (data.updatedHtml && files.length > 0) {
+          setFiles(prev => prev.map(f =>
+            f.name.endsWith('.html') ? { ...f, content: data.updatedHtml } : f
+          ));
+          setPreview(data.updatedHtml);
+          if (iframeRef.current) iframeRef.current.srcdoc = data.updatedHtml;
+          alert('✅ Video generated and injected into your site as a hero background!');
+        } else if (data.publicUrl) {
+          alert(`✅ Video generated!\n\nPublic URL:\n${data.publicUrl}\n\nGenerate a site first to auto-inject it.`);
+        }
+      } else {
+        alert(data.error || 'Video generation failed. Check Render logs for details.');
+      }
+    } catch (e) {
+      alert(e.response?.data?.error || 'Video generation failed');
+    } finally {
+      setVideoGenerating(false);
+    }
+  };
+
+  // Smart image injector — replaces the next available placeholder in the HTML
+  const injectImageIntoHTML = (html, dataUrl) => {
+    // Priority order: replace placeholders one at a time so multiple images go to different spots
+
+    // 1. picsum.photos (any variant) — global replace first occurrence
+    if (/https?:\/\/picsum\.photos\/[^\s"')]+/.test(html)) {
+      return html.replace(/https?:\/\/picsum\.photos\/[^\s"')]+/, dataUrl);
+    }
+    // 2. Other placeholder image services
+    const placeholderServices = [
+      /https?:\/\/via\.placeholder\.com\/[^\s"')]+/,
+      /https?:\/\/placehold\.it\/[^\s"')]+/,
+      /https?:\/\/placeimg\.com\/[^\s"')]+/,
+      /https?:\/\/loremflickr\.com\/[^\s"')]+/,
+      /https?:\/\/dummyimage\.com\/[^\s"')]+/,
+      /https?:\/\/placeholder\.com\/[^\s"')]+/,
+    ];
+    for (const re of placeholderServices) {
+      if (re.test(html)) return html.replace(re, dataUrl);
+    }
+    // 3. Empty src or src="#" on img tags
+    if (/(<img\s[^>]*src=["'])["'#]([^>]*>)/.test(html)) {
+      return html.replace(/(<img\s[^>]*src=["'])["'#]([^>]*>)/, `$1${dataUrl}"$2`);
+    }
+    // 4. CSS background-image with placeholder or none
+    if (/background-image:\s*url\(['"]?['"]?\)/.test(html)) {
+      return html.replace(/background-image:\s*url\(['"]?['"]?\)/, `background-image: url('${dataUrl}')`);
+    }
+    // 5. background-image with a placeholder service URL
+    if (/background-image:\s*url\(['"]https?:\/\/(?:picsum|via\.placeholder|placehold)[^\s)'"]+['"]?\)/.test(html)) {
+      return html.replace(/background-image:\s*url\(['"]https?:\/\/(?:picsum|via\.placeholder|placehold)[^\s)'"]+['"]?\)/, `background-image: url('${dataUrl}')`);
+    }
+    // 6. First <img> that has any http src (replace hero image)
+    if (/<img\s[^>]*src=["']https?:\/\/[^"']+["']/.test(html)) {
+      return html.replace(/(<img\s[^>]*src=["'])https?:\/\/[^"']+/, `$1${dataUrl}`);
+    }
+    // 7. Nothing found — inject as first image after opening <body>
+    return html.replace(/<body[^>]*>/, match => `${match}
+<!-- AI Image --><img src="${dataUrl}" style="display:none" id="ai-img-0">`);
   };
 
   const insertImageIntoSite = (base64, mimeType) => {
-    if (!files.length) return alert('Generate a site first, then insert images.');
+    if (!files.length) return alert('Generate a site first, then images can be inserted.');
     const dataUrl = `data:${mimeType};base64,${base64}`;
-    setFiles(prev => prev.map(f => {
+    let injected = false;
+    const updatedFiles = files.map(f => {
       if (!f.name.endsWith('.html')) return f;
-      const updated = f.content.replace(/https?:\/\/picsum\.photos\/[0-9]+(?:\/[0-9]+)?/, dataUrl);
+      const updated = injectImageIntoHTML(f.content, dataUrl);
+      if (updated !== f.content) injected = true;
       return { ...f, content: updated };
-    }));
-    if (iframeRef.current && preview) {
-      const updatedPreview = preview.replace(/https?:\/\/picsum\.photos\/[0-9]+(?:\/[0-9]+)?/, dataUrl);
-      setPreview(updatedPreview);
-      iframeRef.current.srcdoc = updatedPreview;
+    });
+    setFiles(updatedFiles);
+    const htmlFile = updatedFiles.find(f => f.name.endsWith('.html'));
+    if (htmlFile) {
+      setPreview(htmlFile.content);
+      if (iframeRef.current) iframeRef.current.srcdoc = htmlFile.content;
     }
-    alert('Image inserted into your site!');
+    if (injected) alert('✅ Image inserted into your site! Check the preview.');
+    else alert('Image added. If you don\'t see it, click a section in the preview to refresh.');
   };
 
   const handleGenerate = useCallback(async () => {
@@ -407,12 +487,27 @@ export default function Build() {
               </div>
               {uploadedPhoto && (
                 <>
-                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
-                    {VIBE_PRESETS.map(p => (
-                      <button key={p.id} style={{ padding: '3px 7px', borderRadius: 100, border: `1px solid ${vibePreset === p.id ? '#00E5A0' : 'var(--border)'}`, background: vibePreset === p.id ? 'rgba(0,229,160,0.08)' : 'transparent', color: vibePreset === p.id ? '#00E5A0' : 'var(--text-muted)', fontSize: 10, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit' }} onClick={() => setVibePreset(p.id)}>{p.label}</button>
-                    ))}
+                  <div style={{ marginBottom: 4 }}>
+                    <div style={{ fontSize: 10, color: 'var(--text-muted)', marginBottom: 5, fontWeight: 600 }}>QUICK PRESETS (or type your own below):</div>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                      {VIBE_PRESETS.map(p => (
+                        <button key={p.id} style={{ padding: '3px 7px', borderRadius: 100, border: `1px solid ${vibePreset === p.id && !vibeCustomPrompt ? '#00E5A0' : 'var(--border)'}`, background: vibePreset === p.id && !vibeCustomPrompt ? 'rgba(0,229,160,0.08)' : 'transparent', color: vibePreset === p.id && !vibeCustomPrompt ? '#00E5A0' : 'var(--text-muted)', fontSize: 10, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit' }} onClick={() => { setVibePreset(p.id); setVibeCustomPrompt(''); }}>{p.label}</button>
+                      ))}
+                    </div>
                   </div>
-                  <button style={{ padding: '8px 12px', borderRadius: 8, border: 'none', background: '#8b5cf6', color: '#fff', fontSize: 12, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit' }} onClick={handleVibeTransform} disabled={vibeGenerating}>{vibeGenerating ? '⏳ Transforming...' : '✨ Transform Photo — 5K BL'}</button>
+                  <div>
+                    <div style={{ fontSize: 10, color: 'var(--text-muted)', marginBottom: 4, fontWeight: 600 }}>OR DESCRIBE EXACTLY WHAT YOU WANT:</div>
+                    <textarea
+                      value={vibeCustomPrompt}
+                      onChange={e => setVibeCustomPrompt(e.target.value)}
+                      placeholder="e.g. Make this cat fishing for shark in the ocean, dramatic waves, sunset sky"
+                      style={{ width: '100%', padding: '8px 10px', borderRadius: 8, border: `1px solid ${vibeCustomPrompt ? '#8b5cf6' : 'var(--border)'}`, background: 'var(--bg-elevated)', color: 'var(--text-primary)', fontSize: 12, fontFamily: 'inherit', resize: 'vertical', minHeight: 56, boxSizing: 'border-box', lineHeight: 1.5 }}
+                    />
+                    {vibeCustomPrompt && <div style={{ fontSize: 10, color: '#8b5cf6', marginTop: 3 }}>✓ Custom prompt will override preset</div>}
+                  </div>
+                  <button style={{ padding: '8px 12px', borderRadius: 8, border: 'none', background: '#8b5cf6', color: '#fff', fontSize: 12, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit' }} onClick={handleVibeTransform} disabled={vibeGenerating}>
+                    {vibeGenerating ? '⏳ Transforming...' : vibeCustomPrompt ? `✨ "${vibeCustomPrompt.slice(0,30)}${vibeCustomPrompt.length>30?'…':''}" — 5K BL` : `✨ ${vibePreset.replace('-',' ')} Transform — 5K BL`}
+                  </button>
                   {vibeResult && (
                     <div>
                       <img src={vibeResult} alt="Transformed" style={{ width: '100%', borderRadius: 6, border: '1px solid var(--border)', display: 'block', marginBottom: 5 }} />
@@ -432,7 +527,34 @@ export default function Build() {
                 {[4,6,8].map(d => (<button key={d} style={{ padding: '3px 7px', borderRadius: 6, border: `1px solid ${videoDuration === d ? '#6366f1' : 'var(--border)'}`, background: videoDuration === d ? 'rgba(99,102,241,0.15)' : 'transparent', color: videoDuration === d ? '#6366f1' : 'var(--text-muted)', fontSize: 10, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit' }} onClick={() => setVideoDuration(d)}>{d}s</button>))}
               </div>
               <button style={{ padding: '8px 12px', borderRadius: 8, border: 'none', background: 'linear-gradient(135deg,#0f766e,#0891b2)', color: '#fff', fontSize: 12, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit' }} onClick={handleGenerateVideo} disabled={videoGenerating}>{videoGenerating ? '⏳ Generating... (~1-3 min)' : '🎬 Generate Video (Veo) — 50K BL'}</button>
-              {videoResult && (<div style={{ padding: '8px 10px', background: 'rgba(0,229,160,0.06)', borderRadius: 8, fontSize: 11, color: '#00E5A0' }}>✅ Video generated!<br /><span style={{ fontFamily: 'monospace', fontSize: 10, wordBreak: 'break-all', color: 'var(--text-muted)' }}>{videoResult.gcsUri}</span></div>)}
+              {videoResult && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {videoResult.publicUrl ? (
+                <video
+                  src={videoResult.publicUrl}
+                  autoPlay loop muted playsInline
+                  style={{ width: '100%', borderRadius: 8, border: '1px solid var(--border)', maxHeight: 180, objectFit: 'cover' }}
+                />
+              ) : (
+                <div style={{ padding: '8px 10px', background: 'rgba(0,229,160,0.06)', borderRadius: 8, fontSize: 11, color: '#00E5A0' }}>✅ Video generated!</div>
+              )}
+              <div style={{ fontSize: 10, color: 'var(--text-muted)', wordBreak: 'break-all', fontFamily: 'monospace' }}>{videoResult.publicUrl || videoResult.gcsUri}</div>
+              {videoResult.publicUrl && files.length > 0 && (
+                <button style={{ padding: '6px 10px', borderRadius: 7, border: 'none', background: '#22c55e', color: '#fff', fontSize: 11, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit' }}
+                  onClick={() => {
+                    const htmlFile = files.find(f => f.name.endsWith('.html'));
+                    if (!htmlFile) return;
+                    const videoTag = `<video autoplay loop muted playsinline style="width:100%;max-height:500px;object-fit:cover;display:block;" src="${videoResult.publicUrl}"><source src="${videoResult.publicUrl}" type="video/mp4"></video>`;
+                    const updated = htmlFile.content.includes('<body') ? htmlFile.content.replace(/(<body[^>]*>)/i, '$1\n' + videoTag) : htmlFile.content;
+                    setFiles(prev => prev.map(f => f.name.endsWith('.html') ? { ...f, content: updated } : f));
+                    setPreview(updated);
+                    if (iframeRef.current) iframeRef.current.srcdoc = updated;
+                    alert('✅ Video injected into your site!');
+                  }}
+                >🎬 Insert Video into Site</button>
+              )}
+            </div>
+          )}
             </div>
           )}
         </div>
