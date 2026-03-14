@@ -110,6 +110,7 @@ export default function Build() {
   const photoInputRef = useRef(null);
 
   // ── Chat UI state ──────────────────────────────────────────────────────
+  const [pendingChatSubmit, setPendingChatSubmit] = useState(false); // triggers generate from chat
   const [chatMessages,      setChatMessages]      = useState([]); // { role, content, timestamp }
   const [chatInput,         setChatInput]          = useState('');
   const [memorySummaries,   setMemorySummaries]    = useState([]); // up to 5
@@ -433,14 +434,16 @@ export default function Build() {
   }, [imgResults, vibeResult]);
 
   // ── Fallback dialog confirm handler ───────────────────────────────────
-  const handleFallbackConfirm = useCallback((nextModel, originalPrompt) => {
+  const handleFallbackConfirm = useCallback((nextModel) => {
     setFallbackDialog(null);
     setSelectedModel(nextModel);
-    // Re-trigger generation with the next model
-    setTimeout(() => handleGenerate(originalPrompt, nextModel), 100);
+    // Use pendingChatSubmit to re-trigger generation with next model
+    setPendingChatSubmit(true);
   }, []);
 
   // ── Chat send handler — checks clarity first ─────────────────────────
+  // NOTE: Does NOT call handleGenerate directly — sets pendingChatSubmit 
+  // flag instead to avoid hook definition order issue.
   const handleSendChat = useCallback(async () => {
     const text = chatInput.trim();
     if (!text) return;
@@ -450,11 +453,11 @@ export default function Build() {
     const userMsg = { role: 'user', content: text, timestamp: new Date().toISOString() };
     setChatMessages(prev => [...prev.slice(-19), userMsg]);
 
-    // If already awaiting a clarification reply — skip clarity check, generate directly
+    // If already awaiting a clarification reply — skip clarity check, generate
     if (awaitingClarify) {
       setAwaitingClarify(false);
       setPrompt(text);
-      setTimeout(() => handleGenerate(text), 50);
+      setPendingChatSubmit(true);
       return;
     }
 
@@ -485,10 +488,10 @@ export default function Build() {
     }
     setAiThinking(false);
 
-    // Proceed to generation
+    // Set prompt and flag — handleGenerate runs via useEffect below
     setPrompt(text);
-    setTimeout(() => handleGenerate(text), 50);
-  }, [chatInput, awaitingClarify, currentProjectId, isEditMode, handleGenerate]);
+    setPendingChatSubmit(true);
+  }, [chatInput, awaitingClarify, currentProjectId, isEditMode]);
 
   const handleChatKeyDown = (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -561,6 +564,14 @@ export default function Build() {
       else { setProgressStep('error'); setGenResult('error'); setProgressMessages(p => [...p, { step: 'error', message: err.message || 'Connection failed', time: new Date() }]); }
     } finally { abortControllerRef.current = null; setGenerating(false); setSessionId(null); }
   }, [prompt, effectiveModel, template, projectName, isMobile, files, autoAttachPrompt, systemPromptText]);
+
+  // ── Trigger generation when chat submits (avoids hook order issue) ─────
+  useEffect(() => {
+    if (pendingChatSubmit && !generating) {
+      setPendingChatSubmit(false);
+      handleGenerate();
+    }
+  }, [pendingChatSubmit, generating, handleGenerate]);
 
   const handleStop = async () => { if (abortControllerRef.current) abortControllerRef.current.abort(); try { await api.post('/api/build/stop', { sessionId }); } catch {} setProgressStep('stopped'); setGenResult('stopped'); setProgressMessages(p => [...p, { step: 'stopped', message: 'Stopped. Coins refunded.', time: new Date() }]); setGenerating(false); };
   const handleDismissProgress = () => { setGenResult(null); setProgressMessages([]); setProgressStep(''); };
