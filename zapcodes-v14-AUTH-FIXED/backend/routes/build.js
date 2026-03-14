@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { auth } = require('../middleware/auth');
-const { callAI, callAIWithImage, parseFilesFromResponse, generateProjectMultiStep, verifyAndFix } = require('../services/ai');
+const { callAI, callAIWithImage, parseFilesFromResponse, generateProjectMultiStep, verifyAndFix, generateImageImagen4, editPhotoVibeEditor, generateVideoVeo } = require('../services/ai');
 const User = require('../models/User');
 const axios = require('axios');
 
@@ -43,13 +43,10 @@ function normalizeModelKey(key) { return NORMALIZE_MODEL_KEY[key] || key; }
 
 const RESERVED = ['www', 'api', 'app', 'admin', 'mail', 'ftp', 'cdn', 'dev', 'staging', 'test', 'blog', 'docs', 'status', 'support', 'help', 'zapcodes', 'blendlink'];
 
-// ── BUILD FALLBACK CHAINS — Groq blocked for paid tiers ──
 const BUILD_FALLBACK_PAID = ['sonnet-4.6', 'gemini-3.1-pro', 'haiku-4.5', 'gemini-2.5-flash'];
 const BUILD_FALLBACK_FREE = ['gemini-2.5-flash', 'groq'];
 const BUILD_FALLBACK_ADMIN = ['sonnet-4.6', 'gemini-3.1-pro', 'haiku-4.5', 'gemini-2.5-flash', 'groq'];
 function getBuildFallbackChain(user) { if (user.role === 'super-admin') return BUILD_FALLBACK_ADMIN; const t = user.subscription_tier || 'free'; return t === 'free' ? BUILD_FALLBACK_FREE : BUILD_FALLBACK_PAID; }
-
-// ══════════ SYSTEM PROMPTS ══════════
 
 const GEN_PROMPT = `You are ZapCodes AI. You build websites. You write complete, working code. You never write placeholder code. You never write "// rest of code here" or "..." or "// similar to above". You write every single line.
 
@@ -159,7 +156,6 @@ OUTPUT: \`\`\`filepath:index.html\n(COMPLETE updated file — every line)\n\`\`\
 
 const CLONE_PROMPT = `Analyze the website and return JSON: {"title":"...","type":"...","sections":[...],"colors":{"primary":"#hex","secondary":"#hex","bg":"#hex","text":"#hex"},"fonts":"...","features":[...],"layout":"...","content":"..."}`;
 
-// ══════════ SMART MODEL SELECTION — Groq blocked for paid tiers ══════════
 function getEffectiveModel(user, requestedModel, isBuildOperation = false) {
   if (user.role === 'super-admin') { if (requestedModel) return normalizeModelKey(requestedModel); return 'gemini-3.1-pro'; }
   const tier = user.subscription_tier || 'free';
@@ -191,7 +187,6 @@ function getEffectiveModel(user, requestedModel, isBuildOperation = false) {
 
 function getModelDisplayName(model) { return MODEL_DISPLAY[model] || MODEL_DISPLAY[normalizeModelKey(model)] || model; }
 
-// ══════════ HELPERS ══════════
 const activeSessions = new Map();
 function safeSend(res, data) { try { if (!res.writableEnded && !res.destroyed) { res.write(`data: ${JSON.stringify(data)}\n\n`); return true; } return false; } catch (err) { return false; } }
 
@@ -210,22 +205,13 @@ function generatePreviewHTML(files) {
 
 const BADGE_SCRIPT = `<div id="zc-badge" style="position:fixed;bottom:10px;right:10px;z-index:99999;background:linear-gradient(135deg,#6366f1,#8b5cf6);color:#fff;padding:6px 14px;border-radius:20px;font-family:-apple-system,sans-serif;font-size:12px;font-weight:600;box-shadow:0 2px 10px rgba(99,102,241,.3);cursor:pointer;text-decoration:none;display:flex;align-items:center;gap:4px" onclick="window.open('https://zapcodes.net?ref=badge','_blank')">⚡ Made with ZapCodes</div>`;
 
-// ══════════════════════════════════════════════════════════════
-// VISION-AWARE AI CALL HELPER
-// If referenceImages are provided, uses callAIWithImage so the AI
-// can actually SEE screenshots/mockups/reference photos.
-// Falls back to callAI for text-only if no images.
-// ══════════════════════════════════════════════════════════════
 async function callAISmart(systemPrompt, userPrompt, model, maxTokens, referenceImages, aiOpts) {
   if (referenceImages && referenceImages.length > 0) {
-    // Groq vision models have limited capability — auto-upgrade for vision tasks
     let visionModel = model;
     if (model === 'groq') {
-      // Groq vision works but output is limited; for builds, try Gemini Flash first
       const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_AI_API_KEY;
       if (apiKey) visionModel = 'gemini-2.5-flash';
     }
-    console.log(`[Build+Vision] Using ${visionModel} with ${referenceImages.length} image(s)`);
     return callAIWithImage(systemPrompt, userPrompt, referenceImages, visionModel, maxTokens, aiOpts);
   }
   return callAI(systemPrompt, userPrompt, model, maxTokens, aiOpts);
@@ -239,8 +225,6 @@ async function generateProgressMessages(prompt, template, projectName, modelLabe
   } catch {}
   return [`Analyzing what you want for ${name}... 🧠`, 'Got it! Starting the build.', 'Setting up page structure.', 'Working on colors and fonts.', `${modelLabel} is writing HTML.`, 'Navigation and smooth scrolling done.', 'Making it responsive.', 'Adding content sections.', 'CSS polish — gradients, shadows, effects.', 'JavaScript for interactivity.', 'Almost done! Final polish.', 'Checking styles and buttons.', 'Wrapping up the package.', 'One last pass — hang tight!'];
 }
-
-// ══════════ ROUTES ══════════
 
 router.get('/costs', (req, res) => res.json({ costs: BL_COSTS }));
 router.get('/system-prompts', auth, (req, res) => res.json({ gen_prompt: GEN_PROMPT, edit_prompt: EDIT_PROMPT, fix_prompt: FIX_PROMPT }));
@@ -257,82 +241,54 @@ router.get('/available-models', auth, (req, res) => {
   res.json({ models, allModels: allModelsInfo, plan: tier, subscription_tier: tier, monthlyUsage: req.user.getMonthlyUsage(), bl_coins: req.user.bl_coins || 0 });
 });
 
-// ══════════ POST /api/build/generate-with-progress (SSE) ══════════
 router.post('/generate-with-progress', auth, async (req, res) => {
   const sessionId = `gen-${req.user._id}-${Date.now()}`;
   let keepaliveInterval = null; let progressTicker = null; let connectionAlive = true;
-
   try {
     const user = req.user;
     const { prompt, template, projectName, description, colorScheme, features, model: requestedModel, existingFiles, customSystemPrompt, referenceImages } = req.body;
-
-    // referenceImages = [{ base64, mimeType, fileName }] — user-uploaded screenshots/mockups
-
     res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', 'Connection': 'keep-alive', 'X-Accel-Buffering': 'no', 'Access-Control-Allow-Origin': '*' });
     const sendProgress = (step, message, extra = {}) => { if (connectionAlive) safeSend(res, { type: 'progress', step, message, ...extra }); };
-
     let aborted = false;
     activeSessions.set(sessionId, { abort: () => { aborted = true; } });
     res.on('close', () => { aborted = true; connectionAlive = false; if (keepaliveInterval) clearInterval(keepaliveInterval); activeSessions.delete(sessionId); });
-
     sendProgress('validating', 'Validating your request...');
-
     const model = getEffectiveModel(user, requestedModel, true);
     if (!model) { sendProgress('error', 'All AI model limits reached.'); safeSend(res, { type: 'error', error: 'Limits reached', upgrade: true }); return res.end(); }
-
     const config = user.getTierConfig();
     const inputText = prompt || description || '';
     if (config.maxChars !== Infinity && inputText.length > config.maxChars) { sendProgress('error', 'Message too long.'); safeSend(res, { type: 'error', error: 'Message too long' }); return res.end(); }
-
     const cost = BL_COSTS.generation[model] || 5000;
     if (user.role !== 'super-admin' && user.bl_coins < cost) { sendProgress('error', `Need ${cost.toLocaleString()} BL coins.`); safeSend(res, { type: 'error', error: 'Insufficient BL coins', required: cost, balance: user.bl_coins }); return res.end(); }
-
     user.spendCoins(cost, 'generation', `Website generation (${getModelDisplayName(model)})`, model);
     user.incrementMonthlyUsage(model, 'generation');
     if (config.trialModels?.includes(model)) user.incrementTrial(model);
     await user.save();
-
     sendProgress('analyzing', 'Analyzing your prompt...', { model, cost, sessionId });
     if (aborted) { user.creditCoins(cost, 'generation', 'Refund: stopped'); user.decrementMonthlyUsage(model, 'generation'); await user.save(); safeSend(res, { type: 'stopped' }); return res.end(); }
-
     const modelLabel = getModelDisplayName(model);
-
-    // ── Log reference images ──
     const visionImages = (referenceImages || []).filter(img => img.base64 && img.mimeType).map(img => ({ base64: img.base64, mimeType: img.mimeType }));
-    if (visionImages.length > 0) {
-      sendProgress('analyzing', `Analyzing ${visionImages.length} reference image(s) — AI will match the design...`);
-      console.log(`[Build] ${visionImages.length} reference image(s) uploaded — using vision API`);
-    }
-
+    if (visionImages.length > 0) { sendProgress('analyzing', `Analyzing ${visionImages.length} reference image(s) — AI will match the design...`); }
     const speed = model.includes('gemini') ? '~30-60s' : model.includes('haiku') ? '~1-2 min' : model.includes('sonnet') ? '~1-2 min' : '~15-30s';
     sendProgress('connecting', `Connecting to ${modelLabel}... (${speed})`);
-
     keepaliveInterval = setInterval(() => { if (!connectionAlive) { clearInterval(keepaliveInterval); return; } try { if (!res.writableEnded) res.write(`: keepalive\n\n`); else { clearInterval(keepaliveInterval); connectionAlive = false; } } catch { clearInterval(keepaliveInterval); connectionAlive = false; } }, 10000);
-
     sendProgress('building', `Let me take a look at what you want to build... 🧠`);
     const progressMsgs = await generateProgressMessages(prompt || description || '', template, projectName, modelLabel);
     let progressIdx = 0;
     progressTicker = setInterval(() => { if (!connectionAlive || aborted || progressIdx >= progressMsgs.length) { clearInterval(progressTicker); return; } sendProgress('building', progressMsgs[progressIdx]); progressIdx++; }, 8000);
-
     const aiOpts = { onProgress: (msg) => { if (!aborted && connectionAlive) sendProgress('generating', msg); } };
-
     let files; let usedModel = model; let systemPrompt = GEN_PROMPT; let userPrompt = '';
-
     if (template && template !== 'custom') {
       if (customSystemPrompt?.trim().length > 50) systemPrompt = customSystemPrompt;
       sendProgress('generating_html', `Building ${template}: "${projectName || 'My Project'}"...`);
       files = await generateProjectMultiStep(template, projectName || 'My Project', description || prompt, colorScheme, features, model, aiOpts);
     } else {
       if (existingFiles?.length > 0) {
-        // ── EDITING EXISTING WEBSITE ──
         sendProgress('generating_html', `Modifying your website using ${modelLabel}...`);
         systemPrompt = EDIT_PROMPT;
         const existingCode = existingFiles.map(f => `--- ${f.name} ---\n${f.content}`).join('\n\n');
         const existingCodeSize = existingCode.length;
-
         userPrompt = `<existing_website>\n${existingCode}\n</existing_website>\n\n<user_request>\n${prompt}\n</user_request>\n\nProject: ${projectName || 'My Website'}\n${colorScheme && colorScheme !== 'keep existing' ? `Color change: ${colorScheme}` : 'Colors: DO NOT CHANGE'}\n${features ? `Features: ${features.join(', ')}` : ''}\n${visionImages.length > 0 ? 'REFERENCE IMAGES ATTACHED: Study them carefully and apply the design changes shown.' : ''}\n\nReturn the COMPLETE updated file.`;
-
-        // Auto-upgrade Groq for edits
         if (model === 'groq' && existingCodeSize > 5000) {
           for (const um of ['gemini-2.5-flash', 'haiku-4.5', 'gemini-3.1-pro']) {
             const uc = BL_COSTS.generation[um] || 10000;
@@ -343,17 +299,12 @@ router.post('/generate-with-progress', auth, async (req, res) => {
               if (files?.length) { usedModel = um; const diff = uc - cost; if (diff > 0) { user.spendCoins(diff, 'generation', `Edit upgrade: Groq → ${getModelDisplayName(um)}`); await user.save(); } break; }
             }
           }
-          if (!files?.length) {
-            sendProgress('generating', 'Trying with Groq...');
-            const result = await callAISmart(systemPrompt, userPrompt, model, undefined, visionImages, aiOpts);
-            files = result ? parseFilesFromResponse(result) : [];
-          }
+          if (!files?.length) { const result = await callAISmart(systemPrompt, userPrompt, model, undefined, visionImages, aiOpts); files = result ? parseFilesFromResponse(result) : []; }
         } else {
           const result = await callAISmart(systemPrompt, userPrompt, model, undefined, visionImages, aiOpts);
           files = result ? parseFilesFromResponse(result) : [];
         }
       } else {
-        // ── CREATING NEW WEBSITE ──
         sendProgress('generating_html', `Generating website using ${modelLabel}...`);
         systemPrompt = (customSystemPrompt?.trim().length > 50) ? customSystemPrompt : GEN_PROMPT;
         userPrompt = `Create a complete, production-ready website: ${prompt}\n\nProject: ${projectName || 'My Website'}\nColors: ${colorScheme || 'modern dark theme'}\n${features ? `Features: ${features.join(', ')}` : ''}\n${visionImages.length > 0 ? 'REFERENCE IMAGES ATTACHED: Study them carefully. Recreate the design, layout, colors, and structure as closely as possible.' : ''}\n\nIMPORTANT: Self-contained index.html with ALL CSS in <style> and ALL JS in <script>.`;
@@ -361,15 +312,12 @@ router.post('/generate-with-progress', auth, async (req, res) => {
         files = result ? parseFilesFromResponse(result) : [];
       }
     }
-
     if (aborted || !connectionAlive) {
       if (keepaliveInterval) clearInterval(keepaliveInterval); clearInterval(progressTicker);
       user.creditCoins(cost, 'generation', 'Refund: stopped'); user.decrementMonthlyUsage(model, 'generation'); await user.save();
       if (connectionAlive) { safeSend(res, { type: 'stopped' }); res.end(); } return;
     }
-
     if (!files?.length) {
-      // ── FALLBACK chain ──
       const fallbackChain = getBuildFallbackChain(user);
       const currentIdx = fallbackChain.indexOf(normalizeModelKey(model));
       for (let fi = currentIdx + 1; fi < fallbackChain.length; fi++) {
@@ -387,7 +335,6 @@ router.post('/generate-with-progress', auth, async (req, res) => {
           }
         } catch (fbErr) { console.error(`[Fallback] ${nextModel}: ${fbErr.message}`); }
       }
-
       if (!files?.length) {
         if (keepaliveInterval) clearInterval(keepaliveInterval); clearInterval(progressTicker);
         user.creditCoins(cost, 'generation', `Refund: failed (${model})`); user.decrementMonthlyUsage(model, 'generation'); await user.save();
@@ -395,13 +342,11 @@ router.post('/generate-with-progress', auth, async (req, res) => {
         safeSend(res, { type: 'error', error: 'Generation failed. Coins refunded.' }); return res.end();
       }
     }
-
     sendProgress('preview', 'Building live preview...');
     const preview = generatePreviewHTML(files);
     const actualLabel = getModelDisplayName(usedModel); const actualCost = BL_COSTS.generation[usedModel] || cost;
     sendProgress('done', `Done! ${files.length} file(s) using ${actualLabel}.`);
     safeSend(res, { type: 'complete', files, preview, model: usedModel, blSpent: actualCost, balanceRemaining: user.bl_coins, monthlyUsage: user.getMonthlyUsage(), fileCount: files.length });
-
     if (keepaliveInterval) clearInterval(keepaliveInterval); clearInterval(progressTicker);
     res.end(); activeSessions.delete(sessionId);
   } catch (err) {
@@ -446,7 +391,6 @@ router.post('/generate', auth, async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message || 'Failed' }); }
 });
 
-// ══════════ Save/Load Projects ══════════
 router.post('/save-project', auth, async (req, res) => {
   try {
     const user = req.user; const { projectId, name, files, preview, template, description, subdomain } = req.body;
@@ -466,7 +410,6 @@ router.delete('/project/:projectId', auth, async (req, res) => {
   try { const user = req.user; const idx = (user.saved_projects || []).findIndex(p => p.projectId === req.params.projectId); if (idx === -1) return res.status(404).json({ error: 'Not found' }); const project = user.saved_projects[idx]; let shutdownSite = null; if (project.linkedSubdomain) { const siteIdx = user.deployed_sites.findIndex(s => s.subdomain === project.linkedSubdomain); if (siteIdx >= 0) { shutdownSite = project.linkedSubdomain; user.deployed_sites.splice(siteIdx, 1); } } user.saved_projects.splice(idx, 1); await user.save(); res.json({ success: true, shutdownSite }); } catch { res.status(500).json({ error: 'Failed' }); }
 });
 
-// ══════════ Deploy ══════════
 router.post('/deploy', auth, async (req, res) => {
   try {
     const user = req.user; const { subdomain, files, title } = req.body; const config = user.getTierConfig();
@@ -503,7 +446,6 @@ router.post('/redeploy-from-project', auth, async (req, res) => {
   } catch { res.status(500).json({ error: 'Re-deploy failed' }); }
 });
 
-// ══════════ Code Fix — with vision support for bug screenshots ══════════
 router.post('/code-fix', auth, async (req, res) => {
   try {
     const user = req.user; const { files, description, model: requestedModel, referenceImages } = req.body;
@@ -517,16 +459,12 @@ router.post('/code-fix', auth, async (req, res) => {
     if (user.role !== 'super-admin' && user.bl_coins < cost) return res.status(402).json({ error: 'Insufficient BL coins' });
     user.spendCoins(cost, 'code_fix', `Code fix (${getModelDisplayName(model)})`, model); user.incrementMonthlyUsage(model, 'code_fix');
     if (config.monthlyFixType === 'one_time_trial') user.incrementTrial('fixes'); await user.save();
-
     const fileContent = (files || []).map(f => `--- ${f.name} ---\n${f.content}`).join('\n\n');
     const visionImages = (referenceImages || []).filter(img => img.base64 && img.mimeType);
-
-    // Auto-upgrade Groq for large files
     let actualModel = model;
     if (model === 'groq' && fileContent.length > 5000) {
       for (const um of ['gemini-2.5-flash', 'haiku-4.5', 'gemini-3.1-pro']) { const uc = BL_COSTS.codeFix[um] || 10000; if (user.role === 'super-admin' || user.bl_coins >= uc) { actualModel = um; const diff = uc - cost; if (diff > 0) { user.spendCoins(diff, 'code_fix', `Fix upgrade: Groq → ${getModelDisplayName(um)}`); await user.save(); } break; } }
     }
-
     const fixPrompt = `Fix:\n\n${fileContent}\n\nIssue: ${description || 'Fix all bugs'}\n${visionImages.length > 0 ? 'BUG SCREENSHOT ATTACHED: Analyze the screenshot to understand the visual bug.' : ''}`;
     const result = await callAISmart(FIX_PROMPT, fixPrompt, actualModel, undefined, visionImages, {});
     const fixedFiles = result ? parseFilesFromResponse(result) : [];
@@ -535,7 +473,6 @@ router.post('/code-fix', auth, async (req, res) => {
   } catch { res.status(500).json({ error: 'Fix failed' }); }
 });
 
-// ══════════ GitHub Push ══════════
 router.post('/github-push', auth, async (req, res) => {
   try {
     const user = req.user; const config = user.getTierConfig(); const mu = user.getMonthlyUsage();
@@ -551,7 +488,6 @@ router.post('/github-push', auth, async (req, res) => {
   } catch { res.status(500).json({ error: 'GitHub push failed' }); }
 });
 
-// ══════════ PWA, Badge, Clone, Sites ══════════
 router.post('/pwa', auth, async (req, res) => { try { const user = req.user; const config = user.getTierConfig(); if (!config.canPWA) return res.status(403).json({ error: 'PWA requires Gold+', upgrade: true }); if (user.role !== 'super-admin' && user.bl_coins < BL_COSTS.pwaBuild) return res.status(402).json({ error: 'Insufficient BL coins' }); const { subdomain, appName, themeColor } = req.body; const site = user.deployed_sites.find(s => s.subdomain === subdomain); if (!site) return res.status(404).json({ error: 'Not found' }); user.spendCoins(BL_COSTS.pwaBuild, 'pwa_build', `PWA for ${subdomain}`); site.isPWA = true; await user.save(); res.json({ manifest: { name: appName || site.title, short_name: (appName || subdomain).slice(0, 12), start_url: '/', display: 'standalone', background_color: '#000', theme_color: themeColor || '#6366f1', icons: [{ src: '/icon-192.png', sizes: '192x192', type: 'image/png' }, { src: '/icon-512.png', sizes: '512x512', type: 'image/png' }] }, blSpent: BL_COSTS.pwaBuild, balanceRemaining: user.bl_coins }); } catch { res.status(500).json({ error: 'PWA failed' }); } });
 
 router.post('/remove-badge', auth, async (req, res) => { try { const user = req.user; const config = user.getTierConfig(); if (!config.canRemoveBadge) return res.status(403).json({ error: 'Silver+ required', upgrade: true }); if (user.role !== 'super-admin' && user.bl_coins < BL_COSTS.badgeRemoval) return res.status(402).json({ error: 'Insufficient' }); const site = user.deployed_sites.find(s => s.subdomain === req.body.subdomain); if (!site) return res.status(404).json({ error: 'Not found' }); if (!site.hasBadge) return res.json({ message: 'Already removed' }); user.spendCoins(BL_COSTS.badgeRemoval, 'badge_removal', `Badge ${req.body.subdomain}`); site.hasBadge = false; await user.save(); res.json({ success: true, blSpent: BL_COSTS.badgeRemoval, balanceRemaining: user.bl_coins }); } catch { res.status(500).json({ error: 'Failed' }); } });
@@ -568,9 +504,78 @@ router.delete('/site/:subdomain', auth, async (req, res) => { try { const user =
 
 router.get('/templates', (req, res) => res.json({ templates: [{ id: 'custom', name: 'Custom (AI Chat)', icon: '💬', desc: 'Describe anything' }, { id: 'portfolio', name: 'Portfolio', icon: '👤', desc: 'Personal portfolio' }, { id: 'landing', name: 'Landing Page', icon: '🚀', desc: 'Product landing' }, { id: 'blog', name: 'Blog', icon: '📝', desc: 'Blog template' }, { id: 'ecommerce', name: 'E-Commerce', icon: '🛒', desc: 'Online store' }, { id: 'dashboard', name: 'Dashboard', icon: '📊', desc: 'Admin dashboard' }, { id: 'webapp', name: 'Full-Stack App', icon: '⚡', desc: 'Frontend + backend' }, { id: 'saas', name: 'SaaS', icon: '💎', desc: 'SaaS with auth' }, { id: 'mobile', name: 'Mobile App', icon: '📱', desc: 'React Native' }] }));
 
-// ══════════ PUBLIC: Serve sites ══════════
 router.get('/site-content/:subdomain', async (req, res) => { try { const sub = req.params.subdomain.toLowerCase().trim(); const user = await User.findOne({ 'deployed_sites.subdomain': sub }); if (!user) return res.status(404).json({ error: 'Not found' }); const site = user.deployed_sites.find(s => s.subdomain === sub); if (!site?.files?.length) return res.status(404).json({ error: 'No content' }); const indexFile = site.files.find(f => f.name === 'index.html' || f.name.endsWith('.html')); if (req.query.raw && indexFile) { res.setHeader('Content-Type', 'text/html'); return res.send(indexFile.content); } res.json({ subdomain: sub, title: site.title, files: site.files, hasBadge: site.hasBadge }); } catch { res.status(500).json({ error: 'Failed' }); } });
 
 router.get('/site-preview/:subdomain', async (req, res) => { try { const sub = req.params.subdomain.toLowerCase().trim(); const user = await User.findOne({ 'deployed_sites.subdomain': sub }); if (!user) return res.status(404).send('<h1>Not found</h1>'); const site = user.deployed_sites.find(s => s.subdomain === sub); if (!site?.files?.length) return res.status(404).send('<h1>Not found</h1>'); const f = site.files.find(f => f.name === 'index.html') || site.files.find(f => f.name.endsWith('.html')); if (!f) return res.status(404).send('<h1>No HTML</h1>'); res.setHeader('Content-Type', 'text/html'); res.send(f.content); } catch { res.status(500).send('<h1>Error</h1>'); } });
+
+// ══════════════════════════════════════════════════════════════════
+// NEW: AI Image Generator — POST /api/build/generate-image
+// ══════════════════════════════════════════════════════════════════
+router.post('/generate-image', auth, async (req, res) => {
+  try {
+    const user = req.user;
+    const { prompt, style, aspectRatio, count } = req.body;
+    if (!prompt?.trim()) return res.status(400).json({ error: 'Image prompt required' });
+    const cost = 5000;
+    if (user.role !== 'super-admin' && user.bl_coins < cost) return res.status(402).json({ error: 'Insufficient BL coins', required: cost, balance: user.bl_coins });
+    const styleMap = {
+      photorealistic: 'photorealistic, ultra detailed, 8K resolution, professional photography',
+      illustration: 'digital illustration, vibrant colors, clean lines, modern design',
+      minimalist: 'minimalist design, clean, simple, white background, elegant',
+      luxury: 'luxury aesthetic, gold accents, sophisticated, high-end editorial photography',
+      cyberpunk: 'cyberpunk style, neon colors, dark futuristic aesthetic, glowing effects',
+      watercolor: 'watercolor painting style, soft brushstrokes, artistic, beautiful colors',
+    };
+    const enhancedPrompt = style && styleMap[style] ? `${prompt}. Style: ${styleMap[style]}` : prompt;
+    const images = await generateImageImagen4(enhancedPrompt, { aspectRatio: aspectRatio || '1:1', numberOfImages: Math.min(count || 1, 4) });
+    if (!images?.length) return res.status(500).json({ error: 'Image generation failed. Please try again.' });
+    if (user.role !== 'super-admin') { user.spendCoins(cost, 'generation', `AI Image (Imagen 4): ${prompt.slice(0, 50)}`); await user.save(); }
+    res.json({ images, blSpent: user.role === 'super-admin' ? 0 : cost, balanceRemaining: user.bl_coins });
+  } catch (err) {
+    console.error('[Build/generate-image]', err.message);
+    res.status(500).json({ error: err.message || 'Image generation failed' });
+  }
+});
+
+// ══════════════════════════════════════════════════════════════════
+// NEW: AI Vibe Photo Editor — POST /api/build/edit-photo
+// ══════════════════════════════════════════════════════════════════
+router.post('/edit-photo', auth, async (req, res) => {
+  try {
+    const user = req.user;
+    const { image, preset, customPrompt } = req.body;
+    if (!image?.base64) return res.status(400).json({ error: 'Image required (base64)' });
+    if (!preset && !customPrompt) return res.status(400).json({ error: 'Preset or custom prompt required' });
+    const cost = 5000;
+    if (user.role !== 'super-admin' && user.bl_coins < cost) return res.status(402).json({ error: 'Insufficient BL coins', required: cost, balance: user.bl_coins });
+    const results = await editPhotoVibeEditor(image, preset, customPrompt);
+    if (!results?.length) return res.status(500).json({ error: 'Photo transformation failed. Please try again.' });
+    if (user.role !== 'super-admin') { user.spendCoins(cost, 'generation', `AI Photo Edit: ${preset || customPrompt?.slice(0, 30)}`); await user.save(); }
+    res.json({ images: results, blSpent: user.role === 'super-admin' ? 0 : cost, balanceRemaining: user.bl_coins });
+  } catch (err) {
+    console.error('[Build/edit-photo]', err.message);
+    res.status(500).json({ error: err.message || 'Photo edit failed' });
+  }
+});
+
+// ══════════════════════════════════════════════════════════════════
+// NEW: AI Video Generator — POST /api/build/generate-video
+// ══════════════════════════════════════════════════════════════════
+router.post('/generate-video', auth, async (req, res) => {
+  try {
+    const user = req.user;
+    const { prompt, durationSeconds, aspectRatio, referenceImage } = req.body;
+    if (!prompt?.trim()) return res.status(400).json({ error: 'Video prompt required' });
+    const cost = 50000;
+    if (user.role !== 'super-admin' && user.bl_coins < cost) return res.status(402).json({ error: 'Insufficient BL coins', required: cost, balance: user.bl_coins });
+    const result = await generateVideoVeo(prompt, { durationSeconds: durationSeconds || 8, aspectRatio: aspectRatio || '16:9', referenceImage: referenceImage || null });
+    if (!result) return res.status(500).json({ error: 'Video generation failed or is not yet configured. Ensure your Google Cloud project has Veo access and GCS_BUCKET_URI is set in Render.' });
+    if (user.role !== 'super-admin') { user.spendCoins(cost, 'generation', `AI Video (Veo): ${prompt.slice(0, 50)}`); await user.save(); }
+    res.json({ video: result, blSpent: user.role === 'super-admin' ? 0 : cost, balanceRemaining: user.bl_coins });
+  } catch (err) {
+    console.error('[Build/generate-video]', err.message);
+    res.status(500).json({ error: err.message || 'Video generation failed' });
+  }
+});
 
 module.exports = router;
