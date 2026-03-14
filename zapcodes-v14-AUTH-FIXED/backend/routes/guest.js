@@ -20,13 +20,44 @@ const GuestSite = require('../models/GuestSite');
 const { callAI, callAIWithImage, generateImageImagen4, generateVideoVeo, parseFilesFromResponse } = require('../services/ai');
 const { auth } = require('../middleware/auth');
 
+// ══════════════════════════════════════════════════════════════════
+// SUPER ADMIN TEST WHITELIST
+// IPs in GUEST_TEST_IPS env var OR hardcoded below get unlimited
+// guest builds. Only set in Render env vars — never in GitHub.
+// Format (env var): comma-separated IPs "1.2.3.4,::1,2605:..."
+// ══════════════════════════════════════════════════════════════════
+function getWhitelistedIPs() {
+  const fromEnv = (process.env.GUEST_TEST_IPS || '')
+    .split(',').map(s => s.trim()).filter(Boolean);
+  const hardcoded = [
+    // Vince — home network (both phone + PC share this IPv4)
+    '98.97.143.4',
+    // Vince — mobile phone IPv6
+    '2605:59c8:33e3:a808:cc1:d03c:7392:28ea',
+    // Vince — PC IPv6
+    '2605:59c8:33e3:a808:2078:6d07:20af:4a8a',
+    // Localhost (for local dev testing)
+    '::1', '127.0.0.1', '::ffff:127.0.0.1',
+  ];
+  return [...new Set([...hardcoded, ...fromEnv])];
+}
+
+function isWhitelistedIP(ip) {
+  if (!ip) return false;
+  const list = getWhitelistedIPs();
+  const normalized = ip.replace(/^::ffff:/, '');
+  return list.some(w => w === ip || w === normalized);
+}
+
+
+
 // ── Rate limit: 1 generate request per IP per 24 hours ───────────────────
 const guestGenerateLimiter = rateLimit({
   windowMs: 24 * 60 * 60 * 1000,
   max: 1,
   keyGenerator: (req) => req.ip,
   message: { error: 'You can only generate 1 free site per day. Register to unlock more.' },
-  skip: () => false,
+  skip: (req) => isWhitelistedIP(req.ip), // Super admin test IPs bypass rate limit
 });
 
 // ── Helpers ───────────────────────────────────────────────────────────────
@@ -129,7 +160,12 @@ router.post('/generate', guestGenerateLimiter, async (req, res) => {
     const hash = computeHash(ip, dId);
 
     // ── Check fingerprint limit ───────────────────────────────────────────
-    const existing = await GuestSite.findActiveByHash(hash);
+    // ── Fingerprint check — bypassed for super admin test IPs ───────────
+    const isSuperAdminTest = isWhitelistedIP(ip);
+    if (isSuperAdminTest) {
+      console.log(`[GuestGen] Super admin IP ${ip} — bypassing 1-free limit`);
+    }
+    const existing = !isSuperAdminTest ? await GuestSite.findActiveByHash(hash) : null;
     if (existing) {
       const daysLeft = Math.max(0, Math.ceil((existing.expiresAt - Date.now()) / (1000 * 60 * 60 * 24)));
       return res.status(429).json({
@@ -345,6 +381,10 @@ IMPORTANT:
 // ── GET /api/guest/check/:hash — check fingerprint ───────────────────────
 router.get('/check/:hash', async (req, res) => {
   try {
+    // Super admin test IPs: always show as no existing site (allow fresh builds)
+    if (isWhitelistedIP(req.ip)) {
+      return res.json({ exists: false, superAdminBypass: true });
+    }
     const site = await GuestSite.findActiveByHash(req.params.hash);
     if (!site) return res.json({ exists: false });
     const daysLeft = Math.max(0, Math.ceil((site.expiresAt - Date.now()) / (1000 * 60 * 60 * 24)));
