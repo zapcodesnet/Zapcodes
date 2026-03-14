@@ -564,18 +564,48 @@ router.post('/edit-photo', auth, async (req, res) => {
 router.post('/generate-video', auth, async (req, res) => {
   try {
     const user = req.user;
-    const { prompt, durationSeconds, aspectRatio, referenceImage } = req.body;
+    const { prompt, durationSeconds, aspectRatio, referenceImage, injectIntoSite, existingHtml } = req.body;
     if (!prompt?.trim()) return res.status(400).json({ error: 'Video prompt required' });
     const cost = 50000;
-    if (user.role !== 'super-admin' && user.bl_coins < cost) return res.status(402).json({ error: 'Insufficient BL coins', required: cost, balance: user.bl_coins });
-    const result = await generateVideoVeo(prompt, { durationSeconds: durationSeconds || 8, aspectRatio: aspectRatio || '16:9', referenceImage: referenceImage || null });
-    if (!result) return res.status(500).json({ error: 'Video generation failed or is not yet configured. Ensure your Google Cloud project has Veo access and GCS_BUCKET_URI is set in Render.' });
-    if (user.role !== 'super-admin') { user.spendCoins(cost, 'generation', `AI Video (Veo): ${prompt.slice(0, 50)}`); await user.save(); }
-    res.json({ video: result, blSpent: user.role === 'super-admin' ? 0 : cost, balanceRemaining: user.bl_coins });
+    if (user.role !== 'super-admin' && user.bl_coins < cost) {
+      return res.status(402).json({ error: 'Insufficient BL coins', required: cost, balance: user.bl_coins });
+    }
+    const result = await generateVideoVeo(prompt, {
+      durationSeconds: durationSeconds || 8,
+      aspectRatio: aspectRatio || '16:9',
+      referenceImage: referenceImage || null,
+    });
+    if (!result) {
+      return res.status(500).json({ error: 'Video generation failed. Make sure Veo API is enabled and GCS_BUCKET_URI is set in Render.' });
+    }
+    if (user.role !== 'super-admin') {
+      user.spendCoins(cost, 'generation', `AI Video (Veo): ${prompt.slice(0, 50)}`);
+      await user.save();
+    }
+    // Inject video into site HTML if requested
+    let updatedHtml = null;
+    if (injectIntoSite && existingHtml && result.publicUrl) {
+      updatedHtml = injectVideoIntoHTML(existingHtml, result.publicUrl);
+    }
+    res.json({ video: result, publicUrl: result.publicUrl, updatedHtml, blSpent: user.role === 'super-admin' ? 0 : cost, balanceRemaining: user.bl_coins });
   } catch (err) {
     console.error('[Build/generate-video]', err.message);
     res.status(500).json({ error: err.message || 'Video generation failed' });
   }
 });
+
+// ── Video HTML injector ────────────────────────────────────────────────────
+function injectVideoIntoHTML(html, videoUrl) {
+  const videoTag = `\n<div id="zc-video-hero" style="position:relative;width:100%;overflow:hidden;max-height:600px;"><video autoplay loop muted playsinline style="width:100%;height:100%;object-fit:cover;display:block;" src="${videoUrl}"><source src="${videoUrl}" type="video/mp4"></video></div>`;
+  // 1. Replace existing <video> if present
+  if (/<video[^>]*>/i.test(html)) {
+    return html.replace(/<video[^>]*src=["'][^"']*["'][^>]*>/i, `<video autoplay loop muted playsinline style="width:100%;height:100%;object-fit:cover;display:block;" src="${videoUrl}">`);
+  }
+  // 2. Insert right after opening <body>
+  if (/<body[^>]*>/i.test(html)) {
+    return html.replace(/(<body[^>]*>)/i, '$1' + videoTag);
+  }
+  return html;
+}
 
 module.exports = router;
