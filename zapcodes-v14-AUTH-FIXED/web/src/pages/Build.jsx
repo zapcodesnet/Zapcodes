@@ -128,43 +128,54 @@ export default function Build() {
   const abortControllerRef = useRef(null);
   const progressEndRef = useRef(null);
 
-  // ── Voice to text — main prompt (APPEND mode) ──────────────────────────
+  // ── Single STT instance — routes to active input via voiceTarget ref ────
+  // Using ONE hook avoids the React "more hooks than expected" crash
+  // that occurs when multiple hook instances render conditionally
+  const voiceTargetRef = useRef('prompt'); // 'prompt'|'img'|'video'|'vibe'
+  const [voiceActiveInput, setVoiceActiveInput] = useState('');
+
   const {
     isListening: voiceListening,
     isSupported: voiceSupported,
-    toggleListening: toggleVoice,
+    toggleListening: _toggleVoiceRaw,
     error: voiceError,
   } = useSpeechToText({
-    onResult: (text) => setPrompt(text),
+    onResult: (text) => {
+      const target = voiceTargetRef.current;
+      if (target === 'img')   setImgPrompt(text);
+      else if (target === 'video') setVideoPrompt(text);
+      else if (target === 'vibe')  setVibeCustomPrompt(text);
+      else                         setPrompt(text);        // default: main prompt
+    },
     silenceTimeoutMs: 5000,
   });
 
-  // ── Voice for image prompt ───────────────────────────────────────────────
-  const {
-    isListening: imgVoiceListening,
-    toggleListening: toggleImgVoice,
-  } = useSpeechToText({
-    onResult: (text, isInterim) => { if (!isInterim) setImgPrompt(text); },
-    silenceTimeoutMs: 5000,
-  });
+  // Helpers that set the target then toggle
+  const toggleVoice = (existing = '') => {
+    voiceTargetRef.current = 'prompt';
+    setVoiceActiveInput('prompt');
+    _toggleVoiceRaw(existing);
+  };
+  const toggleImgVoice = (existing = '') => {
+    voiceTargetRef.current = 'img';
+    setVoiceActiveInput('img');
+    _toggleVoiceRaw(existing);
+  };
+  const toggleVideoVoice = (existing = '') => {
+    voiceTargetRef.current = 'video';
+    setVoiceActiveInput('video');
+    _toggleVoiceRaw(existing);
+  };
+  const toggleVibeVoice = (existing = '') => {
+    voiceTargetRef.current = 'vibe';
+    setVoiceActiveInput('vibe');
+    _toggleVoiceRaw(existing);
+  };
 
-  // ── Voice for video prompt ───────────────────────────────────────────────
-  const {
-    isListening: videoVoiceListening,
-    toggleListening: toggleVideoVoice,
-  } = useSpeechToText({
-    onResult: (text, isInterim) => { if (!isInterim) setVideoPrompt(text); },
-    silenceTimeoutMs: 5000,
-  });
-
-  // ── Voice for vibe/photo editor prompt ──────────────────────────────────
-  const {
-    isListening: vibeVoiceListening,
-    toggleListening: toggleVibeVoice,
-  } = useSpeechToText({
-    onResult: (text, isInterim) => { if (!isInterim) setVibeCustomPrompt(text); },
-    silenceTimeoutMs: 5000,
-  });
+  // Per-input listening indicators (true only when that input is active)
+  const imgVoiceListening   = voiceListening && voiceActiveInput === 'img';
+  const videoVoiceListening = voiceListening && voiceActiveInput === 'video';
+  const vibeVoiceListening  = voiceListening && voiceActiveInput === 'vibe';
 
   useEffect(() => { api.get('/api/coins/balance').then(r => setCoinData(r.data)).catch(() => {}); }, []);
   useEffect(() => {
