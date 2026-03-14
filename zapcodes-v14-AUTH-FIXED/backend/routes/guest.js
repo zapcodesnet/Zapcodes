@@ -20,44 +20,13 @@ const GuestSite = require('../models/GuestSite');
 const { callAI, callAIWithImage, generateImageImagen4, generateVideoVeo, parseFilesFromResponse } = require('../services/ai');
 const { auth } = require('../middleware/auth');
 
-// ══════════════════════════════════════════════════════════════════
-// SUPER ADMIN TEST WHITELIST
-// IPs in GUEST_TEST_IPS env var OR hardcoded below get unlimited
-// guest builds. Only set in Render env vars — never in GitHub.
-// Format (env var): comma-separated IPs "1.2.3.4,::1,2605:..."
-// ══════════════════════════════════════════════════════════════════
-function getWhitelistedIPs() {
-  const fromEnv = (process.env.GUEST_TEST_IPS || '')
-    .split(',').map(s => s.trim()).filter(Boolean);
-  const hardcoded = [
-    // Vince — home network (both phone + PC share this IPv4)
-    '98.97.143.4',
-    // Vince — mobile phone IPv6
-    '2605:59c8:33e3:a808:cc1:d03c:7392:28ea',
-    // Vince — PC IPv6
-    '2605:59c8:33e3:a808:2078:6d07:20af:4a8a',
-    // Localhost (for local dev testing)
-    '::1', '127.0.0.1', '::ffff:127.0.0.1',
-  ];
-  return [...new Set([...hardcoded, ...fromEnv])];
-}
-
-function isWhitelistedIP(ip) {
-  if (!ip) return false;
-  const list = getWhitelistedIPs();
-  const normalized = ip.replace(/^::ffff:/, '');
-  return list.some(w => w === ip || w === normalized);
-}
-
-
-
 // ── Rate limit: 1 generate request per IP per 24 hours ───────────────────
 const guestGenerateLimiter = rateLimit({
   windowMs: 24 * 60 * 60 * 1000,
   max: 1,
   keyGenerator: (req) => req.ip,
   message: { error: 'You can only generate 1 free site per day. Register to unlock more.' },
-  skip: (req) => isWhitelistedIP(req.ip), // Super admin test IPs bypass rate limit
+  skip: () => false,
 });
 
 // ── Helpers ───────────────────────────────────────────────────────────────
@@ -160,12 +129,7 @@ router.post('/generate', guestGenerateLimiter, async (req, res) => {
     const hash = computeHash(ip, dId);
 
     // ── Check fingerprint limit ───────────────────────────────────────────
-    // ── Fingerprint check — bypassed for super admin test IPs ───────────
-    const isSuperAdminTest = isWhitelistedIP(ip);
-    if (isSuperAdminTest) {
-      console.log(`[GuestGen] Super admin IP ${ip} — bypassing 1-free limit`);
-    }
-    const existing = !isSuperAdminTest ? await GuestSite.findActiveByHash(hash) : null;
+    const existing = await GuestSite.findActiveByHash(hash);
     if (existing) {
       const daysLeft = Math.max(0, Math.ceil((existing.expiresAt - Date.now()) / (1000 * 60 * 60 * 24)));
       return res.status(429).json({
@@ -288,33 +252,52 @@ IMPORTANT:
 
     clearInterval(progressTicker);
 
-    // ── Generate Imagen 4 images in parallel ──────────────────────────────
+    // ── Generate Imagen 4 images + smart inject ──────────────────────────
     try {
+      send('progress', '🎨 Generating custom AI images for your site...', { step: 'images', pct: 80 });
+
+      // Smart inject: replaces next available placeholder each call
+      const injectNextImage = (html, dataUrl) => {
+        // 1. picsum.photos
+        if (/https?:\/\/picsum\.photos\/[^\s"')]+/.test(html))
+          return html.replace(/https?:\/\/picsum\.photos\/[^\s"')]+/, dataUrl);
+        // 2. Other placeholder services
+        const svcRe = /https?:\/\/(?:via\.placeholder\.com|placehold\.it|placeimg\.com|loremflickr\.com|dummyimage\.com|placeholder\.com)\/[^\s"')]+/;
+        if (svcRe.test(html)) return html.replace(svcRe, dataUrl);
+        // 3. Empty src or src="#"
+        if (/(<img\s[^>]*src=["'])["'#]/.test(html))
+          return html.replace(/(<img\s[^>]*src=["'])["'#]/, `$1${dataUrl}"`);
+        // 4. CSS background-image empty/none
+        if (/background-image:\s*url\(['"]?['"]?\)/.test(html))
+          return html.replace(/background-image:\s*url\(['"]?['"]?\)/, `background-image: url('${dataUrl}')`);
+        // 5. First <img> with any http src (hero swap)
+        if (/<img\s[^>]*src=["']https?:\/\/[^"']+["']/.test(html))
+          return html.replace(/(<img\s[^>]*src=["'])https?:\/\/[^"']+/, `$1${dataUrl}`);
+        return html;
+      };
+
       const imagePrompts = [
-        `Professional hero banner for: ${prompt}. High quality, modern design, cinematic lighting.`,
-        `Business section image for: ${prompt}. Clean, professional, modern aesthetic.`,
-        `Feature or service illustration for: ${prompt}. Minimalist, elegant style.`,
+        `${prompt}. Hero banner image, wide landscape format, cinematic lighting, photorealistic, ultra detailed.`,
+        `${prompt}. Professional section photo, clean modern aesthetic, high quality.`,
+        `${prompt}. Feature highlight image, elegant style, beautiful composition.`,
       ];
 
       const imageResults = await Promise.allSettled(
-        imagePrompts.slice(0, 2).map(p => generateImageImagen4(p, { aspectRatio: '16:9' }))
+        imagePrompts.map((p, i) => generateImageImagen4(p, { aspectRatio: i === 0 ? '16:9' : '4:3' }))
       );
 
-      // Replace picsum placeholders with real AI images
-      let imgIdx = 0;
+      let injected = 0;
       for (const result of imageResults) {
         if (result.status === 'fulfilled' && result.value?.length > 0) {
           const b64 = result.value[0].base64;
           const mime = result.value[0].mimeType || 'image/png';
           const dataUrl = `data:${mime};base64,${b64}`;
-          // Replace first matching picsum URL
-          const picsumRegex = /https?:\/\/picsum\.photos\/[0-9]+(?:\/[0-9]+)?/;
-          if (picsumRegex.test(htmlContent)) {
-            htmlContent = htmlContent.replace(picsumRegex, dataUrl);
-            imgIdx++;
-          }
+          const before = htmlContent;
+          htmlContent = injectNextImage(htmlContent, dataUrl);
+          if (htmlContent !== before) injected++;
         }
       }
+      console.log(`[GuestGen] Injected ${injected} AI image(s) into site HTML`);
     } catch (imgErr) {
       console.warn('[GuestGen] Image generation failed (non-fatal):', imgErr.message);
     }
@@ -381,10 +364,6 @@ IMPORTANT:
 // ── GET /api/guest/check/:hash — check fingerprint ───────────────────────
 router.get('/check/:hash', async (req, res) => {
   try {
-    // Super admin test IPs: always show as no existing site (allow fresh builds)
-    if (isWhitelistedIP(req.ip)) {
-      return res.json({ exists: false, superAdminBypass: true });
-    }
     const site = await GuestSite.findActiveByHash(req.params.hash);
     if (!site) return res.json({ exists: false });
     const daysLeft = Math.max(0, Math.ceil((site.expiresAt - Date.now()) / (1000 * 60 * 60 * 24)));
