@@ -411,7 +411,7 @@ export default function Build() {
   };
 
   // ── Save message to project memory ────────────────────────────────────
-  const saveMessageToMemory = useCallback(async (role, content, mediaPrompts = {}) => {
+  const saveMessageToMemory = async (role, content, mediaPrompts = {}) => {
     if (!currentProjectId) return;
     const msg = { role, content, mediaPrompts, timestamp: new Date().toISOString() };
     setChatMessages(prev => [...prev.slice(-19), msg]); // keep last 20 in UI
@@ -421,17 +421,17 @@ export default function Build() {
         message: msg,
       });
     } catch (_) {}
-  }, [currentProjectId]);
+  };
 
   // ── Collect active AI media prompts ───────────────────────────────────
-  const getActiveMediaPrompts = useCallback(() => ({
+  const getActiveMediaPrompts = () => ({
     imagePrompt: imgResults.length > 0 ? imgPrompt : '',
     vibePrompt:  vibeResult ? vibeCustomPrompt || vibePreset : '',
     videoPrompt: videoResult ? videoPrompt : '',
-  }), [imgResults, imgPrompt, vibeResult, vibeCustomPrompt, vibePreset, videoResult, videoPrompt]);
+  });
 
   // ── Collect active reference images/video for auto-inject ─────────────
-  const getActiveReferenceMedia = useCallback(() => {
+  const getActiveReferenceMedia = () => {
     const media = [];
     if (imgResults.length > 0) {
       imgResults.forEach(img => media.push({ base64: img.base64, mimeType: img.mimeType }));
@@ -442,20 +442,20 @@ export default function Build() {
       if (b64) media.push({ base64: b64, mimeType: mime });
     }
     return media;
-  }, [imgResults, vibeResult]);
+  };
 
   // ── Fallback dialog confirm handler ───────────────────────────────────
-  const handleFallbackConfirm = useCallback((nextModel) => {
+  const handleFallbackConfirm = (nextModel) => {
     setFallbackDialog(null);
     setSelectedModel(nextModel);
     // Use pendingChatSubmit to re-trigger generation with next model
     setPendingChatSubmit(true);
-  }, []);
+  };
 
   // ── Chat send handler — checks clarity first ─────────────────────────
   // NOTE: Does NOT call handleGenerate directly — sets pendingChatSubmit 
   // flag instead to avoid hook definition order issue.
-  const handleSendChat = useCallback(async () => {
+  const handleSendChat = async () => {
     const text = chatInput.trim();
     if (!text) return;
     setChatInput('');
@@ -502,7 +502,7 @@ export default function Build() {
     // Set prompt and flag — handleGenerate runs via useEffect below
     setPrompt(text);
     setPendingChatSubmit(true);
-  }, [chatInput, awaitingClarify, currentProjectId, isEditMode]);
+  };
 
   const handleChatKeyDown = (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -511,7 +511,7 @@ export default function Build() {
     }
   };
 
-  const handleGenerate = useCallback(async () => {
+  const handleGenerate = async () => {
 
     if (!prompt.trim()) return alert('Enter a description');
     const editFiles = files.length > 0 ? [...files] : null;
@@ -574,7 +574,7 @@ export default function Build() {
       if (err.name === 'AbortError') { if (!genResult) { setProgressStep('stopped'); setGenResult('stopped'); } }
       else { setProgressStep('error'); setGenResult('error'); setProgressMessages(p => [...p, { step: 'error', message: err.message || 'Connection failed', time: new Date() }]); }
     } finally { abortControllerRef.current = null; setGenerating(false); setSessionId(null); }
-  }, [prompt, effectiveModel, template, projectName, isMobile, files, autoAttachPrompt, systemPromptText]);
+  };
 
   // ── Trigger generation when chat submits (avoids hook order issue) ─────
   useEffect(() => {
@@ -582,7 +582,8 @@ export default function Build() {
       setPendingChatSubmit(false);
       handleGenerate();
     }
-  }, [pendingChatSubmit, generating, handleGenerate]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingChatSubmit, generating]);
 
   const handleStop = async () => { if (abortControllerRef.current) abortControllerRef.current.abort(); try { await api.post('/api/build/stop', { sessionId }); } catch {} setProgressStep('stopped'); setGenResult('stopped'); setProgressMessages(p => [...p, { step: 'stopped', message: 'Stopped. Coins refunded.', time: new Date() }]); setGenerating(false); };
   const handleDismissProgress = () => { setGenResult(null); setProgressMessages([]); setProgressStep(''); };
