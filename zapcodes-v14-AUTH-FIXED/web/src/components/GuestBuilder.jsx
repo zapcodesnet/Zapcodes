@@ -242,7 +242,7 @@ export default function GuestBuilder() {
             } else if (data.type === 'complete') {
               setPreviewHtml(data.preview || '');
               setProgressPct(100);
-              setBuildResult({ subdomain: data.subdomain, url: data.url, claimCode: data.claimCode, daysLeft: data.daysLeft });
+              setBuildResult({ subdomain: data.subdomain, url: data.url, claimCode: data.claimCode, daysLeft: data.daysLeft, preview: data.preview || '' });
               setProgressMsgs(p => [...p, { msg: '🎉 Your site is ready!', pct: 100 }]);
               try { localStorage.setItem('zc_guest_site', JSON.stringify({ subdomain: data.subdomain, url: data.url, claimCode: data.claimCode, daysLeft: data.daysLeft, expiresAt: new Date(Date.now() + 7 * 86400000).toISOString() })); } catch {}
             } else if (data.type === 'error') {
@@ -413,10 +413,19 @@ export default function GuestBuilder() {
               {buildResult?.preview && (
                 <button
                   onClick={() => {
-                    const blob = new Blob([buildResult.preview], { type: 'text/html; charset=utf-8' });
+                    const html = buildResult?.preview || previewHtml;
+                    if (!html) return;
+                    const blob = new Blob([html], { type: 'text/html; charset=utf-8' });
                     const url  = URL.createObjectURL(blob);
                     const win  = window.open(url, '_blank');
-                    if (win) setTimeout(() => URL.revokeObjectURL(url), 5000);
+                    if (!win) {
+                      const a = document.createElement('a');
+                      a.href = url; a.target = '_blank'; a.rel = 'noopener noreferrer';
+                      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+                      setTimeout(() => URL.revokeObjectURL(url), 5000);
+                    } else {
+                      setTimeout(() => URL.revokeObjectURL(url), 5000);
+                    }
                   }}
                   style={{ background: 'rgba(0,229,160,0.12)', border: `1px solid rgba(0,229,160,0.3)`, color: accent, fontSize: 10, fontWeight: 700, padding: '3px 8px', borderRadius: 5, cursor: 'pointer', fontFamily: 'inherit', whiteSpace: 'nowrap', flexShrink: 0 }}
                   title="Open full preview in new tab"
@@ -531,11 +540,24 @@ export default function GuestBuilder() {
                       )}
                       <button
                         onClick={() => {
-                          if (!buildResult?.preview) return;
-                          const blob = new Blob([buildResult.preview], { type: 'text/html; charset=utf-8' });
+                          const html = buildResult?.preview || previewHtml;
+                          if (!html) return;
+                          const blob = new Blob([html], { type: 'text/html; charset=utf-8' });
                           const url  = URL.createObjectURL(blob);
                           const win  = window.open(url, '_blank');
-                          if (win) setTimeout(() => URL.revokeObjectURL(url), 5000);
+                          if (!win) {
+                            // Popup blocked — open via anchor trick instead
+                            const a = document.createElement('a');
+                            a.href = url;
+                            a.target = '_blank';
+                            a.rel = 'noopener noreferrer';
+                            document.body.appendChild(a);
+                            a.click();
+                            document.body.removeChild(a);
+                            setTimeout(() => URL.revokeObjectURL(url), 5000);
+                          } else {
+                            setTimeout(() => URL.revokeObjectURL(url), 5000);
+                          }
                         }}
                         style={{ flex: 1, minWidth: 100, padding: '10px 16px', borderRadius: 10, border: `1px solid ${border2}`, background: 'transparent', color: muted, fontSize: 13, cursor: 'pointer', fontFamily: 'inherit', whiteSpace: 'nowrap' }}
                       >
