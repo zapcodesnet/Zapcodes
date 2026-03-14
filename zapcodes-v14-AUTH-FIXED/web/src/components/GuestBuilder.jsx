@@ -104,6 +104,7 @@ export default function GuestBuilder() {
   const [imgGenerating,   setImgGenerating]   = useState(false);
   const [uploadedPhoto,   setUploadedPhoto]   = useState(null);
   const [vibePreset,      setVibePreset]      = useState('professional');
+  const [vibeCustomPrompt,setVibeCustomPrompt]= useState('');
   const [vibeResult,      setVibeResult]      = useState(null);
   const [vibeGenerating,  setVibeGenerating]  = useState(false);
   const [videoPrompt,     setVideoPrompt]     = useState('');
@@ -293,7 +294,15 @@ export default function GuestBuilder() {
     if (!uploadedPhoto) return;
     setVibeGenerating(true); setVibeResult(null);
     try {
-      const res = await fetch(`${API_URL}/api/build/edit-photo`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ image: { base64: uploadedPhoto.base64, mimeType: uploadedPhoto.mimeType }, preset: vibePreset }) });
+      const res = await fetch(`${API_URL}/api/build/edit-photo`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          image: { base64: uploadedPhoto.base64, mimeType: uploadedPhoto.mimeType },
+          preset: vibeCustomPrompt.trim() ? null : vibePreset,
+          customPrompt: vibeCustomPrompt.trim() || null,
+        }),
+      });
       if (res.status === 401) { alert('Sign up free to use the AI Photo Editor!'); return; }
       const data = await res.json();
       if (data.images?.length) setVibeResult(`data:${data.images[0].mimeType};base64,${data.images[0].base64}`);
@@ -306,12 +315,16 @@ export default function GuestBuilder() {
     if (!videoPrompt.trim()) return;
     setVideoGenerating(true); setVideoResult(null);
     try {
-      const res = await fetch(`${API_URL}/api/build/generate-video`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ prompt: videoPrompt, durationSeconds: videoDuration, aspectRatio: '16:9' }) });
+      const res = await fetch(`${API_URL}/api/build/generate-video`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${getAuthToken()}` },
+        body: JSON.stringify({ prompt: videoPrompt, durationSeconds: videoDuration, aspectRatio: '16:9' }),
+      });
       if (res.status === 401) { alert('Sign up free to use AI video generation!'); return; }
       const data = await res.json();
       if (data.video) setVideoResult(data.video);
-      else alert(data.error || 'Video generation failed.');
-    } catch { alert('Video generation failed.'); }
+      else alert(data.error || 'Video generation failed. Check that Veo API is enabled in your Google Cloud project.');
+    } catch (err) { alert('Video generation failed: ' + err.message); }
     finally { setVideoGenerating(false); }
   };
 
@@ -604,10 +617,25 @@ export default function GuestBuilder() {
                   </div>
                   {uploadedPhoto && (
                     <>
-                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5 }}>
-                        {VIBE_PRESETS.map(p => <button key={p.id} style={smallPill(vibePreset === p.id)} onClick={() => setVibePreset(p.id)}>{p.label}</button>)}
+                      <div style={{ marginBottom: 4 }}>
+                        <div style={{ fontSize: 11, color: muted2, fontWeight: 600, marginBottom: 5 }}>QUICK PRESETS:</div>
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5 }}>
+                          {VIBE_PRESETS.map(p => <button key={p.id} style={smallPill(vibePreset === p.id && !vibeCustomPrompt)} onClick={() => { setVibePreset(p.id); setVibeCustomPrompt(''); }}>{p.label}</button>)}
+                        </div>
                       </div>
-                      <button style={{ padding: '9px 14px', borderRadius: 9, border: 'none', background: '#8b5cf6', color: '#fff', fontSize: 13, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit' }} onClick={handleVibeTransform} disabled={vibeGenerating}>{vibeGenerating ? '⏳ Transforming...' : '✨ Transform Photo'}</button>
+                      <div>
+                        <div style={{ fontSize: 11, color: muted2, fontWeight: 600, marginBottom: 5 }}>OR DESCRIBE WHAT YOU WANT:</div>
+                        <textarea
+                          value={vibeCustomPrompt}
+                          onChange={e => setVibeCustomPrompt(e.target.value)}
+                          placeholder="e.g. Make this cat fishing for shark in the ocean, dramatic waves, sunset"
+                          style={{ width: '100%', padding: '9px 12px', borderRadius: 10, border: `1.5px solid ${vibeCustomPrompt ? '#8b5cf6' : border2}`, background: 'rgba(255,255,255,0.03)', color: '#F0F4F8', fontSize: 13, fontFamily: 'inherit', resize: 'none', minHeight: 64, boxSizing: 'border-box', lineHeight: 1.5, outline: 'none' }}
+                        />
+                        {vibeCustomPrompt && <div style={{ fontSize: 11, color: '#8b5cf6', marginTop: 3 }}>✓ Custom prompt overrides preset</div>}
+                      </div>
+                      <button style={{ padding: '9px 14px', borderRadius: 9, border: 'none', background: '#8b5cf6', color: '#fff', fontSize: 13, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit' }} onClick={handleVibeTransform} disabled={vibeGenerating}>
+                        {vibeGenerating ? '⏳ Transforming...' : vibeCustomPrompt ? `✨ "${vibeCustomPrompt.slice(0,28)}${vibeCustomPrompt.length>28?'…':''}"` : `✨ ${vibePreset.replace('-',' ')} Transform`}
+                      </button>
                       {vibeResult && <img src={vibeResult} alt="Transformed" style={{ width: '100%', borderRadius: 7, border: `1px solid ${border}` }} />}
                     </>
                   )}
@@ -622,7 +650,19 @@ export default function GuestBuilder() {
                     {[4,6,8].map(d => <button key={d} style={smallPill(videoDuration === d)} onClick={() => setVideoDuration(d)}>{d}s</button>)}
                   </div>
                   <button style={{ padding: '9px 14px', borderRadius: 9, border: 'none', background: 'linear-gradient(135deg,#0f766e,#0891b2)', color: '#fff', fontSize: 13, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit' }} onClick={handleGenerateVideo} disabled={videoGenerating}>{videoGenerating ? '⏳ Generating... (~1-3 min)' : '🎬 Generate with Veo'}</button>
-                  {videoResult && <div style={{ padding: '8px 10px', background: 'rgba(0,229,160,0.06)', borderRadius: 8, fontSize: 12, color: accent }}>✅ Video generated!</div>}
+                  {videoResult && (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                      {videoResult.publicUrl ? (
+                        <video src={videoResult.publicUrl} autoPlay loop muted playsInline
+                          style={{ width: '100%', borderRadius: 8, border: `1px solid ${border}`, maxHeight: 160, objectFit: 'cover' }} />
+                      ) : (
+                        <div style={{ padding: '8px 10px', background: 'rgba(0,229,160,0.06)', borderRadius: 8, fontSize: 12, color: accent }}>✅ Video generated!</div>
+                      )}
+                      <div style={{ fontSize: 11, color: muted2, wordBreak: 'break-all', fontFamily: 'monospace' }}>
+                        {videoResult.publicUrl || videoResult.gcsUri}
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
             </div>
