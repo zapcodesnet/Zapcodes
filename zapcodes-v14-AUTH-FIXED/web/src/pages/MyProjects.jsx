@@ -49,12 +49,19 @@ export default function MyProjects() {
     setLoading(false);
   };
 
-  const handleShutdown = async (subdomain) => {
-    if (!confirm(`Shut down ${subdomain}.zapcodes.net?\n\nThe site goes offline but your project is saved. Re-deploy anytime.`)) return;
+  const handleShutdown = async (subdomain, rootProjectId) => {
+    if (!confirm(`Shut down ${subdomain}.zapcodes.net?\n\nYour live site will go offline. Its current content will be auto-saved as Clone 2 so you can always roll back.`)) return;
     setShuttingDown(subdomain);
     try {
       await api.post('/api/build/site/shutdown', { subdomain });
       setSites(s => s.filter(site => site.subdomain !== subdomain));
+      // Refresh clone list so Clone 2 appears immediately
+      if (rootProjectId) {
+        const { data } = await api.get(`/api/build/project-clones/${rootProjectId}`);
+        setCloneMap(prev => ({ ...prev, [rootProjectId]: data.clones || [] }));
+        // Auto-expand clones so user sees Clone 2 right away
+        setExpandedClones(prev => ({ ...prev, [rootProjectId]: true }));
+      }
     } catch (err) { alert(err.response?.data?.error || 'Shutdown failed'); }
     finally { setShuttingDown(null); }
   };
@@ -71,6 +78,26 @@ export default function MyProjects() {
       if (data.shutdownSite) setSites(s => s.filter(site => site.subdomain !== data.shutdownSite));
     } catch (err) { alert(err.response?.data?.error || 'Delete failed'); }
     finally { setDeleting(null); }
+  };
+
+  const handleDeleteClone = async (cloneProjectId) => {
+    if (!confirm('Delete this clone snapshot?\n\nThis cannot be undone. Your live site is not affected.')) return;
+    setDeleting(cloneProjectId);
+    try {
+      await api.delete(`/api/build/project/${cloneProjectId}`);
+      // Remove from local cloneMap
+      setCloneMap(prev => {
+        const updated = { ...prev };
+        for (const rootId in updated) {
+          updated[rootId] = (updated[rootId] || []).filter(c => c.projectId !== cloneProjectId);
+        }
+        return updated;
+      });
+    } catch (err) {
+      alert(err.response?.data?.error || 'Delete failed');
+    } finally {
+      setDeleting(null);
+    }
   };
 
   const handleRedeploy = async (projectId, subdomain) => {
@@ -176,8 +203,8 @@ export default function MyProjects() {
               return (
                 <div key={proj.projectId} style={s.projectBlock}>
 
-                  {/* ── Live site pill at top of timeline ── */}
-                  {proj.linkedSubdomain && (
+                  {/* ── Live site card — Shut Down only ── */}
+                  {proj.linkedSubdomain && isLive && (
                     <div style={s.liveTimelineCard}>
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
                         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -187,9 +214,19 @@ export default function MyProjects() {
                             {proj.linkedSubdomain}.zapcodes.net ↗
                           </a>
                         </div>
-                        {liveSite?.lastUpdated && (
-                          <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>Last deployed: {fmt(liveSite.lastUpdated)}</span>
-                        )}
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                          {liveSite?.lastUpdated && (
+                            <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>Last deployed: {fmt(liveSite.lastUpdated)}</span>
+                          )}
+                          {/* Shut Down is the ONLY action on the live card */}
+                          <button
+                            style={s.shutdownBtn}
+                            onClick={() => handleShutdown(proj.linkedSubdomain, proj.projectId)}
+                            disabled={shuttingDown === proj.linkedSubdomain}
+                          >
+                            {shuttingDown === proj.linkedSubdomain ? 'Shutting down...' : '⛔ Shut Down'}
+                          </button>
+                        </div>
                       </div>
                     </div>
                   )}
@@ -238,25 +275,17 @@ export default function MyProjects() {
                       <span>{fmt(proj.updatedAt) || 'N/A'}</span>
                     </div>
 
-                    {/* Action buttons */}
+                    {/* Main project card — no edit buttons here.
+                         All editing happens on Clone 1 to protect the live site.
+                         First-time deploy shows Deploy button before any clones exist. */}
                     <div style={s.cardActions}>
-                      <button style={s.actionBtn('#6366f1')} onClick={() => navigate(`/build?project=${proj.projectId}&action=edit`)}>✏️ Edit</button>
-                      <button style={s.actionBtn('#f59e0b')} onClick={() => navigate(`/build?project=${proj.projectId}&action=fix`)}>🔧 Fix Bugs</button>
-
-                      {isLive ? (
-                        <button style={s.actionBtn('#22c55e')} onClick={() => handleRedeploy(proj.projectId, proj.linkedSubdomain)} disabled={redeploying === proj.projectId}>
-                          {redeploying === proj.projectId ? 'Deploying...' : '🚀 Re-deploy'}
-                        </button>
-                      ) : isOffline ? (
-                        <button style={s.actionBtn('#22c55e')} onClick={() => navigate(`/build?project=${proj.projectId}&action=redeploy&subdomain=${proj.linkedSubdomain}`)}>
-                          🚀 Go Live
-                        </button>
-                      ) : (
+                      {/* Only show Deploy if not yet linked to any subdomain */}
+                      {!proj.linkedSubdomain && (
                         <button style={s.actionBtn('#8b5cf6')} onClick={() => navigate(`/build?project=${proj.projectId}&action=deploy`)}>
                           🚀 Deploy
                         </button>
                       )}
-
+                      {/* Delete the whole project */}
                       <button style={s.deleteBtn} onClick={() => handleDeleteProject(proj.projectId, proj.linkedSubdomain)} disabled={deleting === proj.projectId}>
                         {deleting === proj.projectId ? '...' : 'Delete'}
                       </button>
@@ -314,21 +343,57 @@ export default function MyProjects() {
                                   </span>
                                 </div>
 
-                                {/* Buttons */}
-                                <div style={{ display: 'flex', gap: 6, marginTop: 8, flexWrap: 'wrap' }}>
-                                  {!isClone1 && (
-                                    <button
-                                      style={s.actionBtn('#f59e0b')}
-                                      onClick={() => handleRollback(clone.projectId, proj.linkedSubdomain, cloneDate)}
-                                      disabled={isRolling}
-                                    >
-                                      {isRolling ? 'Rolling back...' : '↩️ Rollback to this version'}
-                                    </button>
-                                  )}
-                                  {isClone1 && (
-                                    <span style={{ fontSize: 11, color: 'var(--text-muted)', fontStyle: 'italic', padding: '6px 0' }}>
-                                      This is your latest snapshot — re-deploy from the main card above to update live.
-                                    </span>
+                                {/* Buttons:
+                                     Clone 1 = Edit + Fix Bugs + Re-deploy + Delete
+                                     Clone 2-5 = Rollback + Delete
+                                     Editing always on Clone 1 — live site stays online */}
+                                <div style={{ display: 'flex', gap: 6, marginTop: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                                  {isClone1 ? (
+                                    <>
+                                      <button
+                                        style={s.actionBtn('#6366f1')}
+                                        onClick={() => navigate(`/build?project=${clone.projectId}&action=edit`)}
+                                      >
+                                        ✏️ Edit
+                                      </button>
+                                      <button
+                                        style={s.actionBtn('#f59e0b')}
+                                        onClick={() => navigate(`/build?project=${clone.projectId}&action=fix`)}
+                                      >
+                                        🔧 Fix Bugs
+                                      </button>
+                                      <button
+                                        style={s.actionBtn('#22c55e')}
+                                        onClick={() => handleRedeploy(clone.projectId, proj.linkedSubdomain)}
+                                        disabled={redeploying === clone.projectId}
+                                      >
+                                        {redeploying === clone.projectId ? 'Deploying...' : '🚀 Re-deploy'}
+                                      </button>
+                                      <button
+                                        style={{ ...s.deleteBtn, marginLeft: 'auto' }}
+                                        onClick={() => handleDeleteClone(clone.projectId)}
+                                        disabled={deleting === clone.projectId}
+                                      >
+                                        {deleting === clone.projectId ? '...' : '🗑️ Delete'}
+                                      </button>
+                                    </>
+                                  ) : (
+                                    <>
+                                      <button
+                                        style={s.actionBtn('#f59e0b')}
+                                        onClick={() => handleRollback(clone.projectId, proj.linkedSubdomain, cloneDate)}
+                                        disabled={isRolling}
+                                      >
+                                        {isRolling ? 'Rolling back...' : '↩️ Rollback to this version'}
+                                      </button>
+                                      <button
+                                        style={{ ...s.deleteBtn, marginLeft: 'auto' }}
+                                        onClick={() => handleDeleteClone(clone.projectId)}
+                                        disabled={deleting === clone.projectId}
+                                      >
+                                        {deleting === clone.projectId ? '...' : '🗑️ Delete'}
+                                      </button>
+                                    </>
                                   )}
                                 </div>
                               </div>
