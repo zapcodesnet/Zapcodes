@@ -309,7 +309,7 @@ ${session.summary}`);
         parts.push(`[Last ${Math.min(session.rawMessages.length, 20)} messages]:\n${history}`);
       }
       parts.push(`[Visitor's current message]: ${message.trim()}`);
-      parts.push('Respond helpfully and naturally to the visitor's current message. Use the history above for context.');
+      parts.push("Respond helpfully to the visitor's current message. Use the conversation history above for full context.");
       return parts.join('\n\n');
     };
 
