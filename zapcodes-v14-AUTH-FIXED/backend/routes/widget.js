@@ -8,7 +8,7 @@ const rateLimit  = require('express-rate-limit');
 const router     = express.Router();
 const User       = require('../models/User');
 const WidgetSite = require('../models/WidgetSite');
-const auth       = require('../middleware/auth');
+const { auth }   = require('../middleware/auth');
 
 // Try to use aiService.js (cleaner unified caller), fall back to ai.js
 let callAI;
