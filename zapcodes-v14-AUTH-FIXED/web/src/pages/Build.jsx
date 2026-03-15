@@ -1,4 +1,4 @@
-import { useState, useEffect, useContext, useRef, useCallback } from 'react';
+import { useState, useEffect, useContext, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { AuthContext } from '../context/AuthContext';
 import api, { API_URL } from '../api';
@@ -567,6 +567,28 @@ export default function Build() {
             }
             else if (data.type === 'error') { setProgressStep('error'); setGenResult('error'); setProgressMessages(p => [...p, { step: 'error', message: data.error + (data.suggestion ? ` — ${data.suggestion}` : ''), time: new Date() }]); }
             else if (data.type === 'stopped') { setProgressStep('stopped'); setGenResult('stopped'); setProgressMessages(p => [...p, { step: 'stopped', message: data.message || 'Stopped. Coins refunded.', time: new Date() }]); }
+            else if (data.type === 'fallback_needed') {
+              // Backend couldn't generate after 2 tries — show fallback dialog
+              setGenerating(false);
+              setProgressStep('error');
+              setGenResult('error');
+              setFallbackDialog({
+                currentModel:  data.currentModel,
+                nextModel:     data.nextModel,
+                nextModelId:   data.nextModelId,
+                nextCost:      data.nextCost,
+                balance:       data.balance,
+                isGroqWarn:    data.isGroqWarn,
+                noMoreModels:  data.noMoreModels,
+                onConfirm: () => {
+                  if (data.nextModelId) {
+                    setSelectedModel(data.nextModelId);
+                    setFallbackDialog(null);
+                    setPendingChatSubmit(true);
+                  }
+                },
+              });
+            }
           } catch (e) { console.warn('[SSE] Parse error:', e.message); }
         }
       }
@@ -798,7 +820,7 @@ export default function Build() {
       {showSystemPrompt && (
         <div style={{ border: '1px solid var(--border)', borderRadius: 10, padding: 10, background: 'var(--bg-card)' }}>
           <div style={{ display: 'flex', gap: 4, marginBottom: 8, flexWrap: 'wrap' }}>
-            {[{id:'gen',label:'New Website'},{id:'edit',label:'Edit Website'},{id:'fix',label:'Fix Bugs'}].map(m => (
+            {[{id:'gen',label:'New Website'},{id:'edit',label:'Edit Website'},{id:'fix',label:'Fix Bugs'}].filter(m => !(m.id === 'gen' && isEditMode)).map(m => (
               <button key={m.id} style={{ padding: '4px 8px', borderRadius: 6, cursor: 'pointer', fontSize: 10, fontWeight: 700, border: activePromptMode === m.id ? '1px solid #22c55e' : '1px solid var(--border)', background: activePromptMode === m.id ? 'rgba(34,197,94,.15)' : 'transparent', color: activePromptMode === m.id ? '#22c55e' : 'var(--text-secondary)' }} onClick={() => loadDefaultForMode(m.id)}>{m.label}</button>
             ))}
           </div>
@@ -1020,23 +1042,33 @@ export default function Build() {
               )}
             </div>
             {tab === 'build' && (
-              <div style={{ padding: 12, borderTop: '1px solid var(--border)', background: 'var(--bg-card)' }}>
-                <div style={{ position: 'relative' }}>
-                  {voiceSupported && (
-                    <button onClick={() => toggleVoice(prompt)} style={{ position: 'absolute', top: 8, right: 8, zIndex: 2, width: 28, height: 28, borderRadius: '50%', border: 'none', cursor: 'pointer', background: voiceListening ? 'rgba(255,80,80,0.2)' : 'rgba(99,102,241,0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 13 }} title="Voice input">
-                      {voiceListening ? '🔴' : '🎙️'}
-                    </button>
-                  )}
-                  <textarea style={{ width: '100%', padding: 10, paddingRight: voiceSupported ? 44 : 10, borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg-elevated)', color: 'var(--text-primary)', fontSize: 13, resize: 'none', height: 60, fontFamily: 'inherit', boxSizing: 'border-box' }} placeholder={isEditMode ? "Describe what changes you want..." : "Describe what you want to build..."} value={prompt} onChange={e => setPrompt(e.target.value)} />
+              <div style={{ padding: 10, borderTop: '1px solid var(--border)', background: 'var(--bg-card)' }}>
+                {renderMemoryPanel()}
+                {renderChatHistory()}
+                <div style={{ display: 'flex', gap: 6, alignItems: 'flex-end', marginTop: 6 }}>
+                  <div style={{ flex: 1, position: 'relative' }}>
+                    {voiceSupported && (
+                      <button onClick={() => toggleVoice(chatInput)} style={{ position: 'absolute', bottom: 8, right: 8, zIndex: 2, width: 26, height: 26, borderRadius: '50%', border: 'none', cursor: 'pointer', background: voiceListening ? 'rgba(255,80,80,0.2)' : 'rgba(99,102,241,0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 12 }}>
+                        {voiceListening ? '🔴' : '🎙️'}
+                      </button>
+                    )}
+                    <textarea
+                      style={{ width: '100%', padding: 10, paddingRight: voiceSupported ? 40 : 10, borderRadius: 8, border: '1px solid var(--border)', background: 'var(--bg-elevated)', color: 'var(--text-primary)', fontSize: 13, resize: 'none', height: 56, fontFamily: 'inherit', boxSizing: 'border-box' }}
+                      placeholder={awaitingClarify ? "Answer AI's question…" : isEditMode ? "Describe changes…" : "Describe what you want to build…"}
+                      value={chatInput}
+                      onChange={e => setChatInput(e.target.value)}
+                      onKeyDown={handleChatKeyDown}
+                    />
+                  </div>
+                  <button style={{ padding: '10px 14px', borderRadius: 8, border: 'none', cursor: aiThinking || generating ? 'not-allowed' : 'pointer', fontWeight: 700, fontSize: 14, background: aiThinking || generating ? 'var(--bg-elevated)' : awaitingClarify ? '#f59e0b' : '#6366f1', color: aiThinking || generating ? 'var(--text-muted)' : '#fff', opacity: aiThinking || generating ? 0.6 : 1, flexShrink: 0, height: 56, fontFamily: 'inherit' }} onClick={handleSendChat} disabled={aiThinking || generating || !chatInput.trim()}>
+                    {aiThinking ? '🤔' : generating ? '⚡' : '➤'}
+                  </button>
                 </div>
                 {voiceListening && <div style={{ fontSize: 11, color: '#FFBD2E', marginTop: 3 }}>🔴 Listening… (5s silence stops)</div>}
                 {voiceError && <div style={{ fontSize: 11, color: '#ef4444', marginTop: 3 }}>{voiceError}</div>}
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 6, gap: 8 }}>
-                  <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>Cost: <strong style={{ color: '#f59e0b' }}>{cost.toLocaleString()} BL</strong></span>
-                  {generating
-                    ? <button style={{ padding: '10px 16px', borderRadius: 8, border: '2px solid #ef4444', background: 'rgba(239,68,68,.1)', color: '#ef4444', cursor: 'pointer', fontWeight: 700, fontSize: 13 }} onClick={handleStop}>⛔ Stop</button>
-                    : <button style={{ padding: '10px 20px', borderRadius: 8, border: 'none', cursor: balance < cost ? 'not-allowed' : 'pointer', fontWeight: 700, fontSize: 13, background: balance < cost ? 'var(--bg-elevated)' : 'linear-gradient(135deg, #6366f1, #8b5cf6)', color: balance < cost ? 'var(--text-muted)' : '#fff', opacity: balance < cost ? 0.5 : 1, flex: 1 }} onClick={handleGenerate} disabled={balance < cost}>{isEditMode ? 'Apply Changes' : 'Generate'}</button>
-                  }
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 5, fontSize: 11 }}>
+                  <span style={{ color: 'var(--text-muted)' }}>Cost: <strong style={{ color: '#f59e0b' }}>{cost.toLocaleString()} BL</strong></span>
+                  {generating && <button style={{ padding: '5px 10px', borderRadius: 6, border: '2px solid #ef4444', background: 'rgba(239,68,68,.1)', color: '#ef4444', cursor: 'pointer', fontWeight: 700, fontSize: 11, fontFamily: 'inherit' }} onClick={handleStop}>⛔ Stop</button>}
                 </div>
               </div>
             )}
@@ -1054,13 +1086,13 @@ export default function Build() {
                   <button style={{ padding: '12px 20px', borderRadius: 8, border: 'none', cursor: deploying ? 'not-allowed' : 'pointer', fontWeight: 700, fontSize: 14, background: deploying ? 'var(--bg-elevated)' : '#22c55e', color: '#fff', opacity: deploying ? .5 : 1, width: '100%' }} onClick={handleDeploy} disabled={deploying}>{deploying ? 'Deploying...' : editingDeployedSite ? '🚀 Re-deploy to .zapcodes.net' : '🚀 Deploy to .zapcodes.net'}</button>
                 </div>
                 {deployUrl && <div style={{ padding: '8px 12px', background: 'rgba(34,197,94,.1)', fontSize: 12 }}>✅ Live at <a href={deployUrl} target="_blank" rel="noreferrer" style={{ color: '#22c55e', fontWeight: 600 }}>{deployUrl}</a></div>}
-                <button style={{ padding: '10px', borderTop: '1px solid var(--border)', background: 'var(--bg-card)', color: 'var(--text-secondary)', fontSize: 13, fontWeight: 600, border: 'none', cursor: 'pointer' }} onClick={() => setMobileView('build')}>← Back to Builder</button>
+                <button style={{ padding: '10px', borderTop: '1px solid var(--border)', background: 'var(--bg-card)', color: 'var(--text-secondary)', fontSize: 13, fontWeight: 600, border: 'none', cursor: 'pointer' }} onClick={() => window.location.href='/projects'}>← Back to Projects</button>
               </>
             ) : (
               <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'rgba(255,255,255,.3)', fontSize: 16, textAlign: 'center', padding: 30 }}>
                 {generating ? '⚡ Generating...' : 'No preview yet.\nGenerate a website first!'}
                 <br /><br />
-                <button style={{ padding: '10px 20px', borderRadius: 8, border: '1px solid var(--border)', background: 'transparent', color: 'var(--text-secondary)', cursor: 'pointer', fontWeight: 600, fontSize: 13 }} onClick={() => setMobileView('build')}>← Back to Builder</button>
+                <button style={{ padding: '10px 20px', borderRadius: 8, border: '1px solid var(--border)', background: 'transparent', color: 'var(--text-secondary)', cursor: 'pointer', fontWeight: 600, fontSize: 13 }} onClick={() => window.location.href='/projects'}>← Back to Projects</button>
               </div>
             )}
           </div>
