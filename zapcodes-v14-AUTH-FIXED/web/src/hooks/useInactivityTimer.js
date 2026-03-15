@@ -7,9 +7,7 @@
  * Also keeps mobile users logged in across app restarts
  * as long as last activity was within 12 hours.
  */
-import { useEffect, useRef, useCallback } from 'react';
-import { useNavigate } from 'react-router-dom';
-
+import { useEffect, useRef } from 'react';
 const LAST_ACTIVITY_KEY = 'zc_last_activity';
 
 function detectDeviceType() {
@@ -30,25 +28,26 @@ function getTimeoutMs(deviceType) {
 }
 
 export function useInactivityTimer(isAuthenticated) {
-  const navigate   = useNavigate();
   const timerRef   = useRef(null);
   const deviceType = useRef(detectDeviceType());
 
-  const doLogout = useCallback(() => {
+  const doLogout = () => {
     try { localStorage.removeItem('token'); } catch {}
     try { localStorage.removeItem('zc_last_activity'); } catch {}
-    navigate('/login?reason=inactivity');
-  }, [navigate]);
+    // Use window.location instead of useNavigate so this hook
+    // is safe to use anywhere — inside or outside Router
+    window.location.href = '/login?reason=inactivity';
+  };
 
-  const recordActivity = useCallback(() => {
+  const recordActivity = () => {
     try { localStorage.setItem(LAST_ACTIVITY_KEY, Date.now().toString()); } catch {}
-  }, []);
+  };
 
-  const resetTimer = useCallback(() => {
+  const resetTimer = () => {
     recordActivity();
     if (timerRef.current) clearTimeout(timerRef.current);
     timerRef.current = setTimeout(doLogout, getTimeoutMs(deviceType.current));
-  }, [doLogout, recordActivity]);
+  };
 
   useEffect(() => {
     if (!isAuthenticated) return;
