@@ -16,6 +16,7 @@ import Settings from './pages/Settings';
 import AuthCallback from './pages/AuthCallback';
 import HelpAI from './components/HelpAI';
 import MyProjects from './pages/MyProjects';
+import WidgetDashboard from './pages/WidgetDashboard';
 import RepairCode from './pages/RepairCode';
 
 function ProtectedRoute({ children }) {
@@ -46,6 +47,7 @@ export default function App() {
         <Route path="/admin"         element={<Admin />} />
         <Route path="/dashboard"     element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
         <Route path="/projects"      element={<ProtectedRoute><MyProjects /></ProtectedRoute>} />
+        <Route path="/widget-dashboard" element={<ProtectedRoute><WidgetDashboard /></ProtectedRoute>} />
         <Route path="/repair"        element={<ProtectedRoute><RepairCode /></ProtectedRoute>} />
         <Route path="/repo/:repoId"  element={<ProtectedRoute><RepoDetail /></ProtectedRoute>} />
         <Route path="*"              element={<Navigate to="/" />} />
