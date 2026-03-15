@@ -101,6 +101,12 @@ app.use('/api/usage', usageRoutes);
 app.use('/api/guest', guestRoutes);
 app.use('/api/internal', internalRoutes);
 
+// ── AI Widget — embeddable AI for user deployed sites ─────────────────────
+const widgetRoutes = require('./routes/widget');
+app.use('/api/widget', widgetRoutes);
+// Serve zap-ai.js as a static file so user sites can load it
+app.use('/widget', require('express').static(require('path').join(__dirname, '../public/widget')));
+
 app.get('/api/health', (req, res) => res.json({ status: 'ok', timestamp: new Date().toISOString(), version: '15.0.0' }));
 app.get('/api/auth/providers', (req, res) => res.json({ github: !!(process.env.GITHUB_CLIENT_ID && process.env.GITHUB_CLIENT_SECRET), google: !!(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET) }));
 app.get('/', (req, res) => res.json({ name: 'ZapCodes API', version: '15.0.0', status: 'running' }));
