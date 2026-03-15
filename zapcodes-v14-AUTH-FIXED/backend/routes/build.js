@@ -42,31 +42,29 @@ const NORMALIZE_MODEL_KEY = { 'gemini-pro': 'gemini-3.1-pro', 'gemini-flash': 'g
 function normalizeModelKey(key) { return NORMALIZE_MODEL_KEY[key] || key; }
 
 // ── Per-tier fallback chains ─────────────────────────────────────────────
-// new_website: never Groq (except Free after trial, Bronze not at all)
-// edit/fix:    Groq allowed as last resort for Silver/Gold/Diamond with warning
 const TIER_FALLBACK_CHAINS = {
   free: {
-    new_website: ['gemini-2.5-flash'], // trial only, then groq from getTierConfig
+    new_website: ['gemini-2.5-flash'],
     edit:        ['gemini-2.5-flash', 'groq'],
     fix:         ['gemini-2.5-flash', 'groq'],
   },
   bronze: {
-    new_website: ['gemini-3.1-pro', 'gemini-2.5-flash'], // never groq for new website
+    new_website: ['gemini-3.1-pro', 'gemini-2.5-flash'],
     edit:        ['gemini-3.1-pro', 'gemini-2.5-flash', 'groq'],
     fix:         ['gemini-3.1-pro', 'gemini-2.5-flash', 'groq'],
   },
   silver: {
-    new_website: ['gemini-3.1-pro', 'gemini-2.5-flash', 'haiku-4.5'], // no groq
+    new_website: ['gemini-3.1-pro', 'gemini-2.5-flash', 'haiku-4.5'],
     edit:        ['gemini-3.1-pro', 'gemini-2.5-flash', 'haiku-4.5', 'groq'],
     fix:         ['gemini-3.1-pro', 'gemini-2.5-flash', 'haiku-4.5', 'groq'],
   },
   gold: {
-    new_website: ['gemini-3.1-pro', 'sonnet-4.6', 'gemini-2.5-flash', 'haiku-4.5'], // no groq
+    new_website: ['gemini-3.1-pro', 'sonnet-4.6', 'gemini-2.5-flash', 'haiku-4.5'],
     edit:        ['gemini-3.1-pro', 'sonnet-4.6', 'gemini-2.5-flash', 'haiku-4.5', 'groq'],
     fix:         ['gemini-3.1-pro', 'sonnet-4.6', 'gemini-2.5-flash', 'haiku-4.5', 'groq'],
   },
   diamond: {
-    new_website: ['gemini-3.1-pro', 'sonnet-4.6', 'gemini-2.5-flash', 'haiku-4.5'], // no groq
+    new_website: ['gemini-3.1-pro', 'sonnet-4.6', 'gemini-2.5-flash', 'haiku-4.5'],
     edit:        ['gemini-3.1-pro', 'sonnet-4.6', 'gemini-2.5-flash', 'haiku-4.5', 'groq'],
     fix:         ['gemini-3.1-pro', 'sonnet-4.6', 'gemini-2.5-flash', 'haiku-4.5', 'groq'],
   },
@@ -207,10 +205,8 @@ function getEffectiveModel(user, requestedModel, isBuildOperation = false, opera
   const tier = user.subscription_tier || 'free';
   const normalized = requestedModel ? normalizeModelKey(requestedModel) : null;
 
-  // Use the tier fallback chain as the authoritative model list
   const chain = getTierFallbackChain(tier, operationType);
 
-  // If user explicitly picked a model, honor it if it's in the chain
   if (normalized && normalized !== 'auto' && chain.includes(normalized)) {
     const config = user.getTierConfig();
     const limit = config.monthlyLimits?.[normalized];
@@ -219,7 +215,6 @@ function getEffectiveModel(user, requestedModel, isBuildOperation = false, opera
     else { const used = user.getModelUsageCount(normalized); if (limit === Infinity || used < limit) return normalized; }
   }
 
-  // Otherwise pick the first available model from the tier chain
   const config = user.getTierConfig();
   for (const model of chain) {
     const limit = config.monthlyLimits?.[model];
@@ -363,7 +358,6 @@ router.post('/generate-with-progress', auth, async (req, res) => {
       if (connectionAlive) { safeSend(res, { type: 'stopped' }); res.end(); } return;
     }
     if (!files?.length) {
-      // On first failure: retry once silently with same model
       sendProgress('generating', `${modelLabel} had an issue — retrying once...`);
       try {
         const retryResult = await callAISmart(systemPrompt, userPrompt, model, undefined, visionImages, aiOpts);
@@ -376,15 +370,13 @@ router.post('/generate-with-progress', auth, async (req, res) => {
     }
 
     if (!files?.length) {
-      // After 2 failures: notify frontend with next fallback options
-      const opType = (requestBody?.isEditing || files?.length > 0) ? 'edit' : 'new_website';
+      const opType = existingFiles?.length > 0 ? 'edit' : 'new_website';
       const fallbackChain = getTierFallbackChain(user.subscription_tier || 'free', opType);
       const currentIdx = fallbackChain.indexOf(normalizeModelKey(model));
       const nextModel = fallbackChain[currentIdx + 1] || null;
       const isGroqWarn = nextModel === 'groq';
       const noMoreModels = !nextModel;
 
-      // Refund coins for failed generation
       user.creditCoins(cost, 'generation', `Refund: ${modelLabel} failed`);
       user.decrementMonthlyUsage(model, 'generation');
       await user.save();
@@ -392,7 +384,6 @@ router.post('/generate-with-progress', auth, async (req, res) => {
       if (keepaliveInterval) clearInterval(keepaliveInterval);
       clearInterval(progressTicker);
 
-      // Tell frontend to show the fallback dialog
       safeSend(res, {
         type: 'fallback_needed',
         currentModel: modelLabel,
@@ -467,7 +458,29 @@ router.post('/save-project', auth, async (req, res) => {
   } catch { res.status(500).json({ error: 'Save failed' }); }
 });
 
-router.get('/projects', auth, (req, res) => { res.json({ projects: (req.user.saved_projects || []).map(p => ({ projectId: p.projectId, name: p.name, template: p.template, description: p.description, fileCount: (p.files || []).length, version: p.version || 1, linkedSubdomain: p.linkedSubdomain || null, createdAt: p.createdAt, updatedAt: p.updatedAt })).reverse() }); });
+// ══════════════════════════════════════════════════════════════════
+// FIX #1: /projects now returns cloneVersion, cloneOf, deployedAt, hasMemory
+// ══════════════════════════════════════════════════════════════════
+router.get('/projects', auth, (req, res) => {
+  res.json({
+    projects: (req.user.saved_projects || []).map(p => ({
+      projectId:       p.projectId,
+      name:            p.name,
+      template:        p.template,
+      description:     p.description,
+      fileCount:       (p.files || []).length,
+      version:         p.version || 1,
+      linkedSubdomain: p.linkedSubdomain || null,
+      cloneOf:         p.cloneOf || null,
+      cloneVersion:    p.cloneVersion != null ? p.cloneVersion : null,
+      deployedAt:      p.deployedAt || null,
+      hasMemory:       ((p.projectMemory?.rawMessages?.length || 0) + (p.projectMemory?.summaries?.length || 0)) > 0,
+      createdAt:       p.createdAt,
+      updatedAt:       p.updatedAt,
+    })).reverse()
+  });
+});
+
 router.get('/project/:projectId', auth, (req, res) => { const proj = (req.user.saved_projects || []).find(p => p.projectId === req.params.projectId); if (!proj) return res.status(404).json({ error: 'Not found' }); res.json({ project: proj }); });
 
 router.delete('/project/:projectId', auth, async (req, res) => {
@@ -492,8 +505,6 @@ router.post('/deploy', auth, async (req, res) => {
     if (linkedProject) { linkedProject.name = title || sub; linkedProject.files = files; linkedProject.updatedAt = new Date(); linkedProject.version = (linkedProject.version || 1) + 1; }
     else { user.saved_projects.push({ projectId: `proj-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, name: title || sub, files, preview: '', template: 'custom', description: `Deployed: ${sub}.zapcodes.net`, linkedSubdomain: sub, version: 1, createdAt: new Date(), updatedAt: new Date() }); }
     // ── Auto-create Clone 1 on deploy so Edit/Fix always happen on clone ──
-    // This ensures the live site is NEVER edited directly — all editing
-    // happens on Clone 1. User's live site stays online while they work.
     const deployedProj = user.saved_projects.find(p => p.linkedSubdomain === sub);
     if (deployedProj) {
       const rootId = deployedProj.cloneOf || deployedProj.projectId;
@@ -501,7 +512,6 @@ router.post('/deploy', auth, async (req, res) => {
         p => (p.cloneOf === rootId || p.projectId === rootId) && p.cloneVersion != null
       );
       if (!alreadyHasClone) {
-        // First deploy — shift any existing clones (none yet) and create Clone 1
         const clone1 = createCloneSnapshot(deployedProj, 1);
         user.saved_projects.push(clone1);
         enforceMaxClones(user, rootId);
@@ -514,8 +524,6 @@ router.post('/deploy', auth, async (req, res) => {
     res.json({ url: `https://${sub}.zapcodes.net`, subdomain: sub, deployed: true, hasBadge: shouldBadge, sites: user.deployed_sites.length, maxSites: config.maxSites, linkedProjectId: savedProj?.projectId });
   } catch { res.status(500).json({ error: 'Deploy failed' }); }
 });
-
-// ── redeploy-from-project with auto-clone is defined further below ──
 
 
 router.post('/code-fix', auth, async (req, res) => {
@@ -580,8 +588,6 @@ router.post('/site/shutdown', auth, async (req, res) => {
     const site = user.deployed_sites[siteIdx];
 
     // ── Auto-save live site content as Clone 2 before shutting down ──────
-    // This preserves exactly what was live. Clone 1 stays editable.
-    // Existing clones shift up: Clone 1 stays 1, old Clone 2 → 3, etc.
     const rootProj = (user.saved_projects || []).find(p => p.linkedSubdomain === sub && !p.cloneVersion);
     if (rootProj && site?.files?.length) {
       const rootId = rootProj.cloneOf || rootProj.projectId;
@@ -624,7 +630,7 @@ router.post('/site/shutdown', auth, async (req, res) => {
     user.deployed_sites.splice(siteIdx, 1);
     await user.save();
 
-    res.json({ success: true, message: `${sub}.zapcodes.net offline. Live snapshot saved as Clone 2.` });
+    res.json({ success: true, message: `${sub}.zapcodes.net offline. Live snapshot saved to version history.` });
   } catch (err) {
     console.error('[Shutdown]', err.message);
     res.status(500).json({ error: 'Shutdown failed' });
@@ -640,7 +646,7 @@ router.get('/site-content/:subdomain', async (req, res) => { try { const sub = r
 router.get('/site-preview/:subdomain', async (req, res) => { try { const sub = req.params.subdomain.toLowerCase().trim(); const user = await User.findOne({ 'deployed_sites.subdomain': sub }); if (!user) return res.status(404).send('<h1>Not found</h1>'); const site = user.deployed_sites.find(s => s.subdomain === sub); if (!site?.files?.length) return res.status(404).send('<h1>Not found</h1>'); const f = site.files.find(f => f.name === 'index.html') || site.files.find(f => f.name.endsWith('.html')); if (!f) return res.status(404).send('<h1>No HTML</h1>'); res.setHeader('Content-Type', 'text/html'); res.send(f.content); } catch { res.status(500).send('<h1>Error</h1>'); } });
 
 // ══════════════════════════════════════════════════════════════════
-// NEW: AI Image Generator — POST /api/build/generate-image
+// AI Image Generator
 // ══════════════════════════════════════════════════════════════════
 router.post('/generate-image', auth, async (req, res) => {
   try {
@@ -669,7 +675,7 @@ router.post('/generate-image', auth, async (req, res) => {
 });
 
 // ══════════════════════════════════════════════════════════════════
-// NEW: AI Vibe Photo Editor — POST /api/build/edit-photo
+// AI Vibe Photo Editor
 // ══════════════════════════════════════════════════════════════════
 router.post('/edit-photo', auth, async (req, res) => {
   try {
@@ -690,7 +696,7 @@ router.post('/edit-photo', auth, async (req, res) => {
 });
 
 // ══════════════════════════════════════════════════════════════════
-// NEW: AI Video Generator — POST /api/build/generate-video
+// AI Video Generator
 // ══════════════════════════════════════════════════════════════════
 router.post('/generate-video', auth, async (req, res) => {
   try {
@@ -713,7 +719,6 @@ router.post('/generate-video', auth, async (req, res) => {
       user.spendCoins(cost, 'generation', `AI Video (Veo): ${prompt.slice(0, 50)}`);
       await user.save();
     }
-    // Inject video into site HTML if requested
     let updatedHtml = null;
     if (injectIntoSite && existingHtml && result.publicUrl) {
       updatedHtml = injectVideoIntoHTML(existingHtml, result.publicUrl);
@@ -725,14 +730,11 @@ router.post('/generate-video', auth, async (req, res) => {
   }
 });
 
-// ── Video HTML injector ────────────────────────────────────────────────────
 function injectVideoIntoHTML(html, videoUrl) {
   const videoTag = `\n<div id="zc-video-hero" style="position:relative;width:100%;overflow:hidden;max-height:600px;"><video autoplay loop muted playsinline style="width:100%;height:100%;object-fit:cover;display:block;" src="${videoUrl}"><source src="${videoUrl}" type="video/mp4"></video></div>`;
-  // 1. Replace existing <video> if present
   if (/<video[^>]*>/i.test(html)) {
     return html.replace(/<video[^>]*src=["'][^"']*["'][^>]*>/i, `<video autoplay loop muted playsinline style="width:100%;height:100%;object-fit:cover;display:block;" src="${videoUrl}">`);
   }
-  // 2. Insert right after opening <body>
   if (/<body[^>]*>/i.test(html)) {
     return html.replace(/(<body[^>]*>)/i, '$1' + videoTag);
   }
@@ -744,7 +746,6 @@ function injectVideoIntoHTML(html, videoUrl) {
 // MEMORY ENDPOINTS
 // ══════════════════════════════════════════════════════════════════
 
-// POST /api/build/save-message — save a chat message to project memory
 router.post('/save-message', auth, async (req, res) => {
   try {
     const user = req.user;
@@ -758,20 +759,17 @@ router.post('/save-message', auth, async (req, res) => {
     if (!proj.projectMemory) proj.projectMemory = { rawMessages: [], summaries: [], totalMessageCount: 0 };
 
     const mem = proj.projectMemory;
-    // Never save system prompts
     if (message.role === 'system') return res.json({ ok: true, skipped: true });
 
     mem.rawMessages.push({
       role: message.role || 'user',
-      content: (message.content || '').slice(0, 2000), // cap per message
+      content: (message.content || '').slice(0, 2000),
       mediaPrompts: message.mediaPrompts || {},
       timestamp: message.timestamp || new Date().toISOString(),
     });
     mem.totalMessageCount = (mem.totalMessageCount || 0) + 1;
 
-    // Keep max 20 raw messages — trigger summarization at exactly 20
     if (mem.rawMessages.length >= 20) {
-      // Summarize in background (non-blocking)
       const messagesToSummarize = [...mem.rawMessages];
       const messageRange = `${Math.max(1, mem.totalMessageCount - 19)}-${mem.totalMessageCount}`;
 
@@ -784,11 +782,8 @@ router.post('/save-message', auth, async (req, res) => {
           const m = freshUser.saved_projects[pi].projectMemory;
           if (!m) return;
 
-          // Add new summary
           m.summaries.push({ content: summary, messageRange, createdAt: new Date() });
-          // Keep max 5 summaries
           if (m.summaries.length > 5) m.summaries = m.summaries.slice(-5);
-          // Delete the 20 summarized messages
           m.rawMessages = m.rawMessages.slice(messagesToSummarize.length);
 
           freshUser.markModified('saved_projects');
@@ -799,7 +794,6 @@ router.post('/save-message', auth, async (req, res) => {
         }
       }).catch(err => console.warn('[Memory] Summarize failed:', err.message));
 
-      // While summarization runs, trim to 20 in current response
       mem.rawMessages = mem.rawMessages.slice(-20);
     }
 
@@ -812,13 +806,11 @@ router.post('/save-message', auth, async (req, res) => {
   }
 });
 
-// POST /api/build/check-clarity — quick check before full generation
 router.post('/check-clarity', auth, async (req, res) => {
   try {
     const { prompt, projectId, isEditMode } = req.body;
     if (!prompt) return res.json({ needsClarification: false });
 
-    // Get recent messages for context
     let recentMessages = [];
     if (projectId) {
       const proj = (req.user.saved_projects || []).find(p => p.projectId === projectId);
@@ -831,7 +823,7 @@ router.post('/check-clarity', auth, async (req, res) => {
       question: result.question || null,
     });
   } catch (err) {
-    res.json({ needsClarification: false }); // fail open — don't block generation
+    res.json({ needsClarification: false });
   }
 });
 
@@ -839,7 +831,6 @@ router.post('/check-clarity', auth, async (req, res) => {
 // CLONE / ROLLBACK ENDPOINTS
 // ══════════════════════════════════════════════════════════════════
 
-// Helper: create a clone snapshot of a project
 function createCloneSnapshot(sourceProject, cloneVersion) {
   return {
     projectId:   `proj-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -856,28 +847,27 @@ function createCloneSnapshot(sourceProject, cloneVersion) {
     deployedAt:  null,
     createdAt:   new Date(),
     updatedAt:   new Date(),
-    // Copy memory independently
     projectMemory: sourceProject.projectMemory
       ? JSON.parse(JSON.stringify(sourceProject.projectMemory))
       : { rawMessages: [], summaries: [], totalMessageCount: 0 },
   };
 }
 
-// Helper: enforce max 5 clones per root project
 function enforceMaxClones(user, rootProjectId) {
   const clones = (user.saved_projects || [])
     .filter(p => (p.cloneOf === rootProjectId || p.projectId === rootProjectId) && p.cloneVersion != null)
     .sort((a, b) => (b.cloneVersion || 0) - (a.cloneVersion || 0));
 
   if (clones.length > 5) {
-    // Delete excess oldest clones
     const toDelete = clones.slice(5).map(c => c.projectId);
     user.saved_projects = user.saved_projects.filter(p => !toDelete.includes(p.projectId));
     console.log(`[Clone] Deleted ${toDelete.length} excess clones for root ${rootProjectId}`);
   }
 }
 
-// POST /api/build/redeploy-from-project — updated to auto-clone before deploying
+// ══════════════════════════════════════════════════════════════════
+// FIX #2: redeploy-from-project — create site entry if it was shut down
+// ══════════════════════════════════════════════════════════════════
 router.post('/redeploy-from-project', auth, async (req, res) => {
   try {
     const user = req.user;
@@ -889,8 +879,28 @@ router.post('/redeploy-from-project', auth, async (req, res) => {
     if (!proj.linkedSubdomain) return res.status(400).json({ error: 'Project not linked to a subdomain' });
 
     const sub = proj.linkedSubdomain;
-    const site = user.deployed_sites.find(s => s.subdomain === sub);
-    if (!site) return res.status(404).json({ error: `${sub}.zapcodes.net not found` });
+    let site = user.deployed_sites.find(s => s.subdomain === sub);
+
+    // ── FIX: If site was shut down, re-create the deployed_sites entry ──
+    if (!site) {
+      const config = user.getTierConfig();
+      if (user.deployed_sites.length >= config.maxSites) {
+        return res.status(403).json({ error: `Site limit (${config.maxSites})`, upgrade: true });
+      }
+      // Check subdomain not taken by another user
+      const taken = await User.findOne({ 'deployed_sites.subdomain': sub, _id: { $ne: user._id } });
+      if (taken) return res.status(409).json({ error: 'Subdomain taken by another user' });
+
+      // Create fresh site entry
+      user.deployed_sites.push({
+        subdomain: sub,
+        title: proj.name || sub,
+        files: [],
+        hasBadge: !config.canRemoveBadge,
+        fileSize: 0,
+      });
+      site = user.deployed_sites.find(s => s.subdomain === sub);
+    }
 
     const config = user.getTierConfig();
     const shouldBadge = !config.canRemoveBadge;
@@ -927,6 +937,7 @@ router.post('/redeploy-from-project', auth, async (req, res) => {
     proj.deployedAt = new Date();
 
     user.markModified('saved_projects');
+    user.markModified('deployed_sites');
     await user.save();
 
     res.json({
@@ -942,7 +953,9 @@ router.post('/redeploy-from-project', auth, async (req, res) => {
   }
 });
 
-// POST /api/build/rollback — roll back to a specific clone
+// ══════════════════════════════════════════════════════════════════
+// FIX #2b: rollback — create site entry if it was shut down
+// ══════════════════════════════════════════════════════════════════
 router.post('/rollback', auth, async (req, res) => {
   try {
     const user = req.user;
@@ -955,8 +968,26 @@ router.post('/rollback', auth, async (req, res) => {
     const sub = clone.linkedSubdomain;
     if (!sub) return res.status(400).json({ error: 'Clone has no linked subdomain' });
 
-    const site = user.deployed_sites.find(s => s.subdomain === sub);
-    if (!site) return res.status(404).json({ error: `${sub}.zapcodes.net not found` });
+    let site = user.deployed_sites.find(s => s.subdomain === sub);
+
+    // ── FIX: If site was shut down, re-create the deployed_sites entry ──
+    if (!site) {
+      const config = user.getTierConfig();
+      if (user.deployed_sites.length >= config.maxSites) {
+        return res.status(403).json({ error: `Site limit (${config.maxSites})`, upgrade: true });
+      }
+      const taken = await User.findOne({ 'deployed_sites.subdomain': sub, _id: { $ne: user._id } });
+      if (taken) return res.status(409).json({ error: 'Subdomain taken by another user' });
+
+      user.deployed_sites.push({
+        subdomain: sub,
+        title: clone.name || sub,
+        files: [],
+        hasBadge: !config.canRemoveBadge,
+        fileSize: 0,
+      });
+      site = user.deployed_sites.find(s => s.subdomain === sub);
+    }
 
     const rootId = clone.cloneOf || clone.projectId;
     const config = user.getTierConfig();
@@ -986,6 +1017,7 @@ router.post('/rollback', auth, async (req, res) => {
     site.hasBadge = shouldBadge;
 
     user.markModified('saved_projects');
+    user.markModified('deployed_sites');
     await user.save();
 
     res.json({
@@ -1001,7 +1033,6 @@ router.post('/rollback', auth, async (req, res) => {
   }
 });
 
-// GET /api/build/project-clones/:rootId — get all clones for timeline
 router.get('/project-clones/:rootId', auth, (req, res) => {
   try {
     const rootId = req.params.rootId;
@@ -1026,33 +1057,21 @@ router.get('/project-clones/:rootId', auth, (req, res) => {
 });
 
 
-// ── Strip fake/static chat UI from generated HTML ────────────────────────
-// When AI accidentally generates a static chatbot UI with no backend,
-// this removes it so the real ZapCodes widget works properly.
 function stripFakeChatFromHTML(html) {
   if (!html) return html;
   let cleaned = html;
-
-  // Pattern 1: Remove common static chatbot containers
-  // Matches divs with id/class containing chat, chatbot, ai-chat, livechat etc.
   cleaned = cleaned.replace(
     /<div[^>]*(?:id|class)=["'][^"']*(?:chatbot|chat-bot|chat-widget|ai-chat|live-chat|livechat|chat-box|chatbox)[^"']*["'][^>]*>[\s\S]*?<\/div>/gi,
     '<!-- AI widget injected separately -->'
   );
-
-  // Pattern 2: Remove inline script blocks that fake chat responses
-  // (scripts that listen for input and respond with hardcoded messages)
   cleaned = cleaned.replace(
     /<script[^>]*>[\s\S]*?(?:chatInput|chat-input|sendMessage|chatResponse|greetingMessage)[\s\S]*?<\/script>/gi,
     ''
   );
-
-  // Pattern 3: Remove section/article elements explicitly labeled as chat
   cleaned = cleaned.replace(
     /<(?:section|article|aside)[^>]*(?:id|class)=["'][^"']*(?:chat|chatbot|ai-assistant)[^"']*["'][^>]*>[\s\S]*?<\/(?:section|article|aside)>/gi,
     ''
   );
-
   return cleaned;
 }
 
