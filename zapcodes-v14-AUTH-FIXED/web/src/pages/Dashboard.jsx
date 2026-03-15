@@ -36,6 +36,11 @@ export default function Dashboard() {
   const [claiming, setClaiming] = useState(false);
   const [loading, setLoading] = useState(true);
 
+  // ── NEW: Widget AI low-balance notification ───────────────────────────────
+  // Shows once per login session when BL coins are running low
+  const [widgetBanner, setWidgetBanner]         = useState(null);   // 'low' | 'critical' | 'paused'
+  const [bannerDismissed, setBannerDismissed]   = useState(false);
+
   const fetchData = useCallback(async () => {
     try {
       const [balRes, txRes, siteRes, projRes] = await Promise.all([
@@ -60,6 +65,27 @@ export default function Dashboard() {
     const timer = window.setInterval(() => setCountdown(c => Math.max(0, c - 1)), 1000);
     return () => clearInterval(timer);
   }, [countdown]);
+
+  // ── NEW: Check BL balance for widget notification on login/screen active ──
+  // Only shows once per session. Dismissed by user until next login.
+  useEffect(() => {
+    if (!coinData || bannerDismissed) return;
+    // Check if already dismissed this session
+    const dismissed = sessionStorage.getItem('zc_widget_banner_dismissed');
+    if (dismissed) return;
+    // Only show if user has at least one active widget
+    const hasWidget = user?.widgetSites?.some(w => w.isActive) || false;
+    if (!hasWidget) return;
+    const bal = coinData?.balance ?? 0;
+    if (bal === 0)         setWidgetBanner('paused');
+    else if (bal < 1000)   setWidgetBanner('critical');
+    else if (bal < 5000)   setWidgetBanner('low');
+  }, [coinData, bannerDismissed, user]);
+
+  const dismissBanner = () => {
+    setBannerDismissed(true);
+    sessionStorage.setItem('zc_widget_banner_dismissed', '1');
+  };
 
   const handleClaim = async () => {
     setClaiming(true);
@@ -115,7 +141,6 @@ export default function Dashboard() {
   const balance = usageData?.bl_coins ?? coinData?.balance ?? 0;
   const dailyClaim = usageData?.daily_bl_claim || tc.dailyClaim || 0;
 
-  // Monthly usage from new usage endpoint
   const models = usageData?.models || [];
   const fixesUsed = usageData?.fixes?.used || 0;
   const fixesLimit = usageData?.fixes?.limit || 0;
@@ -135,226 +160,295 @@ export default function Dashboard() {
   if (loading) return <div style={{ padding: 40, textAlign: 'center', color: 'var(--text-secondary)' }}>Loading dashboard...</div>;
 
   return (
-    <div style={s.page}>
-      {/* Header */}
-      <div style={s.headerRow}>
-        <h1 style={s.h1}>Dashboard</h1>
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-          <span style={s.tierBadge(plan)}>{TIER_LABELS[plan] || plan.toUpperCase()}</span>
-          <span style={s.priceBadge}>{TIER_PRICES[plan] || '$0'}/mo</span>
-          {plan !== 'free' && (
-            <button style={s.billingBtn} onClick={handleManageBilling}>Manage Billing</button>
-          )}
-        </div>
-      </div>
-
-      {/* Top Cards Grid */}
-      <div style={s.grid}>
-        {/* BL Balance Card */}
-        <div style={s.card}>
-          <div style={s.cardTitle}>🪙 BL Coin Balance</div>
-          <div style={s.bigNum}>{balance.toLocaleString()}</div>
-          <div style={s.claimInfo}>
-            Daily claim: <strong style={{ color: '#f59e0b' }}>{formatBL(dailyClaim)} BL</strong>
-          </div>
-          <button
-            style={s.claimBtn(canClaim)}
-            onClick={canClaim ? handleClaim : undefined}
-            disabled={!canClaim || claiming}
-          >
-            {claiming
-              ? '⏳ Claiming...'
-              : canClaim
-                ? `🎉 Claim ${formatBL(dailyClaim)} BL!`
-                : `Next claim in ${formatCountdown(countdown)}`}
-          </button>
-          <a href="/pricing" style={{ display: 'block', marginTop: 10, textAlign: 'center', color: '#f59e0b', fontSize: 12, fontWeight: 600, textDecoration: 'none' }}>
-            🪙 Buy more BL Coins →
-          </a>
-        </div>
-
-        {/* Monthly AI Usage Card */}
-        <div style={s.card}>
-          <div style={s.cardTitle}>📊 Monthly AI Usage</div>
-          {resetsOn && <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 12 }}>Resets on {resetsOn}</div>}
-
-          {models.length > 0 ? (
-            models.map((m, i) => {
-              const pct = m.limit === 'unlimited' ? 0 : (m.used / (m.limit || 1)) * 100;
-              const isTrialExhausted = m.type === 'one_time_trial' && m.remaining === 0;
-              return (
-                <div key={i} style={{ marginBottom: i < models.length - 1 ? 14 : 0 }}>
-                  <div style={s.usageRow}>
-                    <span>
-                      {m.label}
-                      {m.type === 'one_time_trial' && <span style={{ fontSize: 10, color: '#f59e0b', marginLeft: 4 }}>(trial)</span>}
-                    </span>
-                    <span style={{ fontWeight: 700, color: isTrialExhausted ? '#ef4444' : 'var(--text-primary)' }}>
-                      {m.used} / {formatCap(m.limit)}
-                    </span>
-                  </div>
-                  <div style={s.progressBar}>
-                    <div style={s.progressFill(pct, isTrialExhausted ? '#ef4444' : '#6366f1')} />
-                  </div>
-                  <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 2, display: 'flex', justifyContent: 'space-between' }}>
-                    <span>{formatBL(m.bl_cost_gen)} BL/gen</span>
-                    <span>{formatCap(m.remaining)} remaining</span>
-                  </div>
-                </div>
-              );
-            })
-          ) : (
-            <>
-              <div style={s.usageRow}><span>Generations</span><span style={{ fontWeight: 700 }}>{coinData?.dailyUsage?.generations || 0}</span></div>
-              <div style={s.progressBar}><div style={s.progressFill(0, '#6366f1')} /></div>
-            </>
-          )}
-
-          {/* Fixes & Pushes */}
-          <div style={{ marginTop: 14, paddingTop: 14, borderTop: '1px solid var(--border)' }}>
-            <div style={s.usageRow}>
-              <span>Code Fixes</span>
-              <span style={{ fontWeight: 700 }}>{fixesUsed} / {formatCap(fixesLimit)}</span>
-            </div>
-            <div style={s.progressBar}><div style={s.progressFill(fixesLimit === 'unlimited' ? 0 : (fixesUsed / (fixesLimit || 1)) * 100, '#8b5cf6')} /></div>
-
-            <div style={{ ...s.usageRow, marginTop: 14 }}>
-              <span>GitHub Pushes</span>
-              <span style={{ fontWeight: 700 }}>{pushesUsed} / {formatCap(pushesLimit)}</span>
-            </div>
-            <div style={s.progressBar}><div style={s.progressFill(pushesLimit === 'unlimited' ? 0 : (pushesUsed / (pushesLimit || 1)) * 100, '#22c55e')} /></div>
-          </div>
-
-          {/* Tier limits summary */}
-          <div style={s.limitsBox}>
-            <div style={s.limitRow}><span>Max chars</span><span>{formatCap(maxChars)}</span></div>
-            <div style={s.limitRow}><span>Max sites</span><span>{formatCap(maxSites)}</span></div>
-            <div style={s.limitRow}><span>PWA</span><span>{canPWA ? '✅' : '—'}</span></div>
-            <div style={s.limitRow}><span>Pro Dev</span><span>{canProDev ? '✅' : '—'}</span></div>
-            <div style={s.limitRow}><span>Badge Remove</span><span>{badgeRemovable ? '✅' : '—'}</span></div>
-          </div>
-        </div>
-
-        {/* Referral Card */}
-        <div style={s.card}>
-          <div style={s.cardTitle}>🔗 Referrals ({user?.referralCount || user?.referral_count || 0})</div>
-          <p style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 12 }}>Share your link — both earn <strong style={{ color: '#f59e0b' }}>50,000 BL</strong>!</p>
-          <div style={s.refBox}>
-            <span style={s.refLink}>{referralLink}</span>
-            <button style={s.copyBtn} onClick={() => { navigator.clipboard.writeText(referralLink); alert('Copied!'); }}>Copy</button>
-          </div>
-          <div style={{ marginTop: 12, padding: '10px 12px', background: 'var(--bg-elevated)', borderRadius: 10 }}>
-            <div style={s.limitRow}><span>Direct referrals</span><span style={{ fontWeight: 700 }}>{user?.direct_referrals || 0}</span></div>
-            <div style={s.limitRow}><span>Commissions (L1)</span><span style={{ fontWeight: 700 }}>{plan === 'diamond' ? '4%' : plan === 'free' ? '2%' : '3%'}</span></div>
-            <div style={s.limitRow}><span>Commissions (L2)</span><span style={{ fontWeight: 700 }}>{plan === 'diamond' ? '3%' : plan === 'free' ? '1%' : '2%'}</span></div>
-          </div>
-          {plan !== 'diamond' && (
-            <a href="/pricing" style={s.upgradeLink}>⬆️ Upgrade for more BL & features →</a>
-          )}
-        </div>
-      </div>
-
-      {/* Deployed Sites — Live sites. Only Shut Down button */}
-      <div style={{ ...s.card, marginBottom: 24 }}>
-        <div style={s.cardTitle}>🌐 Live Sites ({sites.length} / {formatCap(maxSites)})</div>
-        {sites.length === 0 ? (
-          <p style={{ color: 'var(--text-secondary)', fontSize: 14 }}>
-            No sites live yet. <a href="/build" style={{ color: '#6366f1', fontWeight: 600 }}>Build one →</a>
-          </p>
-        ) : (
-          <div>
-            {sites.map(site => (
-              <div key={site.subdomain} style={s.siteCard}>
-                <div style={{ flex: 1 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                    <span style={{ width: 8, height: 8, borderRadius: 4, background: '#22c55e', display: 'inline-block' }} />
-                    <a href={`https://${site.subdomain}.zapcodes.net`} target="_blank" rel="noreferrer" style={s.siteUrl}>
-                      {site.subdomain}.zapcodes.net
-                    </a>
-                  </div>
-                  <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2, marginLeft: 14 }}>
-                    {site.title || site.subdomain}
-                    {site.lastUpdated ? ` · Updated ${new Date(site.lastUpdated).toLocaleDateString()}` : ''}
-                    {site.hasBadge ? ' · Badge' : ''}
-                  </div>
-                </div>
-                <button style={{ ...s.miniBtn, color: '#ef4444', borderColor: '#ef444433' }} onClick={() => handleShutdown(site.subdomain)}>⛔ Shut Down</button>
+    <>
+      {/* ── NEW: Widget AI Low Balance Notification Banner ─────────────────── */}
+      {/* Shows on login/screen activation when BL is low. Dismissed per session. */}
+      {widgetBanner && !bannerDismissed && (
+        <div style={{
+          position: 'sticky', top: 0, zIndex: 100,
+          padding: '12px 20px',
+          background: widgetBanner === 'paused'   ? 'rgba(239,68,68,0.12)'  :
+                      widgetBanner === 'critical'  ? 'rgba(239,68,68,0.08)'  :
+                                                     'rgba(245,158,11,0.08)',
+          borderBottom: `1px solid ${
+            widgetBanner === 'paused'  ? 'rgba(239,68,68,0.3)' :
+            widgetBanner === 'critical'? 'rgba(239,68,68,0.2)' :
+                                         'rgba(245,158,11,0.25)'}`,
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          flexWrap: 'wrap', gap: 10,
+          fontFamily: 'inherit',
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flex: 1 }}>
+            <span style={{ fontSize: 18 }}>
+              {widgetBanner === 'paused' ? '🔴' : widgetBanner === 'critical' ? '⚠️' : '⚠️'}
+            </span>
+            <div>
+              <div style={{
+                fontWeight: 700, fontSize: 13,
+                color: widgetBanner === 'paused' ? '#ef4444' :
+                       widgetBanner === 'critical' ? '#ef4444' : '#f59e0b',
+              }}>
+                {widgetBanner === 'paused'
+                  ? 'Your AI widget has paused'
+                  : widgetBanner === 'critical'
+                    ? 'AI widget will pause very soon'
+                    : 'Your AI widget balance is running low'}
               </div>
-            ))}
+              <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 2 }}>
+                {widgetBanner === 'paused'
+                  ? `Your BL balance reached 0. Visitors on your site cannot use the AI assistant right now.`
+                  : widgetBanner === 'critical'
+                    ? `Balance: ${balance.toLocaleString()} BL — at 100 BL per visitor message your widget will stop in ~${Math.floor(balance / 100)} messages.`
+                    : `Balance: ${balance.toLocaleString()} BL — at 100 BL per message your widget will pause in ~${Math.floor(balance / 100)} messages.`}
+              </div>
+            </div>
           </div>
-        )}
-      </div>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexShrink: 0 }}>
+            <a
+              href="/pricing"
+              style={{
+                padding: '7px 16px', borderRadius: 8, border: 'none', cursor: 'pointer',
+                background: widgetBanner === 'paused' ? '#ef4444' : '#f59e0b',
+                color: '#000', fontWeight: 700, fontSize: 12, textDecoration: 'none',
+                display: 'inline-block',
+              }}
+            >
+              {widgetBanner === 'paused' ? 'Top Up Now — Resume Instantly' : 'Top Up BL Coins'}
+            </a>
+            <button
+              onClick={dismissBanner}
+              style={{
+                padding: '6px 12px', borderRadius: 8,
+                border: '1px solid var(--border)', background: 'transparent',
+                color: 'var(--text-muted)', cursor: 'pointer', fontSize: 12,
+                fontWeight: 600, fontFamily: 'inherit',
+              }}
+            >
+              Dismiss
+            </button>
+          </div>
+        </div>
+      )}
 
-      {/* Saved Projects — Edit, Fix, Deploy here */}
-      <div style={{ ...s.card, marginBottom: 24 }}>
-        <div style={s.cardTitle}>📁 Saved Projects ({projects.length})</div>
-        {projects.length === 0 ? (
-          <p style={{ color: 'var(--text-secondary)', fontSize: 14 }}>
-            No saved projects yet. Projects are auto-saved when you deploy a site.
-          </p>
-        ) : (
-          <div>
-            {projects.map(proj => {
-              const isLive = sites.some(s => s.subdomain === proj.linkedSubdomain);
-              return (
-                <div key={proj.projectId} style={s.siteCard}>
+      <div style={s.page}>
+        {/* Header */}
+        <div style={s.headerRow}>
+          <h1 style={s.h1}>Dashboard</h1>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            <span style={s.tierBadge(plan)}>{TIER_LABELS[plan] || plan.toUpperCase()}</span>
+            <span style={s.priceBadge}>{TIER_PRICES[plan] || '$0'}/mo</span>
+            {plan !== 'free' && (
+              <button style={s.billingBtn} onClick={handleManageBilling}>Manage Billing</button>
+            )}
+          </div>
+        </div>
+
+        {/* Top Cards Grid */}
+        <div style={s.grid}>
+          {/* BL Balance Card */}
+          <div style={s.card}>
+            <div style={s.cardTitle}>🪙 BL Coin Balance</div>
+            <div style={s.bigNum}>{balance.toLocaleString()}</div>
+            <div style={s.claimInfo}>
+              Daily claim: <strong style={{ color: '#f59e0b' }}>{formatBL(dailyClaim)} BL</strong>
+            </div>
+            <button
+              style={s.claimBtn(canClaim)}
+              onClick={canClaim ? handleClaim : undefined}
+              disabled={!canClaim || claiming}
+            >
+              {claiming
+                ? '⏳ Claiming...'
+                : canClaim
+                  ? `🎉 Claim ${formatBL(dailyClaim)} BL!`
+                  : `Next claim in ${formatCountdown(countdown)}`}
+            </button>
+            <a href="/pricing" style={{ display: 'block', marginTop: 10, textAlign: 'center', color: '#f59e0b', fontSize: 12, fontWeight: 600, textDecoration: 'none' }}>
+              🪙 Buy more BL Coins →
+            </a>
+          </div>
+
+          {/* Monthly AI Usage Card */}
+          <div style={s.card}>
+            <div style={s.cardTitle}>📊 Monthly AI Usage</div>
+            {resetsOn && <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 12 }}>Resets on {resetsOn}</div>}
+
+            {models.length > 0 ? (
+              models.map((m, i) => {
+                const pct = m.limit === 'unlimited' ? 0 : (m.used / (m.limit || 1)) * 100;
+                const isTrialExhausted = m.type === 'one_time_trial' && m.remaining === 0;
+                return (
+                  <div key={i} style={{ marginBottom: i < models.length - 1 ? 14 : 0 }}>
+                    <div style={s.usageRow}>
+                      <span>
+                        {m.label}
+                        {m.type === 'one_time_trial' && <span style={{ fontSize: 10, color: '#f59e0b', marginLeft: 4 }}>(trial)</span>}
+                      </span>
+                      <span style={{ fontWeight: 700, color: isTrialExhausted ? '#ef4444' : 'var(--text-primary)' }}>
+                        {m.used} / {formatCap(m.limit)}
+                      </span>
+                    </div>
+                    <div style={s.progressBar}>
+                      <div style={s.progressFill(pct, isTrialExhausted ? '#ef4444' : '#6366f1')} />
+                    </div>
+                    <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 2, display: 'flex', justifyContent: 'space-between' }}>
+                      <span>{formatBL(m.bl_cost_gen)} BL/gen</span>
+                      <span>{formatCap(m.remaining)} remaining</span>
+                    </div>
+                  </div>
+                );
+              })
+            ) : (
+              <>
+                <div style={s.usageRow}><span>Generations</span><span style={{ fontWeight: 700 }}>{coinData?.dailyUsage?.generations || 0}</span></div>
+                <div style={s.progressBar}><div style={s.progressFill(0, '#6366f1')} /></div>
+              </>
+            )}
+
+            <div style={{ marginTop: 14, paddingTop: 14, borderTop: '1px solid var(--border)' }}>
+              <div style={s.usageRow}>
+                <span>Code Fixes</span>
+                <span style={{ fontWeight: 700 }}>{fixesUsed} / {formatCap(fixesLimit)}</span>
+              </div>
+              <div style={s.progressBar}><div style={s.progressFill(fixesLimit === 'unlimited' ? 0 : (fixesUsed / (fixesLimit || 1)) * 100, '#8b5cf6')} /></div>
+
+              <div style={{ ...s.usageRow, marginTop: 14 }}>
+                <span>GitHub Pushes</span>
+                <span style={{ fontWeight: 700 }}>{pushesUsed} / {formatCap(pushesLimit)}</span>
+              </div>
+              <div style={s.progressBar}><div style={s.progressFill(pushesLimit === 'unlimited' ? 0 : (pushesUsed / (pushesLimit || 1)) * 100, '#22c55e')} /></div>
+            </div>
+
+            <div style={s.limitsBox}>
+              <div style={s.limitRow}><span>Max chars</span><span>{formatCap(maxChars)}</span></div>
+              <div style={s.limitRow}><span>Max sites</span><span>{formatCap(maxSites)}</span></div>
+              <div style={s.limitRow}><span>PWA</span><span>{canPWA ? '✅' : '—'}</span></div>
+              <div style={s.limitRow}><span>Pro Dev</span><span>{canProDev ? '✅' : '—'}</span></div>
+              <div style={s.limitRow}><span>Badge Remove</span><span>{badgeRemovable ? '✅' : '—'}</span></div>
+            </div>
+          </div>
+
+          {/* Referral Card */}
+          <div style={s.card}>
+            <div style={s.cardTitle}>🔗 Referrals ({user?.referralCount || user?.referral_count || 0})</div>
+            <p style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 12 }}>Share your link — both earn <strong style={{ color: '#f59e0b' }}>50,000 BL</strong>!</p>
+            <div style={s.refBox}>
+              <span style={s.refLink}>{referralLink}</span>
+              <button style={s.copyBtn} onClick={() => { navigator.clipboard.writeText(referralLink); alert('Copied!'); }}>Copy</button>
+            </div>
+            <div style={{ marginTop: 12, padding: '10px 12px', background: 'var(--bg-elevated)', borderRadius: 10 }}>
+              <div style={s.limitRow}><span>Direct referrals</span><span style={{ fontWeight: 700 }}>{user?.direct_referrals || 0}</span></div>
+              <div style={s.limitRow}><span>Commissions (L1)</span><span style={{ fontWeight: 700 }}>{plan === 'diamond' ? '4%' : plan === 'free' ? '2%' : '3%'}</span></div>
+              <div style={s.limitRow}><span>Commissions (L2)</span><span style={{ fontWeight: 700 }}>{plan === 'diamond' ? '3%' : plan === 'free' ? '1%' : '2%'}</span></div>
+            </div>
+            {plan !== 'diamond' && (
+              <a href="/pricing" style={s.upgradeLink}>⬆️ Upgrade for more BL & features →</a>
+            )}
+          </div>
+        </div>
+
+        {/* Deployed Sites */}
+        <div style={{ ...s.card, marginBottom: 24 }}>
+          <div style={s.cardTitle}>🌐 Live Sites ({sites.length} / {formatCap(maxSites)})</div>
+          {sites.length === 0 ? (
+            <p style={{ color: 'var(--text-secondary)', fontSize: 14 }}>
+              No sites live yet. <a href="/build" style={{ color: '#6366f1', fontWeight: 600 }}>Build one →</a>
+            </p>
+          ) : (
+            <div>
+              {sites.map(site => (
+                <div key={site.subdomain} style={s.siteCard}>
                   <div style={{ flex: 1 }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                      {proj.linkedSubdomain && (
-                        <span style={{ width: 8, height: 8, borderRadius: 4, background: isLive ? '#22c55e' : '#6b7280', display: 'inline-block' }} title={isLive ? 'Live' : 'Offline'} />
-                      )}
-                      <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)' }}>{proj.name}</span>
+                      <span style={{ width: 8, height: 8, borderRadius: 4, background: '#22c55e', display: 'inline-block' }} />
+                      <a href={`https://${site.subdomain}.zapcodes.net`} target="_blank" rel="noreferrer" style={s.siteUrl}>
+                        {site.subdomain}.zapcodes.net
+                      </a>
                     </div>
-                    <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2, marginLeft: proj.linkedSubdomain ? 14 : 0 }}>
-                      {proj.linkedSubdomain ? (
-                        <span>{proj.linkedSubdomain}.zapcodes.net · {isLive ? <span style={{ color: '#22c55e' }}>Live</span> : <span style={{ color: '#6b7280' }}>Offline</span>} · </span>
-                      ) : null}
-                      {proj.fileCount} file{proj.fileCount !== 1 ? 's' : ''} · v{proj.version || 1}
-                      {proj.updatedAt ? ` · ${new Date(proj.updatedAt).toLocaleDateString()}` : ''}
-                    </div>
-                    <div style={{ display: 'flex', gap: 6, marginTop: 8, flexWrap: 'wrap' }}>
-                      <a href={`/build?project=${proj.projectId}&action=edit`} style={s.siteActionBtn('#6366f1')}>✏️ Edit</a>
-                      <a href={`/build?project=${proj.projectId}&action=fix`} style={s.siteActionBtn('#f59e0b')}>🔧 Fix Bugs</a>
-                      {proj.linkedSubdomain ? (
-                        <a href={`/build?project=${proj.projectId}&action=redeploy&subdomain=${proj.linkedSubdomain}`} style={s.siteActionBtn('#22c55e')}>🚀 {isLive ? 'Re-deploy' : 'Go Live'}</a>
-                      ) : (
-                        <a href={`/build?project=${proj.projectId}&action=deploy`} style={s.siteActionBtn('#22c55e')}>🚀 Deploy</a>
-                      )}
+                    <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2, marginLeft: 14 }}>
+                      {site.title || site.subdomain}
+                      {site.lastUpdated ? ` · Updated ${new Date(site.lastUpdated).toLocaleDateString()}` : ''}
+                      {site.hasBadge ? ' · Badge' : ''}
                     </div>
                   </div>
-                  <button style={s.miniBtn} onClick={() => handleDeleteProject(proj.projectId, proj.linkedSubdomain)}>Delete</button>
+                  <button style={{ ...s.miniBtn, color: '#ef4444', borderColor: '#ef444433' }} onClick={() => handleShutdown(site.subdomain)}>⛔ Shut Down</button>
                 </div>
-              );
-            })}
-          </div>
-        )}
-      </div>
+              ))}
+            </div>
+          )}
+        </div>
 
-      {/* Recent Transactions */}
-      <div style={s.card}>
-        <div style={s.cardTitle}>📜 Recent Transactions</div>
-        {transactions.length === 0 ? (
-          <p style={{ color: 'var(--text-secondary)', fontSize: 14 }}>No transactions yet.</p>
-        ) : (
-          <div>
-            {transactions.slice(0, 15).map((tx, i) => (
-              <div key={i} style={s.txRow}>
-                <div>
-                  <div style={{ fontWeight: 600, color: 'var(--text-primary)', fontSize: 13 }}>{tx.description || tx.type}</div>
-                  <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
-                    {new Date(tx.createdAt).toLocaleString()}
-                    {tx.aiModel && <span style={{ marginLeft: 8, color: '#6366f1' }}>· {tx.aiModel}</span>}
+        {/* Saved Projects */}
+        <div style={{ ...s.card, marginBottom: 24 }}>
+          <div style={s.cardTitle}>📁 Saved Projects ({projects.length})</div>
+          {projects.length === 0 ? (
+            <p style={{ color: 'var(--text-secondary)', fontSize: 14 }}>
+              No saved projects yet. Projects are auto-saved when you deploy a site.
+            </p>
+          ) : (
+            <div>
+              {projects.map(proj => {
+                const isLive = sites.some(s => s.subdomain === proj.linkedSubdomain);
+                return (
+                  <div key={proj.projectId} style={s.siteCard}>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                        {proj.linkedSubdomain && (
+                          <span style={{ width: 8, height: 8, borderRadius: 4, background: isLive ? '#22c55e' : '#6b7280', display: 'inline-block' }} title={isLive ? 'Live' : 'Offline'} />
+                        )}
+                        <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)' }}>{proj.name}</span>
+                      </div>
+                      <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 2, marginLeft: proj.linkedSubdomain ? 14 : 0 }}>
+                        {proj.linkedSubdomain ? (
+                          <span>{proj.linkedSubdomain}.zapcodes.net · {isLive ? <span style={{ color: '#22c55e' }}>Live</span> : <span style={{ color: '#6b7280' }}>Offline</span>} · </span>
+                        ) : null}
+                        {proj.fileCount} file{proj.fileCount !== 1 ? 's' : ''} · v{proj.version || 1}
+                        {proj.updatedAt ? ` · ${new Date(proj.updatedAt).toLocaleDateString()}` : ''}
+                      </div>
+                      <div style={{ display: 'flex', gap: 6, marginTop: 8, flexWrap: 'wrap' }}>
+                        <a href={`/build?project=${proj.projectId}&action=edit`} style={s.siteActionBtn('#6366f1')}>✏️ Edit</a>
+                        <a href={`/build?project=${proj.projectId}&action=fix`} style={s.siteActionBtn('#f59e0b')}>🔧 Fix Bugs</a>
+                        {proj.linkedSubdomain ? (
+                          <a href={`/build?project=${proj.projectId}&action=redeploy&subdomain=${proj.linkedSubdomain}`} style={s.siteActionBtn('#22c55e')}>🚀 {isLive ? 'Re-deploy' : 'Go Live'}</a>
+                        ) : (
+                          <a href={`/build?project=${proj.projectId}&action=deploy`} style={s.siteActionBtn('#22c55e')}>🚀 Deploy</a>
+                        )}
+                      </div>
+                    </div>
+                    <button style={s.miniBtn} onClick={() => handleDeleteProject(proj.projectId, proj.linkedSubdomain)}>Delete</button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        {/* Recent Transactions */}
+        <div style={s.card}>
+          <div style={s.cardTitle}>📜 Recent Transactions</div>
+          {transactions.length === 0 ? (
+            <p style={{ color: 'var(--text-secondary)', fontSize: 14 }}>No transactions yet.</p>
+          ) : (
+            <div>
+              {transactions.slice(0, 15).map((tx, i) => (
+                <div key={i} style={s.txRow}>
+                  <div>
+                    <div style={{ fontWeight: 600, color: 'var(--text-primary)', fontSize: 13 }}>{tx.description || tx.type}</div>
+                    <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                      {new Date(tx.createdAt).toLocaleString()}
+                      {tx.aiModel && <span style={{ marginLeft: 8, color: '#6366f1' }}>· {tx.aiModel}</span>}
+                    </div>
+                  </div>
+                  <div style={s.txAmount(tx.amount > 0)}>
+                    {tx.amount > 0 ? '+' : ''}{tx.amount?.toLocaleString()} BL
                   </div>
                 </div>
-                <div style={s.txAmount(tx.amount > 0)}>
-                  {tx.amount > 0 ? '+' : ''}{tx.amount?.toLocaleString()} BL
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
+              ))}
+            </div>
+          )}
+        </div>
       </div>
-    </div>
+    </>
   );
 }
 
@@ -377,11 +471,9 @@ const s = {
     background: 'transparent', color: 'var(--text-secondary)', cursor: 'pointer',
     fontSize: 12, fontWeight: 600, transition: 'all .2s',
   },
-
   grid: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 16, marginBottom: 24 },
   card: { background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 16, padding: 22 },
   cardTitle: { fontSize: 14, fontWeight: 700, color: 'var(--text-secondary)', marginBottom: 14, textTransform: 'uppercase', letterSpacing: '0.5px' },
-
   bigNum: { fontSize: 38, fontWeight: 900, color: '#f59e0b', marginBottom: 2, letterSpacing: '-1px' },
   claimInfo: { fontSize: 13, color: 'var(--text-muted)', marginBottom: 14 },
   claimBtn: (ready) => ({
@@ -390,19 +482,15 @@ const s = {
     background: ready ? 'linear-gradient(135deg, #22c55e, #16a34a)' : 'var(--bg-elevated)',
     color: ready ? '#fff' : 'var(--text-secondary)',
   }),
-
   usageRow: { display: 'flex', justifyContent: 'space-between', fontSize: 13, color: 'var(--text-secondary)', marginBottom: 4 },
   progressBar: { height: 6, borderRadius: 3, background: 'var(--bg-elevated)', overflow: 'hidden' },
   progressFill: (pct, color) => ({ height: '100%', borderRadius: 3, width: `${Math.min(100, pct)}%`, background: color, transition: 'width .5s' }),
-
   limitsBox: { marginTop: 16, padding: '10px 12px', background: 'var(--bg-elevated)', borderRadius: 10 },
   limitRow: { display: 'flex', justifyContent: 'space-between', fontSize: 12, color: 'var(--text-muted)', padding: '3px 0' },
-
   refBox: { background: 'var(--bg-elevated)', borderRadius: 10, padding: 12, display: 'flex', gap: 8, alignItems: 'center' },
   refLink: { flex: 1, fontSize: 12, color: 'var(--text-primary)', wordBreak: 'break-all', fontFamily: 'monospace' },
   copyBtn: { padding: '6px 14px', borderRadius: 8, border: 'none', background: '#6366f1', color: '#fff', cursor: 'pointer', fontWeight: 600, fontSize: 12 },
   upgradeLink: { display: 'block', marginTop: 14, color: '#6366f1', fontWeight: 600, fontSize: 13, textDecoration: 'none' },
-
   siteCard: {
     background: 'var(--bg-elevated)', borderRadius: 10, padding: 14, marginBottom: 8,
     display: 'flex', justifyContent: 'space-between', alignItems: 'center',
@@ -413,16 +501,10 @@ const s = {
     color, border: `1px solid ${color}33`, background: `${color}11`,
     textDecoration: 'none', cursor: 'pointer', display: 'inline-block',
   }),
-  siteActionBtnClick: (color) => ({
-    padding: '4px 10px', borderRadius: 6, fontSize: 11, fontWeight: 600,
-    color, border: `1px solid ${color}33`, background: `${color}11`,
-    cursor: 'pointer', display: 'inline-block',
-  }),
   miniBtn: {
     padding: '5px 12px', borderRadius: 6, border: 'none', background: '#ef4444',
     color: '#fff', cursor: 'pointer', fontSize: 12, fontWeight: 600,
   },
-
   txRow: {
     display: 'flex', justifyContent: 'space-between', alignItems: 'center',
     padding: '10px 0', borderBottom: '1px solid var(--border)',
