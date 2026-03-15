@@ -182,6 +182,24 @@ const userSchema = new mongoose.Schema({
     },
   }],
 
+  // ══════════ Zapcodes: AI Widget Sites ══════════
+  // One entry per deployed subdomain that has a widget configured.
+  widgetSites: [{
+    subdomain:    { type: String },
+    siteToken:    { type: String },
+    model:        { type: String, default: 'groq' },
+    task:         { type: String, default: 'customer-support' },
+    persona:      { type: String, default: '' },
+    position:     { type: String, default: 'bottom-right' },
+    isActive:     { type: Boolean, default: true },
+    dailyBLCap:   { type: Number, default: 0 },
+    blSpentToday: { type: Number, default: 0 },
+    blSpentTotal: { type: Number, default: 0 },
+    messageCount: { type: Number, default: 0 },
+    createdAt:    { type: Date, default: Date.now },
+    updatedAt:    { type: Date, default: Date.now },
+  }],
+
   // ══════════ Zapcodes: Form Submissions ══════════
   form_submissions: [{
     subdomain: { type: String },
