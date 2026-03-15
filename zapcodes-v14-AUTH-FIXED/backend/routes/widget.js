@@ -305,16 +305,12 @@ ${session.summary}`);
         const history = session.rawMessages
           .slice(-20) // max 20 raw messages
           .map(m => `${m.role === 'user' ? 'Visitor' : 'AI'}: ${m.content}`)
-          .join('
-');
-        parts.push(`[Last ${Math.min(session.rawMessages.length, 20)} messages]:
-${history}`);
+          .join('\n');
+        parts.push(`[Last ${Math.min(session.rawMessages.length, 20)} messages]:\n${history}`);
       }
       parts.push(`[Visitor's current message]: ${message.trim()}`);
       parts.push('Respond helpfully and naturally to the visitor's current message. Use the history above for context.');
-      return parts.join('
-
-');
+      return parts.join('\n\n');
     };
 
     // ── Try Groq ──────────────────────────────────────────────────────────
