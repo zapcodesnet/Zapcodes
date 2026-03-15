@@ -164,7 +164,10 @@ forms.forEach(form => {
   });
 });
 
-Every <form> needs data-formtype. Every <input>/<textarea> needs name attribute.`;
+Every <form> needs data-formtype. Every <input>/<textarea> needs name attribute.
+
+IMPORTANT — DO NOT BUILD FAKE AI CHAT:
+If the user asks for a chatbot, AI assistant, or live chat on their site, do NOT build a static HTML/CSS/JavaScript chat widget. Do NOT include any fake chat UI that pretends to respond but has no real AI backend. The real AI widget will be injected automatically after your HTML is generated. Just build the rest of the website normally.`;
 
 const FIX_PROMPT = `You are ZapCodes AI. You fix bugs in websites. ONLY fix what the user describes. Do NOT change colors, text, layout, or anything else unless asked.
 
@@ -488,24 +491,32 @@ router.post('/deploy', auth, async (req, res) => {
     const linkedProject = user.saved_projects.find(p => p.linkedSubdomain === sub);
     if (linkedProject) { linkedProject.name = title || sub; linkedProject.files = files; linkedProject.updatedAt = new Date(); linkedProject.version = (linkedProject.version || 1) + 1; }
     else { user.saved_projects.push({ projectId: `proj-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, name: title || sub, files, preview: '', template: 'custom', description: `Deployed: ${sub}.zapcodes.net`, linkedSubdomain: sub, version: 1, createdAt: new Date(), updatedAt: new Date() }); }
+    // ── Auto-create Clone 1 on deploy so Edit/Fix always happen on clone ──
+    // This ensures the live site is NEVER edited directly — all editing
+    // happens on Clone 1. User's live site stays online while they work.
+    const deployedProj = user.saved_projects.find(p => p.linkedSubdomain === sub);
+    if (deployedProj) {
+      const rootId = deployedProj.cloneOf || deployedProj.projectId;
+      const alreadyHasClone = (user.saved_projects || []).some(
+        p => (p.cloneOf === rootId || p.projectId === rootId) && p.cloneVersion != null
+      );
+      if (!alreadyHasClone) {
+        // First deploy — shift any existing clones (none yet) and create Clone 1
+        const clone1 = createCloneSnapshot(deployedProj, 1);
+        user.saved_projects.push(clone1);
+        enforceMaxClones(user, rootId);
+        user.markModified('saved_projects');
+      }
+    }
+
     await user.save();
     const savedProj = user.saved_projects.find(p => p.linkedSubdomain === sub);
     res.json({ url: `https://${sub}.zapcodes.net`, subdomain: sub, deployed: true, hasBadge: shouldBadge, sites: user.deployed_sites.length, maxSites: config.maxSites, linkedProjectId: savedProj?.projectId });
   } catch { res.status(500).json({ error: 'Deploy failed' }); }
 });
 
-router.post('/redeploy-from-project', auth, async (req, res) => {
-  try {
-    const user = req.user; const { projectId } = req.body; if (!projectId) return res.status(400).json({ error: 'Missing projectId' });
-    const project = (user.saved_projects || []).find(p => p.projectId === projectId); if (!project) return res.status(404).json({ error: 'Not found' }); if (!project.linkedSubdomain) return res.status(400).json({ error: 'Not linked.' });
-    const sub = project.linkedSubdomain; const site = user.deployed_sites.find(s => s.subdomain === sub); if (!site) return res.status(404).json({ error: `${sub}.zapcodes.net not found.` });
-    const config = user.getTierConfig(); const shouldBadge = !config.canRemoveBadge;
-    let deployFiles = project.files || []; if (shouldBadge) deployFiles = deployFiles.map(f => f.name.endsWith('.html') ? { ...f, content: f.content.replace('</body>', `${BADGE_SCRIPT}</body>`) } : f);
-    site.files = deployFiles; site.title = project.name || site.title; site.lastUpdated = new Date(); site.hasBadge = shouldBadge; site.fileSize = JSON.stringify(project.files).length;
-    project.updatedAt = new Date(); project.version = (project.version || 1) + 1; await user.save();
-    res.json({ success: true, url: `https://${sub}.zapcodes.net`, subdomain: sub, version: project.version });
-  } catch { res.status(500).json({ error: 'Re-deploy failed' }); }
-});
+// ── redeploy-from-project with auto-clone is defined further below ──
+
 
 router.post('/code-fix', auth, async (req, res) => {
   try {
@@ -559,7 +570,66 @@ router.post('/clone-rebuild', auth, async (req, res) => { try { const user = req
 
 router.get('/sites', auth, (req, res) => { const sites = (req.user.deployed_sites || []).map(s => { const lp = (req.user.saved_projects || []).find(p => p.linkedSubdomain === s.subdomain); return { ...(s.toObject ? s.toObject() : s), linkedProjectId: lp?.projectId || null }; }); res.json({ sites }); });
 
-router.post('/site/shutdown', auth, async (req, res) => { try { const user = req.user; const sub = (req.body.subdomain || '').toLowerCase().trim(); const idx = user.deployed_sites.findIndex(s => s.subdomain === sub); if (idx === -1) return res.status(404).json({ error: 'Not found' }); user.deployed_sites.splice(idx, 1); await user.save(); res.json({ success: true, message: `${sub}.zapcodes.net offline. Project saved.` }); } catch { res.status(500).json({ error: 'Shutdown failed' }); } });
+router.post('/site/shutdown', auth, async (req, res) => {
+  try {
+    const user = req.user;
+    const sub  = (req.body.subdomain || '').toLowerCase().trim();
+    const siteIdx = user.deployed_sites.findIndex(s => s.subdomain === sub);
+    if (siteIdx === -1) return res.status(404).json({ error: 'Not found' });
+
+    const site = user.deployed_sites[siteIdx];
+
+    // ── Auto-save live site content as Clone 2 before shutting down ──────
+    // This preserves exactly what was live. Clone 1 stays editable.
+    // Existing clones shift up: Clone 1 stays 1, old Clone 2 → 3, etc.
+    const rootProj = (user.saved_projects || []).find(p => p.linkedSubdomain === sub && !p.cloneVersion);
+    if (rootProj && site?.files?.length) {
+      const rootId = rootProj.cloneOf || rootProj.projectId;
+
+      // Shift clones 2+ up by 1 (Clone 1 stays at 1 — it's the editable copy)
+      (user.saved_projects || []).forEach(p => {
+        if ((p.cloneOf === rootId || p.projectId === rootId) && p.cloneVersion != null && p.cloneVersion >= 2) {
+          p.cloneVersion += 1;
+        }
+      });
+
+      // Save live site files as Clone 2
+      const liveSnapshot = {
+        projectId:       `proj-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        name:            rootProj.name,
+        files:           JSON.parse(JSON.stringify(site.files || [])),
+        preview:         rootProj.preview || '',
+        template:        rootProj.template || 'custom',
+        description:     `Live snapshot before shutdown on ${new Date().toLocaleDateString()}`,
+        version:         rootProj.version || 1,
+        linkedSubdomain: sub,
+        cloneOf:         rootId,
+        cloneVersion:    2,
+        isLive:          false,
+        deployedAt:      site.lastUpdated || new Date(),
+        createdAt:       new Date(),
+        updatedAt:       new Date(),
+        projectMemory:   rootProj.projectMemory
+          ? JSON.parse(JSON.stringify(rootProj.projectMemory))
+          : { rawMessages: [], summaries: [], totalMessageCount: 0 },
+      };
+      user.saved_projects.push(liveSnapshot);
+
+      // Enforce max 5 clones
+      enforceMaxClones(user, rootId);
+      user.markModified('saved_projects');
+    }
+
+    // Remove from live sites
+    user.deployed_sites.splice(siteIdx, 1);
+    await user.save();
+
+    res.json({ success: true, message: `${sub}.zapcodes.net offline. Live snapshot saved as Clone 2.` });
+  } catch (err) {
+    console.error('[Shutdown]', err.message);
+    res.status(500).json({ error: 'Shutdown failed' });
+  }
+});
 
 router.delete('/site/:subdomain', auth, async (req, res) => { try { const user = req.user; const sub = req.params.subdomain; const si = user.deployed_sites.findIndex(s => s.subdomain === sub); if (si >= 0) user.deployed_sites.splice(si, 1); const pi = (user.saved_projects || []).findIndex(p => p.linkedSubdomain === sub); if (pi >= 0) user.saved_projects.splice(pi, 1); await user.save(); res.json({ success: true }); } catch { res.status(500).json({ error: 'Failed' }); } });
 
@@ -954,5 +1024,36 @@ router.get('/project-clones/:rootId', auth, (req, res) => {
     res.status(500).json({ error: 'Failed to get clones' });
   }
 });
+
+
+// ── Strip fake/static chat UI from generated HTML ────────────────────────
+// When AI accidentally generates a static chatbot UI with no backend,
+// this removes it so the real ZapCodes widget works properly.
+function stripFakeChatFromHTML(html) {
+  if (!html) return html;
+  let cleaned = html;
+
+  // Pattern 1: Remove common static chatbot containers
+  // Matches divs with id/class containing chat, chatbot, ai-chat, livechat etc.
+  cleaned = cleaned.replace(
+    /<div[^>]*(?:id|class)=["'][^"']*(?:chatbot|chat-bot|chat-widget|ai-chat|live-chat|livechat|chat-box|chatbox)[^"']*["'][^>]*>[\s\S]*?<\/div>/gi,
+    '<!-- AI widget injected separately -->'
+  );
+
+  // Pattern 2: Remove inline script blocks that fake chat responses
+  // (scripts that listen for input and respond with hardcoded messages)
+  cleaned = cleaned.replace(
+    /<script[^>]*>[\s\S]*?(?:chatInput|chat-input|sendMessage|chatResponse|greetingMessage)[\s\S]*?<\/script>/gi,
+    ''
+  );
+
+  // Pattern 3: Remove section/article elements explicitly labeled as chat
+  cleaned = cleaned.replace(
+    /<(?:section|article|aside)[^>]*(?:id|class)=["'][^"']*(?:chat|chatbot|ai-assistant)[^"']*["'][^>]*>[\s\S]*?<\/(?:section|article|aside)>/gi,
+    ''
+  );
+
+  return cleaned;
+}
 
 module.exports = router;
