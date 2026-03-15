@@ -10,23 +10,52 @@ const User       = require('../models/User');
 const WidgetSite = require('../models/WidgetSite');
 const { auth }   = require('../middleware/auth');
 
-// Try to use aiService.js (cleaner unified caller), fall back to ai.js
+// AI caller — tries aiService first, then ai.js, then direct Groq as last resort
 let callAI;
 try {
   const aiService = require('../services/aiService');
   callAI = aiService.callAI;
+  console.log('[Widget] Using aiService.js for AI calls');
 } catch {
-  // Fallback — wrap ai.js callGroq/callGemini into same interface
-  const ai = require('../services/ai');
-  callAI = async (modelKey, systemPrompt, userPrompt, maxTokens) => {
-    let result;
-    if (modelKey === 'groq') {
-      result = await ai.callGroq(systemPrompt, userPrompt, { maxTokens: maxTokens || 1024 });
-    } else {
-      result = await ai.callGemini(systemPrompt, userPrompt, { model: modelKey, maxTokens });
-    }
-    return { content: typeof result === 'string' ? result : result?.content || '' };
-  };
+  try {
+    // Try ai.js functions directly
+    const ai = require('../services/ai');
+    callAI = async (modelKey, systemPrompt, userPrompt, maxTokens) => {
+      // ai.js callGemini / callClaude / callGroq all exist
+      let result;
+      if (modelKey === 'groq') {
+        result = await ai.callGroq(systemPrompt, userPrompt, { maxTokens: maxTokens || 1024 });
+      } else if (modelKey.includes('gemini')) {
+        result = await ai.callGemini(systemPrompt, userPrompt, {
+          model: modelKey, maxTokens: maxTokens || 1024,
+        });
+      } else {
+        result = await ai.callGroq(systemPrompt, userPrompt, { maxTokens: maxTokens || 1024 });
+      }
+      return { content: typeof result === 'string' ? result : (result?.content || result || '') };
+    };
+    console.log('[Widget] Using ai.js for AI calls');
+  } catch {
+    // Direct Groq as absolute fallback
+    callAI = async (modelKey, systemPrompt, userPrompt, maxTokens) => {
+      const OpenAI = require('openai');
+      const client = new OpenAI({
+        apiKey: process.env.GROQ_API_KEY,
+        baseURL: 'https://api.groq.com/openai/v1',
+      });
+      const resp = await client.chat.completions.create({
+        model: 'llama-3.1-8b-instant',
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user',   content: userPrompt },
+        ],
+        max_tokens: maxTokens || 1024,
+        temperature: 0.7,
+      });
+      return { content: resp.choices[0]?.message?.content?.trim() || '' };
+    };
+    console.log('[Widget] Using direct Groq as fallback');
+  }
 }
 
 // ── Rate limiter for visitor messages (10/min per IP) ─────────────────────
@@ -218,37 +247,140 @@ router.post('/chat', visitorLimiter, async (req, res) => {
     const session = widget.getSession(sessionId);
     session.lastActive = new Date();
 
-    // Build context for AI
-    let systemPrompt = widget.persona ||
+    // Build context for AI — explicit instructions so AI actually answers
+    const basePersona = widget.persona ||
       `You are the AI assistant for this website. Help visitors with their questions. Be friendly and concise.`;
 
-    // Add summary context if exists
+    const systemPrompt = `${basePersona}
+
+CRITICAL RULES — you MUST follow these:
+1. You are a helpful AI assistant. ALWAYS answer the visitor's actual question.
+2. NEVER repeat the greeting message as a response to a question.
+3. If asked "what is this website for?" describe the website based on what you know about it.
+4. If asked how to navigate, explain the sections/pages visible on the site.
+5. Keep responses under 3 sentences unless more detail is truly needed.
+6. If you genuinely don't know something specific, say so briefly and suggest contacting the business.
+7. Be conversational and helpful — never robotic or evasive.`;
+
+    // Build conversation context
     let contextPrompt = '';
     if (session.summary) {
-      contextPrompt += `Previous conversation summary: ${session.summary}\n\n`;
+      contextPrompt += `[Conversation so far]: ${session.summary}\n\n`;
     }
-    // Add recent messages as context
     if (session.rawMessages.length > 0) {
-      const recent = session.rawMessages.slice(-10).map(m =>
-        `${m.role === 'user' ? 'Visitor' : 'AI'}: ${m.content}`
+      const recent = session.rawMessages.slice(-8).map(m =>
+        `${m.role === 'user' ? 'Visitor' : 'You'}: ${m.content}`
       ).join('\n');
-      contextPrompt += `Recent conversation:\n${recent}\n\n`;
+      contextPrompt += `[Recent messages]:\n${recent}\n\n`;
     }
-    contextPrompt += `Current visitor message: ${message.trim()}`;
+    contextPrompt += `[Visitor's current message]: ${message.trim()}\n\nPlease respond helpfully to the visitor's message above.`;
 
-    // Call AI
-    let reply = '';
-    try {
-      if (model === 'groq' || model === 'gemini-2.5-flash') {
-        const result = await callAI(model, systemPrompt, contextPrompt, 1024);
-        reply = result?.content?.trim() || "I'm not sure about that. Please contact us directly for help.";
-      } else {
-        // Video/image handled separately — for now return placeholder
-        reply = "Video generation is being processed. Please check back shortly.";
+    // ═══════════════════════════════════════════════════════════════════════
+    // AI CALL — Silent Groq → Gemini 2.5 Flash fallback
+    //
+    // Flow:
+    //   Attempt 1: Groq (default, cheapest, all tiers)
+    //   Attempt 2: Groq retry (silent, same context)
+    //   Fallback:  Gemini 2.5 Flash (full memory transfer, seamless)
+    //
+    // Visitor NEVER sees anything change — conversation stays smooth.
+    // Last 20 raw messages + 1 summary transfer automatically to Gemini.
+    // ═══════════════════════════════════════════════════════════════════════
+    let reply       = '';
+    let usedFallback = false;
+
+    // ── Check if this session already switched to Gemini (sticky per session) ──
+    // Once Groq fails in a session, stay on Gemini for rest of that session.
+    // Resets when visitor closes tab and starts a new session.
+    const sessionActiveModel = session.activeModel || 'groq';
+
+    // ── Build Gemini context — includes full memory for seamless transition ──
+    const buildGeminiContext = () => {
+      const parts = [];
+      if (session.summary) {
+        parts.push(`[Conversation summary — what has been discussed so far]:
+${session.summary}`);
       }
-    } catch (aiErr) {
-      console.error('[Widget/chat] AI error:', aiErr.message);
-      reply = "I'm having trouble right now. Please try again or contact us directly.";
+      if (session.rawMessages.length > 0) {
+        const history = session.rawMessages
+          .slice(-20) // max 20 raw messages
+          .map(m => `${m.role === 'user' ? 'Visitor' : 'AI'}: ${m.content}`)
+          .join('
+');
+        parts.push(`[Last ${Math.min(session.rawMessages.length, 20)} messages]:
+${history}`);
+      }
+      parts.push(`[Visitor's current message]: ${message.trim()}`);
+      parts.push('Respond helpfully and naturally to the visitor's current message. Use the history above for context.');
+      return parts.join('
+
+');
+    };
+
+    // ── Try Groq ──────────────────────────────────────────────────────────
+    const tryGroq = async () => {
+      const result = await callAI('groq', systemPrompt, contextPrompt, 1024);
+      const content = result?.content?.trim();
+      if (!content || content.length < 5) {
+        throw new Error('Groq returned empty or too-short response');
+      }
+      return content;
+    };
+
+    // ── Try Gemini 2.5 Flash (with full memory context) ───────────────────
+    const tryGemini = async () => {
+      const geminiContext = buildGeminiContext();
+      const result = await callAI('gemini-2.5-flash', systemPrompt, geminiContext, 1024);
+      const content = result?.content?.trim();
+      if (!content || content.length < 5) {
+        throw new Error('Gemini returned empty or too-short response');
+      }
+      return content;
+    };
+
+    if (sessionActiveModel === 'gemini-2.5-flash') {
+      // ── Session already on Gemini (Groq failed earlier this session) ─────
+      // Go straight to Gemini — no point trying Groq again this session
+      try {
+        reply = await tryGemini();
+        usedFallback = true;
+      } catch (err) {
+        console.error('[Widget] Gemini failed for sticky session:', err.message);
+        reply = "I'm having some trouble right now. Please try again in a moment.";
+      }
+
+    } else {
+      // ── Session is still on Groq — try it up to 2 times ─────────────────
+      try {
+        // Attempt 1 — Groq
+        reply = await tryGroq();
+        console.log('[Widget] Groq responded successfully');
+
+      } catch (groqErr1) {
+        console.warn('[Widget] Groq attempt 1 failed:', groqErr1.message, '— retrying...');
+        try {
+          // Attempt 2 — Groq retry (silent, same request)
+          reply = await tryGroq();
+          console.log('[Widget] Groq retry succeeded');
+
+        } catch (groqErr2) {
+          // ── Both Groq attempts failed — silently switch to Gemini ─────────
+          console.warn('[Widget] Groq failed twice:', groqErr2.message);
+          console.log('[Widget] Silently transferring to Gemini 2.5 Flash with full context...');
+          try {
+            reply = await tryGemini();
+            usedFallback = true;
+
+            // Stick with Gemini for the rest of this session
+            session.activeModel = 'gemini-2.5-flash';
+            console.log('[Widget] Gemini fallback succeeded — session now on Gemini');
+
+          } catch (geminiErr) {
+            console.error('[Widget] Both models failed:', geminiErr.message);
+            reply = "I'm having some trouble right now. Please try again in a moment or contact us directly.";
+          }
+        }
+      }
     }
 
     // Save messages to session
@@ -277,9 +409,18 @@ router.post('/chat', visitorLimiter, async (req, res) => {
       session.rawMessages = [];
     }
 
-    // Deduct BL coins from owner
+    // ── Deduct BL coins — correct cost based on which model actually responded ──
+    // Groq = 100 BL, Gemini Flash fallback = 200 BL
+    const actualModel = usedFallback ? 'gemini-2.5-flash' : 'groq';
+    const actualCost  = usedFallback
+      ? WIDGET_BL_COSTS['gemini-2.5-flash']   // 200 BL
+      : WIDGET_BL_COSTS.groq;                  // 100 BL
     try {
-      owner.spendCoins(blCost, 'generation', `AI Widget: ${widget.subdomain}.zapcodes.net (${model})`);
+      owner.spendCoins(
+        actualCost,
+        'generation',
+        `AI Widget: ${widget.subdomain}.zapcodes.net (${actualModel}${usedFallback ? ' — auto fallback' : ''})`
+      );
       owner.markModified('bl_transactions');
       await owner.save();
     } catch (coinErr) {
