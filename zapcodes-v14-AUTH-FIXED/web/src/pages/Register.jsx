@@ -5,6 +5,21 @@ import api from '../api';
 
 const API_URL = import.meta.env.VITE_API_URL || '/api';
 
+// Get persistent device UUID from localStorage (same one GuestBuilder uses)
+function getDeviceId() {
+  try {
+    let id = localStorage.getItem('zc_device_id');
+    if (!id) {
+      id = 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
+        const r = Math.random() * 16 | 0;
+        return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16);
+      });
+      localStorage.setItem('zc_device_id', id);
+    }
+    return id;
+  } catch { return 'unknown'; }
+}
+
 export default function Register() {
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
@@ -30,7 +45,7 @@ export default function Register() {
     if (password.length < 6) return setError('Password must be at least 6 characters');
     setLoading(true);
     try {
-      const { data } = await api.post('/api/auth/register', { name, email, password });
+      const { data } = await api.post('/api/auth/register', { name, email, password, deviceId: getDeviceId() });
       if (data.needsVerification) {
         // Only super admin reaches this path
         setVerifyStep(true);
@@ -38,7 +53,12 @@ export default function Register() {
         // Regular users: auto-login immediately (no email verification needed)
         localStorage.setItem('token', data.token);
         localStorage.setItem('user', JSON.stringify(data.user));
-        window.location.href = '/dashboard';
+        // If user had a guest-generated site, it was auto-claimed — send to projects
+        if (data.claimedGuestSite) {
+          window.location.href = '/projects?claimed=' + data.claimedGuestSite.subdomain;
+        } else {
+          window.location.href = '/dashboard';
+        }
       }
     } catch (err) {
       setError(err.response?.data?.error || 'Registration failed. Please try again.');
