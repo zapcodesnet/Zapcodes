@@ -199,32 +199,31 @@ OUTPUT: \`\`\`filepath:index.html\n(COMPLETE updated file — every line)\n\`\`\
 
 const CLONE_PROMPT = `Analyze the website and return JSON: {"title":"...","type":"...","sections":[...],"colors":{"primary":"#hex","secondary":"#hex","bg":"#hex","text":"#hex"},"fonts":"...","features":[...],"layout":"...","content":"..."}`;
 
-function getEffectiveModel(user, requestedModel, isBuildOperation = false) {
+function getEffectiveModel(user, requestedModel, isBuildOperation = false, operationType = 'new_website') {
   if (user.role === 'super-admin') { if (requestedModel) return normalizeModelKey(requestedModel); return 'gemini-3.1-pro'; }
   const tier = user.subscription_tier || 'free';
-  const config = user.getTierConfig();
-  const chain = config.modelChain || ['groq'];
   const normalized = requestedModel ? normalizeModelKey(requestedModel) : null;
-  const isPaidTier = ['bronze', 'silver', 'gold', 'diamond'].includes(tier);
-  const groqBlockedForBuild = isBuildOperation && isPaidTier;
 
-  if (normalized === 'groq' && groqBlockedForBuild) { /* fall through */ }
-  else if (normalized && normalized !== 'auto') {
-    if (chain.includes(normalized)) {
-      const limit = config.monthlyLimits?.[normalized];
-      if (config.trialModels?.includes(normalized)) { if (!user.isTrialExhausted(normalized, limit)) return normalized; }
-      else { const used = user.getModelUsageCount(normalized); if (limit === Infinity || used < limit) return normalized; }
-    }
+  // Use the tier fallback chain as the authoritative model list
+  const chain = getTierFallbackChain(tier, operationType);
+
+  // If user explicitly picked a model, honor it if it's in the chain
+  if (normalized && normalized !== 'auto' && chain.includes(normalized)) {
+    const config = user.getTierConfig();
+    const limit = config.monthlyLimits?.[normalized];
+    const isTrial = config.trialModels?.includes(normalized);
+    if (isTrial) { if (!user.isTrialExhausted(normalized, limit)) return normalized; }
+    else { const used = user.getModelUsageCount(normalized); if (limit === Infinity || used < limit) return normalized; }
   }
 
+  // Otherwise pick the first available model from the tier chain
+  const config = user.getTierConfig();
   for (const model of chain) {
-    if (model === 'groq' && groqBlockedForBuild) continue;
     const limit = config.monthlyLimits?.[model];
-    if (config.trialModels?.includes(model)) { if (!user.isTrialExhausted(model, limit)) return model; }
+    const isTrial = config.trialModels?.includes(model);
+    if (isTrial) { if (!user.isTrialExhausted(model, limit)) return model; }
     else { const used = user.getModelUsageCount(model); if (limit === Infinity || used < limit) return model; }
   }
-
-  if (tier === 'free' && isBuildOperation) { const groqUsed = user.getModelUsageCount('groq'); const groqLimit = config.monthlyLimits?.['groq']; if (groqLimit === Infinity || groqUsed < groqLimit) return 'groq'; }
   return null;
 }
 
@@ -361,29 +360,48 @@ router.post('/generate-with-progress', auth, async (req, res) => {
       if (connectionAlive) { safeSend(res, { type: 'stopped' }); res.end(); } return;
     }
     if (!files?.length) {
-      const fallbackChain = getBuildFallbackChain(user);
+      // On first failure: retry once silently with same model
+      sendProgress('generating', `${modelLabel} had an issue — retrying once...`);
+      try {
+        const retryResult = await callAISmart(systemPrompt, userPrompt, model, undefined, visionImages, aiOpts);
+        const retryFiles = retryResult ? parseFilesFromResponse(retryResult) : [];
+        if (retryFiles?.length) {
+          files = retryFiles;
+          sendProgress('generating', `${modelLabel} retry succeeded!`);
+        }
+      } catch (retryErr) { console.warn(`[Retry] ${model}: ${retryErr.message}`); }
+    }
+
+    if (!files?.length) {
+      // After 2 failures: notify frontend with next fallback options
+      const opType = (requestBody?.isEditing || files?.length > 0) ? 'edit' : 'new_website';
+      const fallbackChain = getTierFallbackChain(user.subscription_tier || 'free', opType);
       const currentIdx = fallbackChain.indexOf(normalizeModelKey(model));
-      for (let fi = currentIdx + 1; fi < fallbackChain.length; fi++) {
-        if (aborted || !connectionAlive) break;
-        const nextModel = fallbackChain[fi]; const nextLabel = getModelDisplayName(nextModel); const nextCost = BL_COSTS.generation[nextModel] || 5000;
-        if (user.role !== 'super-admin' && user.bl_coins < nextCost) continue;
-        sendProgress('generating', `${modelLabel} couldn't process. Trying ${nextLabel}...`);
-        try {
-          const fbResult = await callAISmart(systemPrompt, userPrompt, nextModel, undefined, visionImages, aiOpts);
-          const fbFiles = fbResult ? parseFilesFromResponse(fbResult) : [];
-          if (fbFiles?.length) {
-            user.creditCoins(cost, 'generation', `Refund: ${modelLabel} failed`); user.spendCoins(nextCost, 'generation', `Fallback (${nextLabel})`, nextModel); await user.save();
-            files = fbFiles; usedModel = nextModel;
-            sendProgress('generating', `${nextLabel} generated ${files.length} file(s)!`); break;
-          }
-        } catch (fbErr) { console.error(`[Fallback] ${nextModel}: ${fbErr.message}`); }
-      }
-      if (!files?.length) {
-        if (keepaliveInterval) clearInterval(keepaliveInterval); clearInterval(progressTicker);
-        user.creditCoins(cost, 'generation', `Refund: failed (${model})`); user.decrementMonthlyUsage(model, 'generation'); await user.save();
-        sendProgress('error', 'All AI models failed. Coins refunded.');
-        safeSend(res, { type: 'error', error: 'Generation failed. Coins refunded.' }); return res.end();
-      }
+      const nextModel = fallbackChain[currentIdx + 1] || null;
+      const isGroqWarn = nextModel === 'groq';
+      const noMoreModels = !nextModel;
+
+      // Refund coins for failed generation
+      user.creditCoins(cost, 'generation', `Refund: ${modelLabel} failed`);
+      user.decrementMonthlyUsage(model, 'generation');
+      await user.save();
+
+      if (keepaliveInterval) clearInterval(keepaliveInterval);
+      clearInterval(progressTicker);
+
+      // Tell frontend to show the fallback dialog
+      safeSend(res, {
+        type: 'fallback_needed',
+        currentModel: modelLabel,
+        nextModel: nextModel ? getModelDisplayName(nextModel) : null,
+        nextModelId: nextModel,
+        nextCost: nextModel ? (BL_COSTS.generation[nextModel] || 5000) : 0,
+        balance: user.bl_coins,
+        isGroqWarn,
+        noMoreModels,
+        error: noMoreModels ? 'All AI models are currently unresponsive.' : null,
+      });
+      return res.end();
     }
     sendProgress('preview', 'Building live preview...');
     const preview = generatePreviewHTML(files);
