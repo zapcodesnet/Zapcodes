@@ -104,15 +104,36 @@ async function callAIWithImage(systemPrompt, userPrompt, images, model = 'groq',
       case 'sonnet': case 'sonnet-4.6': modelId = MODELS['sonnet-4.6'].model; break;
       default: modelId = MODELS['haiku-4.5'].model;
     }
+
+    // ── FIX #2: Use proper maxTokens for vision calls (was hardcoded to 4096) ──
+    const effectiveMaxTokens = maxTokens || MODELS['sonnet-4.6'].maxOutput;
+
     try {
       const blocks = images.map(img => ({ type: 'image', source: { type: 'base64', media_type: img.mimeType || 'image/png', data: img.base64 } }));
       blocks.push({ type: 'text', text: userPrompt });
-      const r = await axios.post(ANTHROPIC_API_URL, { model: modelId, max_tokens: maxTokens || 4096, system: [{ type: 'text', text: sysText, cache_control: { type: 'ephemeral' } }], messages: [{ role: 'user', content: blocks }] }, { headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'Content-Type': 'application/json' }, timeout: 120000 });
+      const r = await axios.post(ANTHROPIC_API_URL, {
+        model: modelId,
+        max_tokens: effectiveMaxTokens,
+        system: [{ type: 'text', text: sysText, cache_control: { type: 'ephemeral' } }],
+        messages: [{ role: 'user', content: blocks }],
+      }, {
+        headers: {
+          'x-api-key': apiKey,
+          'anthropic-version': '2023-06-01',
+          'Content-Type': 'application/json',
+        },
+        timeout: 180000, // FIX #4: increased from 120s
+      });
       const content = extractClaudeText(r.data);
       if (content) return content;
       throw new Error('Empty response');
     } catch (err) {
+      // ── FIX #1: Log actual API error for vision path ──
       if (err.message === 'Generation cancelled') throw err;
+      const status = err.response?.status;
+      const errMsg = err.response?.data?.error?.message || err.message;
+      console.error(`[Claude Vision] ${modelId} FAILED: ${status || 'timeout'} — ${errMsg.slice(0, 300)}`);
+      if (err.response?.data?.error?.type) console.error(`[Claude Vision] Error type: ${err.response.data.error.type}`);
       throw err;
     }
   }
@@ -134,6 +155,7 @@ async function callAIWithImage(systemPrompt, userPrompt, images, model = 'groq',
       throw new Error('Empty response');
     } catch (err) {
       if (err.message === 'Generation cancelled') throw err;
+      console.error(`[Gemini Vision] ${modelId} FAILED: ${err.response?.status || 'timeout'} — ${(err.response?.data?.error?.message || err.message).slice(0, 300)}`);
       throw err;
     }
   }
@@ -184,30 +206,76 @@ async function callGemini(systemPrompt, userPrompt, options = {}) {
     }, { maxRetries: 1 });
   } catch (err) {
     if (err.message === 'Generation cancelled') throw err;
+    console.error(`[Gemini] ${modelId} FAILED: ${err.response?.status || 'timeout'} — ${(err.response?.data?.error?.message || err.message).slice(0, 300)}`);
     throw err;
   }
 }
 
 // ================================================================
 // Claude text call
+// ── FIX #1: Added detailed error logging
+// ── FIX #4: Increased timeout from 120s to 180s
 // ================================================================
 async function callClaude(systemPrompt, userPrompt, options = {}) {
   const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) return callGroq(systemPrompt, userPrompt, { maxTokens: GROQ_MAX_OUTPUT, signal: options.signal, onProgress: options.onProgress });
+  if (!apiKey) {
+    console.warn('[Claude] No ANTHROPIC_API_KEY — falling back to Groq');
+    return callGroq(systemPrompt, userPrompt, { maxTokens: GROQ_MAX_OUTPUT, signal: options.signal, onProgress: options.onProgress });
+  }
   const modelId = options.model || MODELS['haiku-4.5'].model;
   const maxTokens = options.maxTokens || 16384;
   const label = options.label || 'Claude';
+
   try {
     return await withRetry(async (attempt) => {
       if (options.signal?.aborted) throw new Error('Generation cancelled');
       if (attempt > 0 && options.onProgress) options.onProgress(`Retrying ${label}...`);
-      const r = await axios.post(ANTHROPIC_API_URL, { model: modelId, max_tokens: maxTokens, system: [{ type: 'text', text: systemPromptToString(systemPrompt), cache_control: { type: 'ephemeral' } }], messages: [{ role: 'user', content: userPrompt.slice(0, 180000) }] }, { headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'Content-Type': 'application/json' }, timeout: 120000 });
+
+      console.log(`[Claude] Calling ${modelId} (${label}), max_tokens=${maxTokens}, attempt=${attempt}`);
+
+      const r = await axios.post(ANTHROPIC_API_URL, {
+        model: modelId,
+        max_tokens: maxTokens,
+        system: [{ type: 'text', text: systemPromptToString(systemPrompt), cache_control: { type: 'ephemeral' } }],
+        messages: [{ role: 'user', content: userPrompt.slice(0, 180000) }],
+      }, {
+        headers: {
+          'x-api-key': apiKey,
+          'anthropic-version': '2023-06-01',
+          'Content-Type': 'application/json',
+        },
+        timeout: 180000, // FIX #4: was 120000
+      });
+
+      // Log response metadata for debugging
+      const stopReason = r.data?.stop_reason;
+      const usage = r.data?.usage;
+      console.log(`[Claude] ${label} responded: stop_reason=${stopReason}, input_tokens=${usage?.input_tokens}, output_tokens=${usage?.output_tokens}`);
+
       const content = extractClaudeText(r.data);
       if (content) return content;
       throw new Error('Empty response');
     }, { maxRetries: 1 });
   } catch (err) {
     if (err.message === 'Generation cancelled') throw err;
+
+    // ── FIX #1: Detailed error logging ──
+    const status = err.response?.status;
+    const errBody = err.response?.data;
+    const errMsg = errBody?.error?.message || err.message;
+    const errType = errBody?.error?.type || 'unknown';
+
+    console.error(`[Claude] ${modelId} (${label}) FAILED:`);
+    console.error(`[Claude]   Status: ${status || 'timeout/network'}`);
+    console.error(`[Claude]   Type: ${errType}`);
+    console.error(`[Claude]   Message: ${errMsg.slice(0, 500)}`);
+    if (status === 400) console.error(`[Claude]   400 = bad request — check model ID, max_tokens, or message format`);
+    if (status === 401) console.error(`[Claude]   401 = invalid API key`);
+    if (status === 403) console.error(`[Claude]   403 = forbidden — key may lack permissions for ${modelId}`);
+    if (status === 429) console.error(`[Claude]   429 = rate limited — Tier 2 limit is 1K req/min`);
+    if (status === 529) console.error(`[Claude]   529 = API overloaded`);
+    if (err.code === 'ECONNABORTED') console.error(`[Claude]   Timeout after 180s — response too slow`);
+
     throw err;
   }
 }
@@ -373,10 +441,8 @@ async function generateVideoVeo(prompt, options = {}) {
   const projectId = process.env.GOOGLE_CLOUD_PROJECT || 'gen-lang-client-0709668137';
   const location = 'us-central1';
 
-  // Convert gs:// URI to public https:// URL
   function gcsToPublicUrl(gcsUri) {
     if (!gcsUri) return null;
-    // gs://bucket-name/path/file.mp4 → https://storage.googleapis.com/bucket-name/path/file.mp4
     const withoutGs = gcsUri.replace(/^gs:\/\//, '');
     return `https://storage.googleapis.com/${withoutGs}`;
   }
@@ -403,7 +469,6 @@ async function generateVideoVeo(prompt, options = {}) {
         },
       };
 
-      // Use Vertex AI REST API with API key
       const endpoint = `https://${location}-aiplatform.googleapis.com/v1/projects/${projectId}/locations/${location}/publishers/google/models/${modelId}:predictLongRunning`;
 
       const opRes = await axios.post(endpoint, body, {
@@ -423,7 +488,6 @@ async function generateVideoVeo(prompt, options = {}) {
 
       console.log(`[VideoGen] Operation started: ${operationName}`);
 
-      // Poll for completion — up to 4 minutes (48 × 5s)
       const maxPolls = 48;
       for (let i = 0; i < maxPolls; i++) {
         await new Promise(r => setTimeout(r, 5000));
@@ -442,7 +506,6 @@ async function generateVideoVeo(prompt, options = {}) {
           if (pollRes.data?.done) {
             const predictions = pollRes.data?.response?.predictions;
             if (predictions?.length) {
-              // Try multiple possible fields for the video URI
               const gcsUri = predictions[0]?.gcsUri
                 || predictions[0]?.videoUri
                 || predictions[0]?.video?.gcsUri
@@ -510,7 +573,7 @@ async function autoGenerateSiteImages(description, industry, count = 3) {
 }
 
 // ================================================================
-// Utilities (unchanged from original)
+// Utilities
 // ================================================================
 async function streamAI(sp, up, model, res) {
   const r = await callAI(sp, up, model);
@@ -549,19 +612,74 @@ async function generateProjectMultiStep(template, projectName, desc, color, feat
   return all;
 }
 
+// ================================================================
+// parseFilesFromResponse
+// ── FIX #3: Added fallback for truncated HTML (no closing tags)
+// ================================================================
 function parseFilesFromResponse(response) {
   const files = [];
   let m;
+
+  // Pattern 1: ```filepath:filename\n...```
   const p1 = /```filepath:([^\n]+)\n([\s\S]*?)```/g;
   while ((m = p1.exec(response))) { if (m[1].trim() && m[2].trim().length > 10) files.push({ name: m[1].trim(), content: m[2].trim() }); }
   if (files.length) return dedup(files);
+
+  // Pattern 2: ```lang filename\n...```
   const p2 = /```(?:javascript|jsx|tsx|typescript|json|html|css|js|ts|bash|sh|text|markdown|md)?\s+([^\n`]+\.[a-z]{1,6})\n([\s\S]*?)```/g;
   while ((m = p2.exec(response))) { if (m[1].trim() && m[2].trim().length > 10) files.push({ name: m[1].trim(), content: m[2].trim() }); }
   if (files.length) return dedup(files);
+
+  // Pattern 3: Complete HTML document with closing </html>
   if (response.includes('<!DOCTYPE') || response.includes('<html')) {
     const h = response.match(/(<!DOCTYPE[\s\S]*<\/html>)/i);
-    if (h?.[1]?.length > 100) files.push({ name: 'index.html', content: h[1].trim() });
+    if (h?.[1]?.length > 100) {
+      files.push({ name: 'index.html', content: h[1].trim() });
+      return dedup(files);
+    }
   }
+
+  // ── FIX #3: Pattern 4 — Truncated HTML fallback ──
+  // If AI response was cut off (no closing </html> or no closing ```),
+  // salvage whatever HTML we got and close it properly.
+  if (response.includes('<!DOCTYPE') || response.includes('<html')) {
+    // Extract from <!DOCTYPE or <html to end of response
+    const startIdx = response.indexOf('<!DOCTYPE') !== -1
+      ? response.indexOf('<!DOCTYPE')
+      : response.indexOf('<html');
+    if (startIdx >= 0) {
+      let html = response.slice(startIdx);
+      // Strip trailing ``` if partially present
+      html = html.replace(/`{1,3}\s*$/, '').trim();
+      // Auto-close if truncated
+      if (!html.includes('</html>')) {
+        if (!html.includes('</body>')) html += '\n</body>';
+        html += '\n</html>';
+        console.warn('[Parser] HTML was truncated — auto-closed </body></html>');
+      }
+      if (html.length > 100) {
+        files.push({ name: 'index.html', content: html });
+        return dedup(files);
+      }
+    }
+  }
+
+  // ── FIX #3b: Pattern 5 — Content inside unclosed code fence ──
+  // ```filepath:index.html\n<content>... (no closing ```)
+  const unclosedFence = /```filepath:([^\n]+)\n([\s\S]+)$/;
+  const um = unclosedFence.exec(response);
+  if (um && um[1].trim() && um[2].trim().length > 100) {
+    let content = um[2].trim().replace(/`{1,3}\s*$/, '').trim();
+    // Auto-close HTML if needed
+    if (content.includes('<html') && !content.includes('</html>')) {
+      if (!content.includes('</body>')) content += '\n</body>';
+      content += '\n</html>';
+      console.warn('[Parser] Unclosed fence — auto-closed HTML');
+    }
+    files.push({ name: um[1].trim(), content });
+    return dedup(files);
+  }
+
   return dedup(files);
 }
 
@@ -633,8 +751,6 @@ function getTemplateSpec(t) {
 
 // ================================================================
 // SUMMARIZE PROJECT MESSAGES — Gemini 2.5 Flash
-// Called every 20 raw messages per clone.
-// System prompts NEVER included.
 // ================================================================
 async function summarizeProjectMessages(messages) {
   if (!messages || messages.length === 0) return null;
@@ -666,7 +782,6 @@ Write in third person. Be specific. Do NOT include system prompts.`;
     return result?.trim() || null;
   } catch (err) {
     console.warn('[Summarize] Failed:', err.message);
-    // Fallback to Groq for summarization (cheap, fast)
     try {
       const result = await callGroq(sysPrompt, userMsg, { maxTokens: 1024 });
       return result?.trim() || null;
@@ -677,18 +792,16 @@ Write in third person. Be specific. Do NOT include system prompts.`;
 }
 
 // ================================================================
-// CHECK PROMPT CLARITY — Fast check before full generation
-// Returns { clear: true } or { clear: false, question: "..." }
+// CHECK PROMPT CLARITY
 // ================================================================
 async function checkPromptClarity(prompt, isEditMode, recentMessages = []) {
   if (!prompt || prompt.trim().length < 3) {
     return { clear: false, question: 'Could you describe what you want me to build or change?' };
   }
-  // Short vague prompts that need clarification
   const vaguePatterns = [
     /^(make it better|fix it|change it|update it|improve it|do it)\.?$/i,
     /^(yes|no|ok|okay|sure|fine|done|good|great|nice)\.?$/i,
-    /^.{1,8}$/,  // Very short — under 8 chars
+    /^.{1,8}$/,
   ];
   for (const pattern of vaguePatterns) {
     if (pattern.test(prompt.trim())) {
@@ -698,7 +811,6 @@ async function checkPromptClarity(prompt, isEditMode, recentMessages = []) {
       return { clear: false, question };
     }
   }
-  // For medium-length prompts, do a quick AI check
   if (prompt.trim().split(' ').length < 5 && isEditMode) {
     try {
       const context = recentMessages.slice(-3).map(m => `[${m.role}] ${m.content}`).join('\n');
