@@ -951,8 +951,8 @@ router.post('/redeploy-from-project', auth, async (req, res) => {
       cloneId: newClone.projectId,
     });
   } catch (err) {
-    console.error('[Redeploy]', err.message);
-    res.status(500).json({ error: 'Re-deploy failed' });
+    console.error('[Redeploy] Error:', err.message, err.stack?.split('\n')[1]);
+    res.status(500).json({ error: err.message || 'Re-deploy failed' });
   }
 });
 
@@ -1031,8 +1031,8 @@ router.post('/rollback', auth, async (req, res) => {
       message: `Rolled back to version from ${clone.createdAt ? new Date(clone.createdAt).toLocaleDateString() : 'previous version'}`,
     });
   } catch (err) {
-    console.error('[Rollback]', err.message);
-    res.status(500).json({ error: 'Rollback failed' });
+    console.error('[Rollback] Error:', err.message, err.stack?.split('\n')[1]);
+    res.status(500).json({ error: err.message || 'Rollback failed' });
   }
 });
 
