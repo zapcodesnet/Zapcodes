@@ -404,10 +404,11 @@ export default function Build() {
       const urlInPrompt = requestBody.prompt.match(/https?:\/\/[^\s"'<>]+/g);
       const videoFromPrompt = urlInPrompt ? urlInPrompt.map(u => detectVideoPlatform(u)).find(Boolean) : null;
       const detectedVideo = videoFromState || videoFromPrompt;
-      if (detectedVideo && editFiles?.length > 0) {
-        const embedHtml = getVideoEmbedHtml(detectedVideo.platform === 'direct' ? detectedVideo.embed : youtubeUrl || urlInPrompt?.find(u => detectVideoPlatform(u)));
+      if (detectedVideo) {
+        const sourceUrl = youtubeUrl.trim() || urlInPrompt?.find(u => detectVideoPlatform(u)) || '';
+        const embedHtml = getVideoEmbedHtml(sourceUrl);
         if (embedHtml) {
-          requestBody.prompt = requestBody.prompt + `\n\n[VIDEO EMBED: The user wants this ${detectedVideo.platform} video embedded in their site. The embed code is:\n${embedHtml}\nInsert this EXACT embed code where the user describes. If the user did NOT specify where to place it, ask them: "I see you want to add a ${detectedVideo.platform} video. Where would you like me to place it? (e.g. hero section, about section, gallery, etc.)". Do NOT modify the iframe src URL. Do NOT remove any existing content unless the user specifically asks.]`;
+          requestBody.prompt = requestBody.prompt + `\n\n[MANDATORY VIDEO EMBED — DO NOT CHANGE THE URL]\nYou MUST insert this EXACT HTML code into the site. Do NOT use any other video URL. Do NOT substitute with a different video. Do NOT generate your own iframe. Copy and paste this EXACTLY:\n\n${embedHtml}\n\nRULES:\n1. Use the EXACT code above — do not modify the src URL\n2. Place it where the user described (or in the hero section if not specified)\n3. Do NOT add any other YouTube/video iframes\n4. Do NOT remove this embed or replace it with a different video\n5. If the user did NOT specify placement, ask: "Where would you like me to place this ${detectedVideo.platform} video?"`;
         }
       }
 
