@@ -449,16 +449,42 @@ router.post('/generate', auth, async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message || 'Failed' }); }
 });
 
+// ── Helper: strip huge base64 data URLs from HTML before saving to MongoDB ──
+function sanitizeFilesForSave(files) {
+  if (!files?.length) return files;
+  return files.map(f => {
+    if (!f.name?.endsWith('.html') || !f.content) return f;
+    // Replace base64 data URLs longer than 500 chars with a placeholder comment
+    // This prevents 2-5MB images from bloating MongoDB documents
+    let html = f.content;
+    const b64Regex = /data:(image|video)\/[^;]+;base64,[A-Za-z0-9+/=]{500,}/g;
+    const matches = html.match(b64Regex);
+    if (matches) {
+      matches.forEach((match, i) => {
+        const mimeMatch = match.match(/data:(image|video\/[^;]+);base64,/);
+        const mime = mimeMatch ? mimeMatch[1] : 'image/png';
+        html = html.replace(match, `https://picsum.photos/800/400?t=${Date.now()}-${i}`);
+      });
+      console.log(`[SaveGuard] Stripped ${matches.length} base64 image(s) from ${f.name} to prevent MongoDB overflow`);
+    }
+    return { ...f, content: html };
+  });
+}
+
 router.post('/save-project', auth, async (req, res) => {
   try {
-    const user = req.user; const { projectId, name, files, preview, template, description, subdomain } = req.body;
-    if (!files?.length) return res.status(400).json({ error: 'No files' });
+    const user = req.user; const { projectId, name, files: rawFiles, preview, template, description, subdomain } = req.body;
+    if (!rawFiles?.length) return res.status(400).json({ error: 'No files' });
+    const files = sanitizeFilesForSave(rawFiles);
     if (projectId) { const idx = (user.saved_projects || []).findIndex(p => p.projectId === projectId); if (idx >= 0) { user.saved_projects[idx].name = name || user.saved_projects[idx].name; user.saved_projects[idx].files = files; user.saved_projects[idx].preview = (preview || '').slice(0, 500000); user.saved_projects[idx].updatedAt = new Date(); user.saved_projects[idx].version = (user.saved_projects[idx].version || 1) + 1; user.saved_projects[idx].description = description || user.saved_projects[idx].description; if (subdomain && !user.saved_projects[idx].linkedSubdomain) user.saved_projects[idx].linkedSubdomain = subdomain; } else return res.status(404).json({ error: 'Not found' }); }
     else { if (!user.saved_projects) user.saved_projects = []; user.saved_projects.push({ projectId: `proj-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, name: name || 'Untitled', files, preview: (preview || '').slice(0, 500000), template: template || 'custom', description: description || '', linkedSubdomain: subdomain || null, version: 1, createdAt: new Date(), updatedAt: new Date() }); }
     await user.save();
     const proj = projectId ? user.saved_projects.find(p => p.projectId === projectId) : user.saved_projects[user.saved_projects.length - 1];
     res.json({ project: { projectId: proj.projectId, name: proj.name, version: proj.version, fileCount: proj.files.length, linkedSubdomain: proj.linkedSubdomain, updatedAt: proj.updatedAt }, message: 'Saved!' });
-  } catch { res.status(500).json({ error: 'Save failed' }); }
+  } catch (err) {
+    console.error('[SaveProject]', err.message);
+    res.status(500).json({ error: 'Save failed: ' + (err.message || '').slice(0, 100) });
+  }
 });
 
 // ══════════════════════════════════════════════════════════════════
