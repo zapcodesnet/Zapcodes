@@ -436,7 +436,7 @@ async function generateVideoVeo(prompt, options = {}) {
   if (!geminiKey && !vertexKey) { console.warn('[VideoGen] No API keys'); return null; }
 
   const cleanPrompt = (prompt || '').slice(0, 1000);
-  const durationSeconds = options.durationSeconds || 8;
+  const durationSeconds = Math.max(5, Math.min(8, options.durationSeconds || 8)); // Veo requires 5-8
   const aspectRatio = options.aspectRatio || '16:9';
 
   // Helper: extract video from completed operation response
@@ -469,8 +469,10 @@ async function generateVideoVeo(prompt, options = {}) {
   }
 
   // ── APPROACH 1: Generative Language API (uses GEMINI_API_KEY — same as working images) ──
+  // NOTE: storageUri is NOT supported on this API. Video bytes come in the response.
+  // NOTE: Only veo-2.0-generate-001 is available here (veo-3.0 is NOT on GL API).
   const apiKey = geminiKey || vertexKey;
-  const glModels = ['veo-3.0-generate', 'veo-2.0-generate-001'];
+  const glModels = ['veo-2.0-generate-001'];
 
   for (const modelId of glModels) {
     try {
@@ -491,9 +493,7 @@ async function generateVideoVeo(prompt, options = {}) {
         },
       };
 
-      // Add GCS bucket if available (optional — without it, video bytes come in response)
-      const bucketUri = process.env.GCS_BUCKET_URI;
-      if (bucketUri) body.parameters.storageUri = bucketUri;
+      // Do NOT add storageUri — Generative Language API doesn't support it
 
       const startRes = await axios.post(
         `${GEMINI_API_URL}/${modelId}:predictLongRunning?key=${apiKey}`,
