@@ -440,7 +440,7 @@ async function generateVideoVeo(prompt, options = {}) {
   const aspectRatio = options.aspectRatio || '16:9';
 
   // Helper: extract video from completed operation response
-  function extractVideoFromResponse(responseData) {
+  function extractVideoFromResponse(responseData, authKey) {
     // Try multiple response formats
     const predictions = responseData?.response?.predictions || responseData?.predictions || [];
     for (const pred of predictions) {
@@ -452,7 +452,15 @@ async function generateVideoVeo(prompt, options = {}) {
       const gcsUri = pred.gcsUri || pred.videoUri || pred.video?.gcsUri
         || pred.generatedSamples?.[0]?.video?.uri;
       if (gcsUri) {
-        const publicUrl = gcsUri.replace(/^gs:\/\//, 'https://storage.googleapis.com/');
+        let publicUrl;
+        if (gcsUri.startsWith('gs://')) {
+          publicUrl = gcsUri.replace(/^gs:\/\//, 'https://storage.googleapis.com/');
+        } else if (gcsUri.includes('generativelanguage.googleapis.com')) {
+          // GL API file URL — needs API key to be accessible
+          publicUrl = gcsUri + (gcsUri.includes('?') ? '&' : '?') + `key=${authKey}`;
+        } else {
+          publicUrl = gcsUri;
+        }
         return { gcsUri, publicUrl };
       }
     }
@@ -460,9 +468,41 @@ async function generateVideoVeo(prompt, options = {}) {
     const genResp = responseData?.response?.generateVideoResponse;
     if (genResp?.generatedSamples?.length) {
       const sample = genResp.generatedSamples[0];
-      if (sample.video?.uri) {
-        const gcsUri = sample.video.uri;
-        return { gcsUri, publicUrl: gcsUri.replace(/^gs:\/\//, 'https://storage.googleapis.com/') };
+      const uri = sample.video?.uri || sample.uri;
+      if (uri) {
+        let publicUrl;
+        if (uri.startsWith('gs://')) {
+          publicUrl = uri.replace(/^gs:\/\//, 'https://storage.googleapis.com/');
+        } else if (uri.includes('generativelanguage.googleapis.com')) {
+          publicUrl = uri + (uri.includes('?') ? '&' : '?') + `key=${authKey}`;
+        } else {
+          publicUrl = uri;
+        }
+        return { gcsUri: uri, publicUrl };
+      }
+    }
+    // Format 4: Direct file download link in response metadata
+    const metadata = responseData?.response?.metadata || responseData?.metadata;
+    if (metadata?.files?.length) {
+      const file = metadata.files[0];
+      const uri = file.uri || file.downloadUri;
+      if (uri) {
+        const publicUrl = uri.includes('generativelanguage.googleapis.com')
+          ? uri + (uri.includes('?') ? '&' : '?') + `key=${authKey}`
+          : uri;
+        return { gcsUri: uri, publicUrl };
+      }
+    }
+    // Format 5: Check for video directly in response (GL API returns file info)
+    const respObj = responseData?.response || responseData;
+    if (respObj?.videos?.length) {
+      const vid = respObj.videos[0];
+      const uri = vid.uri || vid.downloadUri;
+      if (uri) {
+        const publicUrl = uri.includes('generativelanguage.googleapis.com')
+          ? uri + (uri.includes('?') ? '&' : '?') + `key=${authKey}`
+          : uri;
+        return { gcsUri: uri, publicUrl };
       }
     }
     return null;
@@ -523,7 +563,9 @@ async function generateVideoVeo(prompt, options = {}) {
               console.warn(`[VideoGen] ${modelId} operation error:`, JSON.stringify(pollRes.data.error).slice(0, 300));
               break;
             }
-            const video = extractVideoFromResponse(pollRes.data);
+            // Log raw response for debugging
+            console.log(`[VideoGen] Raw response keys:`, Object.keys(pollRes.data?.response || pollRes.data || {}).join(', '));
+            const video = extractVideoFromResponse(pollRes.data, apiKey);
             if (video) {
               console.log(`[VideoGen] SUCCESS via ${modelId} (Generative Language API)`);
               if (video.publicUrl) console.log(`[VideoGen] Public URL: ${video.publicUrl}`);
@@ -599,7 +641,7 @@ async function generateVideoVeo(prompt, options = {}) {
                 console.warn(`[VideoGen] ${modelId} operation error:`, JSON.stringify(pollRes.data.error).slice(0, 300));
                 break;
               }
-              const video = extractVideoFromResponse(pollRes.data);
+              const video = extractVideoFromResponse(pollRes.data, vertexKey);
               if (video) {
                 console.log(`[VideoGen] SUCCESS via ${modelId} (Vertex AI)`);
                 return { ...video, model: modelId, durationSeconds, aspectRatio };
