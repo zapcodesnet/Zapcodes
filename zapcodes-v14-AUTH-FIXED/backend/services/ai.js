@@ -16,13 +16,13 @@ const MODELS = {
   'gemini-2.5-flash': { model: 'gemini-2.5-flash', maxOutput: 65536, contextLimit: 1000000 },
   'gemini-3.1-pro':   { model: 'gemini-3.1-pro-preview', maxOutput: 65536, contextLimit: 1000000 },
   'haiku-4.5':        { model: 'claude-haiku-4-5-20251001', maxOutput: 16384, contextLimit: 180000 },
-  'sonnet-4.6':       { model: 'claude-sonnet-4-6-20260218', maxOutput: 16384, contextLimit: 200000 },
+  'sonnet-4.6':       { model: 'claude-sonnet-4-6', maxOutput: 16384, contextLimit: 200000 },
   'opus-4.6':         { model: 'claude-opus-4-6', maxOutput: 128000, contextLimit: 200000 },
   // Legacy aliases
   'gemini-flash': { model: 'gemini-2.5-flash', maxOutput: 65536, contextLimit: 1000000 },
   'gemini-pro':   { model: 'gemini-3.1-pro-preview', maxOutput: 65536, contextLimit: 1000000 },
   haiku:          { model: 'claude-haiku-4-5-20251001', maxOutput: 16384, contextLimit: 180000 },
-  sonnet:         { model: 'claude-sonnet-4-6-20260218', maxOutput: 16384, contextLimit: 200000 },
+  sonnet:         { model: 'claude-sonnet-4-6', maxOutput: 16384, contextLimit: 200000 },
 };
 
 const GROQ_MAX_OUTPUT = MODELS.groq.maxOutput;
