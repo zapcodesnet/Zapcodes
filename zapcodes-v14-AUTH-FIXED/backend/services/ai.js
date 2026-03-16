@@ -312,22 +312,47 @@ async function callGroq(systemPrompt, userPrompt, options = {}) {
 // IMAGE EDITING — Gemini Flash Image (Vibe Photo Editor)
 // ================================================================
 async function editImage(sourceImage, editPrompt) {
-  const vertexKey = process.env.VERTEX_AI_API_KEY;
-  if (!vertexKey || !sourceImage?.base64) { console.warn('[ImageEdit] No key or image'); return null; }
-  try {
-    const r = await axios.post(
-      `${GEMINI_API_URL}/gemini-3.1-flash-image-preview:generateContent?key=${vertexKey}`,
-      { contents: [{ role: 'user', parts: [{ inlineData: { mimeType: sourceImage.mimeType || 'image/jpeg', data: sourceImage.base64 } }, { text: `Edit this exact photo: ${editPrompt}. Keep the same person, same background, same pose. Only apply the requested edit. Return the edited photo.` }] }], generationConfig: { responseModalities: ['TEXT', 'IMAGE'], temperature: 0.8 } },
-      { headers: { 'Content-Type': 'application/json' }, timeout: 120000 }
-    );
-    const parts = r.data?.candidates?.[0]?.content?.parts || [];
-    const imgParts = parts.filter(p => p.inlineData?.data);
-    if (imgParts.length > 0) return imgParts.map(p => ({ base64: p.inlineData.data, mimeType: p.inlineData.mimeType || 'image/png' }));
-    return null;
-  } catch (err) {
-    console.error(`[ImageEdit] FAIL: ${err.response?.status} — ${(err.response?.data?.error?.message || err.message).slice(0, 200)}`);
-    return null;
+  const apiKey = process.env.GEMINI_API_KEY || process.env.VERTEX_AI_API_KEY;
+  if (!apiKey || !sourceImage?.base64) { console.warn('[ImageEdit] No key or image'); return null; }
+  const models = ['gemini-2.0-flash-exp', 'gemini-3.1-flash-image-preview'];
+  for (const model of models) {
+    try {
+      console.log(`[ImageEdit] Trying ${model}...`);
+      const r = await axios.post(
+        `${GEMINI_API_URL}/${model}:generateContent?key=${apiKey}`,
+        { contents: [{ role: 'user', parts: [{ inlineData: { mimeType: sourceImage.mimeType || 'image/jpeg', data: sourceImage.base64 } }, { text: `Edit this exact photo: ${editPrompt}. Keep the same person, same background, same pose. Only apply the requested edit. Return the edited photo.` }] }], generationConfig: { responseModalities: ['TEXT', 'IMAGE'], temperature: 0.8 } },
+        { headers: { 'Content-Type': 'application/json' }, timeout: 120000 }
+      );
+      const parts = r.data?.candidates?.[0]?.content?.parts || [];
+      const imgParts = parts.filter(p => p.inlineData?.data);
+      if (imgParts.length > 0) {
+        console.log(`[ImageEdit] SUCCESS via ${model}`);
+        return imgParts.map(p => ({ base64: p.inlineData.data, mimeType: p.inlineData.mimeType || 'image/png' }));
+      }
+      console.warn(`[ImageEdit] ${model} returned no images`);
+    } catch (err) {
+      console.error(`[ImageEdit] ${model} FAIL: ${err.response?.status} — ${(err.response?.data?.error?.message || err.message).slice(0, 200)}`);
+    }
   }
+  // Try with VERTEX_AI_API_KEY if different from GEMINI_API_KEY
+  const altKey = process.env.VERTEX_AI_API_KEY;
+  if (altKey && altKey !== apiKey) {
+    try {
+      console.log('[ImageEdit] Trying flash-image-preview with VERTEX_AI_API_KEY...');
+      const r = await axios.post(
+        `${GEMINI_API_URL}/gemini-3.1-flash-image-preview:generateContent?key=${altKey}`,
+        { contents: [{ role: 'user', parts: [{ inlineData: { mimeType: sourceImage.mimeType || 'image/jpeg', data: sourceImage.base64 } }, { text: `Edit this exact photo: ${editPrompt}. Return the edited photo.` }] }], generationConfig: { responseModalities: ['TEXT', 'IMAGE'], temperature: 0.8 } },
+        { headers: { 'Content-Type': 'application/json' }, timeout: 120000 }
+      );
+      const parts = r.data?.candidates?.[0]?.content?.parts || [];
+      const imgParts = parts.filter(p => p.inlineData?.data);
+      if (imgParts.length > 0) { console.log('[ImageEdit] SUCCESS via VERTEX fallback'); return imgParts.map(p => ({ base64: p.inlineData.data, mimeType: p.inlineData.mimeType || 'image/png' })); }
+    } catch (err) {
+      console.error(`[ImageEdit] VERTEX fallback FAIL: ${err.response?.status} — ${(err.response?.data?.error?.message || err.message).slice(0, 200)}`);
+    }
+  }
+  console.warn('[ImageEdit] ALL attempts failed');
+  return null;
 }
 
 // ── editPhotoVibeEditor — alias with preset support ─────────────────────
@@ -377,12 +402,12 @@ async function generateImageImagen4(prompt, options = {}) {
     }
   }
 
-  // ATTEMPT 2: gemini-3.1-flash-image-preview (native image generation)
-  if (vertexKey) {
+  // ATTEMPT 2: gemini-3.1-flash-image-preview (native image generation) — try both keys
+  for (const key of [vertexKey, geminiKey].filter(Boolean)) {
     try {
-      console.log('[ImageGen] Trying gemini-3.1-flash-image-preview...');
+      console.log(`[ImageGen] Trying gemini-3.1-flash-image-preview with ${key === geminiKey ? 'GEMINI' : 'VERTEX'} key...`);
       const r = await axios.post(
-        `${GEMINI_API_URL}/gemini-3.1-flash-image-preview:generateContent?key=${vertexKey}`,
+        `${GEMINI_API_URL}/gemini-3.1-flash-image-preview:generateContent?key=${key}`,
         { contents: [{ role: 'user', parts: [{ text: `Generate a high quality image: ${cleanPrompt}` }] }], generationConfig: { responseModalities: ['TEXT', 'IMAGE'], temperature: 0.8 } },
         { headers: { 'Content-Type': 'application/json' }, timeout: 90000 }
       );
@@ -390,7 +415,7 @@ async function generateImageImagen4(prompt, options = {}) {
       const imgParts = parts.filter(p => p.inlineData?.data);
       if (imgParts.length) { console.log('[ImageGen] SUCCESS via flash-image-preview'); return imgParts.map(p => ({ base64: p.inlineData.data, mimeType: p.inlineData.mimeType || 'image/png' })); }
     } catch (err) {
-      console.warn(`[ImageGen] flash-image-preview failed: ${err.response?.status || err.message}`);
+      console.warn(`[ImageGen] flash-image-preview failed (${key === geminiKey ? 'GEMINI' : 'VERTEX'}): ${err.response?.status || err.message}`);
     }
   }
 
