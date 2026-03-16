@@ -835,6 +835,45 @@ router.post('/save-message', auth, async (req, res) => {
   }
 });
 
+// ══════════════════════════════════════════════════════════════════
+// Groq Pre-Read: cheap/fast check if user's prompt is missing media placement instructions
+// Called automatically after 10s of no typing when media is active
+// ══════════════════════════════════════════════════════════════════
+router.post('/groq-pre-check', auth, async (req, res) => {
+  try {
+    const { prompt, activeMedia } = req.body;
+    if (!prompt?.trim() || !activeMedia?.length) return res.json({ suggestion: null });
+
+    const mediaList = activeMedia.join(', ');
+    const checkPrompt = `You are a helpful assistant for a website builder. The user is about to send this prompt to the AI builder:
+
+"${prompt.slice(0, 500)}"
+
+The user currently has these media items ready to insert: ${mediaList}
+
+Your job: Does the user's prompt include clear instructions about WHERE to place the media on their website and HOW to style it (size, position, etc)?
+
+Rules:
+- If the prompt clearly says where to put the media (e.g. "hero section", "replace the banner", "in the gallery", "make it full width background"), respond with ONLY: OK
+- If the prompt does NOT mention placement or location for the media, respond with a SHORT friendly suggestion (1-2 sentences max) asking where they want the media placed. Be specific about what media they have.
+- If the prompt is about something unrelated to the media (e.g. "change the font color"), respond with ONLY: OK
+- Never respond with more than 2 sentences.`;
+
+    // Use Groq — cheapest and fastest
+    const { callGroq } = require('../services/ai');
+    const response = await callGroq('You are a helpful assistant for a website builder. Keep responses under 2 sentences.', checkPrompt, { maxTokens: 100, temperature: 0.3 });
+    const answer = (response || '').trim();
+
+    if (answer === 'OK' || answer.toUpperCase() === 'OK' || answer.length < 5) {
+      return res.json({ suggestion: null });
+    }
+    res.json({ suggestion: answer });
+  } catch (err) {
+    // Silent fail — this is a nice-to-have optimization, not critical
+    res.json({ suggestion: null });
+  }
+});
+
 router.post('/check-clarity', auth, async (req, res) => {
   try {
     const { prompt, projectId, isEditMode } = req.body;
