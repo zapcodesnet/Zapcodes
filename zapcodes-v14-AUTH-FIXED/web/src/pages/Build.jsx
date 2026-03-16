@@ -167,7 +167,7 @@ export default function Build() {
   const handleFallbackConfirm = (nextModel) => { setFallbackDialog(null); setSelectedModel(nextModel); setPendingChatSubmit(true); };
 
   const handleSendChat = async () => {
-    const text = chatInput.trim(); if (!text) return; setChatInput('');
+    const text = chatInput.trim(); if (!text || generating || aiThinking) return; setChatInput('');
     const userMsg = { role: 'user', content: text, timestamp: new Date().toISOString() };
     setChatMessages(prev => [...prev.slice(-19), userMsg]);
     if (awaitingClarify) { setAwaitingClarify(false); setPrompt(text); setPendingChatSubmit(true); return; }
@@ -189,8 +189,20 @@ export default function Build() {
       const requestBody = { prompt, model: effectiveModel, template, projectName: projectName || 'My Website', projectId: currentProjectId || undefined };
       if (editFiles) { requestBody.existingFiles = editFiles; requestBody.isEditing = true; }
       else { if (autoAttachPrompt && systemPromptText && systemPromptText.trim().length > 50) requestBody.customSystemPrompt = systemPromptText; }
+      // ── AI generated media: Do NOT send as referenceImages (too large, crashes API) ──
+      // Instead, tell the AI via text that media will be auto-inserted after build
       const refMedia = getActiveReferenceMedia();
-      if (refMedia.length > 0) { requestBody.referenceImages = refMedia; requestBody.hasGeneratedMedia = true; }
+      if (refMedia.length > 0) {
+        // Add text description to prompt instead of sending huge base64 blobs
+        const mediaNote = [];
+        if (imgResults.length > 0) mediaNote.push(`${imgResults.length} AI-generated image(s) will be auto-inserted into the site after generation`);
+        if (vibeResult) mediaNote.push('1 AI-edited photo will be auto-inserted into the site after generation');
+        if (videoResult?.publicUrl) mediaNote.push(`1 AI-generated video will be auto-inserted as hero background (URL: ${videoResult.publicUrl})`);
+        if (mediaNote.length > 0) {
+          requestBody.prompt = requestBody.prompt + '\n\n[NOTE: ' + mediaNote.join('. ') + '. Use placeholder image spots where they should go — do NOT use picsum.photos, use empty src="" or background placeholders that the auto-inserter can find.]';
+        }
+        // Do NOT send referenceImages — they are 2-4MB base64 that blow up the token limit
+      }
       if (videoResult?.publicUrl) requestBody.generatedVideoUrl = videoResult.publicUrl;
       const mediaPrompts = getActiveMediaPrompts();
       saveMessageToMemory('user', prompt, mediaPrompts);
