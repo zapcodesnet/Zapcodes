@@ -19,14 +19,29 @@ const generateToken = (user) => {
 
 // ── Helper: strip heavy fields from user object for auth responses ────────
 function lightweightUser(user) {
-  const safe = user.toSafeObject();
-  // Remove massive arrays that can be 10-50MB+ for active users
-  delete safe.saved_projects;
-  delete safe.deployed_sites;
-  // Add lightweight counts instead
-  safe.projectCount = (user.saved_projects || []).length;
-  safe.siteCount = (user.deployed_sites || []).length;
-  return safe;
+  // Manually build a small object — do NOT use toSafeObject() which serializes everything (11MB+)
+  const u = user.toObject ? user.toObject() : user;
+  return {
+    _id: u._id,
+    user_id: u.user_id,
+    email: u.email,
+    name: u.name,
+    role: u.role,
+    provider: u.provider,
+    subscription_tier: u.subscription_tier,
+    emailVerified: u.emailVerified,
+    bl_balance: u.bl_balance,
+    referral_code: u.referral_code,
+    referred_by: u.referred_by,
+    referral_count: u.referral_count,
+    loginCount: u.loginCount,
+    lastLoginAt: u.lastLoginAt,
+    createdAt: u.createdAt,
+    status: u.status,
+    // Lightweight counts instead of full arrays
+    projectCount: (u.saved_projects || []).length,
+    siteCount: (u.deployed_sites || []).length,
+  };
 }
 
 // ── Helper: attempt to claim a guest site by fingerprint hash ─────────────
