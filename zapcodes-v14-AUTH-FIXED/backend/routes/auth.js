@@ -17,6 +17,18 @@ const generateToken = (user) => {
   );
 };
 
+// ── Helper: strip heavy fields from user object for auth responses ────────
+function lightweightUser(user) {
+  const safe = user.toSafeObject();
+  // Remove massive arrays that can be 10-50MB+ for active users
+  delete safe.saved_projects;
+  delete safe.deployed_sites;
+  // Add lightweight counts instead
+  safe.projectCount = (user.saved_projects || []).length;
+  safe.siteCount = (user.deployed_sites || []).length;
+  return safe;
+}
+
 // ── Helper: attempt to claim a guest site by fingerprint hash ─────────────
 async function attemptGuestClaim(userId, ip, deviceId) {
   try {
@@ -101,8 +113,7 @@ router.post('/register', async (req, res) => {
     res.status(201).json({
       message: 'Account created successfully!',
       token,
-      user: user.toSafeObject(),
-      // Include claimed site info if found — frontend shows subdomain picker
+      user: lightweightUser(user),
       claimedGuestSite: claimedSite || null,
     });
   } catch (err) {
@@ -122,7 +133,7 @@ router.post('/verify-email', async (req, res) => {
     user.emailVerified = true;
     await user.save();
     const token = generateToken(user);
-    res.json({ token, user: user.toSafeObject(), message: 'Email verified successfully' });
+    res.json({ token, user: lightweightUser(user), message: 'Email verified successfully' });
   } catch (err) {
     res.status(500).json({ error: 'Verification failed' });
   }
@@ -171,8 +182,10 @@ router.post('/verify-admin-login', async (req, res) => {
         { expiresIn: '4h' }
       );
     }
-    res.json({ token, user: user.toSafeObject(), message: 'Admin login verified', ...(adminSessionToken ? { adminSessionToken } : {}) });
+    // ── FIX: Send lightweight user — NOT 22MB of saved_projects file content ──
+    res.json({ token, user: lightweightUser(user), message: 'Admin login verified', ...(adminSessionToken ? { adminSessionToken } : {}) });
   } catch (err) {
+    console.error('[Auth] verify-admin-login error:', err.message);
     res.status(500).json({ error: 'Verification failed' });
   }
 });
@@ -209,14 +222,15 @@ router.post('/login', async (req, res) => {
     user.loginCount = (user.loginCount || 0) + 1;
     await user.save();
     const token = generateToken(user);
-    res.json({ token, user: user.toSafeObject() });
+    // ── FIX: Send lightweight user for regular login too ──
+    res.json({ token, user: lightweightUser(user) });
   } catch (err) {
     res.status(500).json({ error: 'Login failed', details: err.message });
   }
 });
 
 // ── Get current user ──────────────────────────────────────────────────────
-router.get('/me', auth, async (req, res) => res.json({ user: req.user.toSafeObject() }));
+router.get('/me', auth, async (req, res) => res.json({ user: lightweightUser(req.user) }));
 
 // ── GitHub OAuth ──────────────────────────────────────────────────────────
 router.get('/github', (req, res, next) => {
@@ -253,6 +267,14 @@ router.post('/logout', auth, async (req, res) => {
     }
     res.json({ message: 'Logged out successfully' });
   } catch (err) { res.json({ message: 'Logged out' }); }
+});
+
+// ── Auth providers info ────────────────────────────────────────────────────
+router.get('/providers', (req, res) => {
+  res.json({
+    github: !!process.env.GITHUB_CLIENT_ID,
+    google: !!process.env.GOOGLE_CLIENT_ID,
+  });
 });
 
 module.exports = router;
