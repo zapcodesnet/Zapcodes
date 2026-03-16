@@ -518,13 +518,15 @@ router.delete('/project/:projectId', auth, async (req, res) => {
 
 router.post('/deploy', auth, async (req, res) => {
   try {
-    const user = req.user; const { subdomain, files, title } = req.body; const config = user.getTierConfig();
+    const user = req.user; const { subdomain, files: rawFiles, title } = req.body; const config = user.getTierConfig();
     const sub = (subdomain || '').toLowerCase().trim();
     if (!/^[a-z0-9][a-z0-9-]{1,48}[a-z0-9]$/.test(sub)) return res.status(400).json({ error: 'Invalid subdomain' });
     if (RESERVED.includes(sub)) return res.status(400).json({ error: 'Reserved' });
     const existingSite = user.deployed_sites.find(s => s.subdomain === sub);
     if (!existingSite && user.deployed_sites.length >= config.maxSites) return res.status(403).json({ error: `Site limit (${config.maxSites})`, upgrade: true });
     if (!existingSite) { const taken = await User.findOne({ 'deployed_sites.subdomain': sub, _id: { $ne: user._id } }); if (taken) return res.status(409).json({ error: 'Subdomain taken' }); }
+    // ── Sanitize files: strip huge base64 to prevent MongoDB overflow ──
+    const files = sanitizeFilesForSave(rawFiles);
     let deployFiles = files; const shouldBadge = !config.canRemoveBadge;
     if (shouldBadge && deployFiles) deployFiles = deployFiles.map(f => f.name.endsWith('.html') ? { ...f, content: f.content.replace('</body>', `${BADGE_SCRIPT}</body>`) } : f);
     if (existingSite) { existingSite.title = title || existingSite.title; existingSite.files = deployFiles; existingSite.lastUpdated = new Date(); existingSite.hasBadge = shouldBadge; existingSite.fileSize = JSON.stringify(files).length; }
@@ -548,10 +550,14 @@ router.post('/deploy', auth, async (req, res) => {
       }
     }
 
+    user.markModified('deployed_sites');
     await user.save();
     const savedProj = user.saved_projects.find(p => p.linkedSubdomain === sub);
     res.json({ url: `https://${sub}.zapcodes.net`, subdomain: sub, deployed: true, hasBadge: shouldBadge, sites: user.deployed_sites.length, maxSites: config.maxSites, linkedProjectId: savedProj?.projectId });
-  } catch { res.status(500).json({ error: 'Deploy failed' }); }
+  } catch (err) {
+    console.error('[Deploy] Error:', err.message, err.stack?.split('\n')[1]);
+    res.status(500).json({ error: 'Deploy failed: ' + (err.message || '').slice(0, 100) });
+  }
 });
 
 
