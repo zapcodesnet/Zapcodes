@@ -130,19 +130,19 @@ FORMAT YOUR OUTPUT EXACTLY LIKE THIS:
 \`\`\`
 
 DESIGN RULES:
-1. Use CSS custom properties for colors.
+1. Use CSS custom properties for colors. Example: --bg: #0a0a0a; --text: #f0f0f0; --accent: #6366f1;
 2. Use flexbox and CSS grid. Never float.
 3. Add hover effects with transition: all 0.3s ease;
 4. Add media queries for mobile (768px) and tablet (1024px).
 5. Use Google Fonts via <link> in <head>.
-6. Dark background by default. Light text on dark.
-7. Scroll animations using Intersection Observer.
+6. Dark background (#0a0a0a to #1a1a2e range) with LIGHT text (#e0e0e0 to #ffffff). NEVER use dark text on dark background. NEVER use light text on light background.
+7. Scroll animations: ALL elements MUST be visible by default (opacity: 1). Only add subtle entrance animations AFTER the element is already visible. Never set initial opacity to 0. Never hide content behind JavaScript animations.
 8. html { scroll-behavior: smooth; }
 9. Hamburger menu for mobile.
 10. IMAGES: Do NOT add images unless the user specifically asks for them. If the user requests images, use https://picsum.photos/WIDTH/HEIGHT as placeholder. If the user did NOT mention images, use CSS gradients, SVG icons, or emoji instead. Never add random stock photos the user didn't ask for.
-11. At least 500 lines of code.
-12. Semantic HTML: header, nav, main, section, article, footer.
-13. CRITICAL — VISIBLE CONTENT: Every section MUST have visible text content with proper contrast. Use min-height on sections. Never create invisible or empty sections. Test mentally: if opened in a browser, all content must be readable and visible immediately. Background colors must contrast with text colors.
+11. At least 500 lines of code with real visible content in every section.
+12. Semantic HTML: header, nav, main, section, article, footer. Every section needs min-height: 200px and visible text.
+13. ZERO TOLERANCE FOR BLANK PAGES: If your CSS has opacity: 0, transform: translateY, visibility: hidden, or display: none on ANY content section — the site is broken. All content MUST be visible without JavaScript. JavaScript animations should only ENHANCE already-visible content.
 
 FORM RULES:
 Every form MUST submit data using this JavaScript:
