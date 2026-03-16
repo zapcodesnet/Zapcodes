@@ -161,7 +161,7 @@ export default function Build() {
   const handleGenerateVideo = async () => { if (!videoPrompt.trim()) return alert('Enter a video description'); setVideoGenerating(true); setVideoResult(null); try { const htmlFile = files.find(f => f.name.endsWith('.html')); const existingHtml = htmlFile?.content || null; const { data } = await api.post('/api/build/generate-video', { prompt: videoPrompt, durationSeconds: videoDuration, aspectRatio: '16:9', injectIntoSite: !!existingHtml, existingHtml }); if (data.video) { setVideoResult(data.video); setCoinData(p => ({ ...p, balance: data.balanceRemaining })); if (data.updatedHtml && files.length > 0) { setFiles(prev => prev.map(f => f.name.endsWith('.html') ? { ...f, content: data.updatedHtml } : f)); setPreview(data.updatedHtml); if (iframeRef.current) iframeRef.current.srcdoc = data.updatedHtml; alert('✅ Video generated and injected into your site as a hero background!'); } else if (data.publicUrl) { alert(`✅ Video generated!\n\nPublic URL:\n${data.publicUrl}\n\nGenerate a site first to auto-inject it.`); } } else { alert(data.error || 'Video generation failed. Check Render logs for details.'); } } catch (e) { alert(e.response?.data?.error || 'Video generation failed'); } finally { setVideoGenerating(false); } };
   const injectImageIntoHTML = (html, dataUrl) => { if (/https?:\/\/picsum\.photos\/[^\s"')]+/.test(html)) return html.replace(/https?:\/\/picsum\.photos\/[^\s"')]+/, dataUrl); const ps = [/https?:\/\/via\.placeholder\.com\/[^\s"')]+/,/https?:\/\/placehold\.it\/[^\s"')]+/,/https?:\/\/placeimg\.com\/[^\s"')]+/,/https?:\/\/loremflickr\.com\/[^\s"')]+/,/https?:\/\/dummyimage\.com\/[^\s"')]+/,/https?:\/\/placeholder\.com\/[^\s"')]+/]; for (const re of ps) { if (re.test(html)) return html.replace(re, dataUrl); } if (/(<img\s[^>]*src=["'])["'#]([^>]*>)/.test(html)) return html.replace(/(<img\s[^>]*src=["'])["'#]([^>]*>)/, `$1${dataUrl}"$2`); if (/background-image:\s*url\(['"]?['"]?\)/.test(html)) return html.replace(/background-image:\s*url\(['"]?['"]?\)/, `background-image: url('${dataUrl}')`); if (/background-image:\s*url\(['"]https?:\/\/(?:picsum|via\.placeholder|placehold)[^\s)'"]+['"]?\)/.test(html)) return html.replace(/background-image:\s*url\(['"]https?:\/\/(?:picsum|via\.placeholder|placehold)[^\s)'"]+['"]?\)/, `background-image: url('${dataUrl}')`); if (/<img\s[^>]*src=["']https?:\/\/[^"']+["']/.test(html)) return html.replace(/(<img\s[^>]*src=["'])https?:\/\/[^"']+/, `$1${dataUrl}`); return html.replace(/<body[^>]*>/, match => `${match}\n<!-- AI Image --><img src="${dataUrl}" style="display:none" id="ai-img-0">`); };
   const insertImageIntoSite = (base64, mimeType) => { if (!files.length) return alert('Generate a site first, then images can be inserted.'); const dataUrl = `data:${mimeType};base64,${base64}`; let injected = false; const updatedFiles = files.map(f => { if (!f.name.endsWith('.html')) return f; const updated = injectImageIntoHTML(f.content, dataUrl); if (updated !== f.content) injected = true; return { ...f, content: updated }; }); setFiles(updatedFiles); const htmlFile = updatedFiles.find(f => f.name.endsWith('.html')); if (htmlFile) { setPreview(htmlFile.content); if (iframeRef.current) iframeRef.current.srcdoc = htmlFile.content; } if (injected) alert('✅ Image inserted into your site! Check the preview.'); else alert("Image added. If you don't see it, click a section in the preview to refresh."); };
-  const saveMessageToMemory = async (role, content, mediaPrompts = {}) => { if (!currentProjectId) return; const msg = { role, content, mediaPrompts, timestamp: new Date().toISOString() }; setChatMessages(prev => [...prev.slice(-19), msg]); try { await api.post('/api/build/save-message', { projectId: currentProjectId, message: msg }); } catch (_) {} };
+  const saveMessageToMemory = async (role, content, mediaPrompts = {}) => { if (!currentProjectId) return; const msg = { role, content, mediaPrompts, timestamp: new Date().toISOString() }; try { await api.post('/api/build/save-message', { projectId: currentProjectId, message: msg }); } catch (_) {} };
   const getActiveMediaPrompts = () => ({ imagePrompt: imgResults.length > 0 ? imgPrompt : '', vibePrompt: vibeResult ? vibeCustomPrompt || vibePreset : '', videoPrompt: videoResult ? videoPrompt : '' });
   const getActiveReferenceMedia = () => { const media = []; if (imgResults.length > 0) imgResults.forEach(img => media.push({ base64: img.base64, mimeType: img.mimeType })); if (vibeResult) { const b64 = vibeResult.split(',')[1]; const mime = vibeResult.split(':')[1]?.split(';')[0] || 'image/png'; if (b64) media.push({ base64: b64, mimeType: mime }); } return media; };
   const handleFallbackConfirm = (nextModel) => { setFallbackDialog(null); setSelectedModel(nextModel); setPendingChatSubmit(true); };
@@ -205,7 +205,67 @@ export default function Build() {
           try {
             const data = JSON.parse(line.slice(6));
             if (data.type === 'progress') { setProgressStep(data.step); setProgressMessages(p => [...p.slice(-20), { step: data.step, message: data.message, time: new Date() }]); if (data.sessionId) setSessionId(data.sessionId); }
-            else if (data.type === 'complete') { setFiles(data.files || []); setPreview(data.preview || ''); setCoinData(p => ({ ...p, balance: data.balanceRemaining })); if (iframeRef.current && data.preview) iframeRef.current.srcdoc = data.preview; setProgressStep('done'); setGenResult('done'); const doneMsg = `Done! ${data.fileCount} file(s) using ${MODEL_LABELS[data.model] || data.model}. Cost: ${(data.blSpent||0).toLocaleString()} BL.`; setProgressMessages(p => [...p, { step: 'done', message: doneMsg, time: new Date() }]); const aiChatMsg = { role: 'ai', content: `✅ ${doneMsg}`, timestamp: new Date().toISOString() }; setChatMessages(prev => [...prev.slice(-19), aiChatMsg]); saveMessageToMemory('ai', `Built with ${MODEL_LABELS[data.model] || data.model}. ${data.fileCount} file(s) generated.`); if (imgResults.length > 0) setImgResults([]); if (vibeResult) setVibeResult(null); api.get('/api/build/available-models').then(r => setAvailableModels(r.data.models || [])).catch(() => {}); if (isMobile) setTimeout(() => setMobileView('preview'), 1500); }
+            else if (data.type === 'complete') {
+              let completedFiles = data.files || [];
+              let completedPreview = data.preview || '';
+
+              // ── FIX #2: Auto-insert AI generated media into the new site ──
+              // Insert generated images into HTML (replace picsum placeholders)
+              if (imgResults.length > 0 && completedFiles.length > 0) {
+                completedFiles = completedFiles.map(f => {
+                  if (!f.name.endsWith('.html')) return f;
+                  let html = f.content;
+                  imgResults.forEach(img => {
+                    const dataUrl = `data:${img.mimeType};base64,${img.base64}`;
+                    html = injectImageIntoHTML(html, dataUrl);
+                  });
+                  return { ...f, content: html };
+                });
+                const htmlFile = completedFiles.find(f => f.name.endsWith('.html'));
+                if (htmlFile) completedPreview = htmlFile.content;
+              }
+              // Insert vibe-edited photo
+              if (vibeResult && completedFiles.length > 0) {
+                const b64 = vibeResult.split(',')[1];
+                const mime = vibeResult.split(':')[1]?.split(';')[0] || 'image/png';
+                if (b64) {
+                  completedFiles = completedFiles.map(f => {
+                    if (!f.name.endsWith('.html')) return f;
+                    const html = injectImageIntoHTML(f.content, `data:${mime};base64,${b64}`);
+                    return { ...f, content: html };
+                  });
+                  const htmlFile = completedFiles.find(f => f.name.endsWith('.html'));
+                  if (htmlFile) completedPreview = htmlFile.content;
+                }
+              }
+              // Insert video if generated
+              if (videoResult?.publicUrl && completedFiles.length > 0) {
+                completedFiles = completedFiles.map(f => {
+                  if (!f.name.endsWith('.html') || !f.content.includes('<body')) return f;
+                  const videoTag = `<video autoplay loop muted playsinline style="width:100%;max-height:500px;object-fit:cover;display:block;" src="${videoResult.publicUrl}"><source src="${videoResult.publicUrl}" type="video/mp4"></video>`;
+                  const html = f.content.replace(/(<body[^>]*>)/i, '$1\n' + videoTag);
+                  return { ...f, content: html };
+                });
+                const htmlFile = completedFiles.find(f => f.name.endsWith('.html'));
+                if (htmlFile) completedPreview = htmlFile.content;
+              }
+
+              setFiles(completedFiles);
+              setPreview(completedPreview);
+              setCoinData(p => ({ ...p, balance: data.balanceRemaining }));
+              if (iframeRef.current && completedPreview) iframeRef.current.srcdoc = completedPreview;
+              setProgressStep('done'); setGenResult('done');
+              const doneMsg = `Done! ${data.fileCount} file(s) using ${MODEL_LABELS[data.model] || data.model}. Cost: ${(data.blSpent||0).toLocaleString()} BL.`;
+              setProgressMessages(p => [...p, { step: 'done', message: doneMsg, time: new Date() }]);
+              const aiChatMsg = { role: 'ai', content: `✅ ${doneMsg}`, timestamp: new Date().toISOString() };
+              setChatMessages(prev => [...prev.slice(-19), aiChatMsg]);
+              saveMessageToMemory('ai', `Built with ${MODEL_LABELS[data.model] || data.model}. ${data.fileCount} file(s) generated.`);
+              // Clear used media AFTER insertion
+              if (imgResults.length > 0) setImgResults([]);
+              if (vibeResult) setVibeResult(null);
+              api.get('/api/build/available-models').then(r => setAvailableModels(r.data.models || [])).catch(() => {});
+              if (isMobile) setTimeout(() => setMobileView('preview'), 1500);
+            }
             else if (data.type === 'error') { setProgressStep('error'); setGenResult('error'); setProgressMessages(p => [...p, { step: 'error', message: data.error + (data.suggestion ? ` — ${data.suggestion}` : ''), time: new Date() }]); }
             else if (data.type === 'stopped') { setProgressStep('stopped'); setGenResult('stopped'); setProgressMessages(p => [...p, { step: 'stopped', message: data.message || 'Stopped. Coins refunded.', time: new Date() }]); }
             else if (data.type === 'fallback_needed') { setGenerating(false); setProgressStep('error'); setGenResult('error'); setFallbackDialog({ currentModel: data.currentModel, nextModel: data.nextModel, nextModelId: data.nextModelId, nextCost: data.nextCost, balance: data.balance, isGroqWarn: data.isGroqWarn, noMoreModels: data.noMoreModels, onConfirm: () => { if (data.nextModelId) { setSelectedModel(data.nextModelId); setFallbackDialog(null); setPendingChatSubmit(true); } } }); }
