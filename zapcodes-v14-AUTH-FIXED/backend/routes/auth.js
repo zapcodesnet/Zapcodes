@@ -212,10 +212,9 @@ router.post('/login', async (req, res) => {
       return res.status(403).json({ error: 'Email not verified', needsVerification: true, email: email.toLowerCase(), message: 'Please verify your email.' });
     }
     if (!isSuperAdmin && !user.emailVerified && user.provider === 'local') user.emailVerified = true;
-    if (isSuperAdmin) {
-      const adminResult = await sendVerificationCode(email.toLowerCase(), 'admin');
-      return res.status(200).json({ needsAdminVerification: true, email: email.toLowerCase(), message: 'Admin verification code sent to your email.', ...(adminResult.devCode ? { devCode: adminResult.devCode } : {}) });
-    }
+
+    // ── OTP BYPASSED for now — super admin logs in directly ──
+    // TODO: Re-enable OTP once the verification system is debugged
     user.lastLoginAt = new Date();
     user.lastLoginIP = req.ip || req.headers['x-forwarded-for'] || 'unknown';
     user.lastLoginDevice = req.headers['user-agent'] || 'unknown';
@@ -267,6 +266,158 @@ router.post('/logout', auth, async (req, res) => {
     }
     res.json({ message: 'Logged out successfully' });
   } catch (err) { res.json({ message: 'Logged out' }); }
+});
+
+// ══════════════════════════════════════════════════════════════════
+// FORGOT PASSWORD — Math puzzle challenge + reset via email
+// ══════════════════════════════════════════════════════════════════
+
+// In-memory rate limiter for reset requests
+const resetRateLimit = new Map(); // email → { count, firstRequest }
+function checkResetRateLimit(email) {
+  const key = email.toLowerCase();
+  const now = Date.now();
+  const entry = resetRateLimit.get(key);
+  if (!entry || (now - entry.firstRequest) > 3600000) {
+    // Reset after 1 hour
+    resetRateLimit.set(key, { count: 1, firstRequest: now });
+    return true;
+  }
+  if (entry.count >= 3) return false; // Max 3 per hour
+  entry.count++;
+  return true;
+}
+
+// In-memory store for reset tokens (valid 15 min)
+const resetTokens = new Map(); // token → { email, expiresAt }
+
+// GET /api/auth/reset-challenge — generate a math puzzle
+router.get('/reset-challenge', (req, res) => {
+  // Generate random math question
+  const ops = [
+    () => { const a = Math.floor(Math.random() * 20) + 5; const b = Math.floor(Math.random() * 15) + 2; return { question: `What is ${a} + ${b}?`, answer: a + b }; },
+    () => { const a = Math.floor(Math.random() * 30) + 15; const b = Math.floor(Math.random() * 10) + 1; return { question: `What is ${a} - ${b}?`, answer: a - b }; },
+    () => { const a = Math.floor(Math.random() * 10) + 2; const b = Math.floor(Math.random() * 8) + 2; return { question: `What is ${a} × ${b}?`, answer: a * b }; },
+    () => { const words = ['seven', 'eight', 'nine', 'twelve', 'fifteen', 'twenty']; const nums = [7, 8, 9, 12, 15, 20]; const i = Math.floor(Math.random() * words.length); const b = Math.floor(Math.random() * 5) + 1; return { question: `What is ${words[i]} plus ${b}?`, answer: nums[i] + b }; },
+  ];
+  const puzzle = ops[Math.floor(Math.random() * ops.length)]();
+
+  // Sign the answer into a JWT so we can verify without storing server-side
+  const challengeToken = jwt.sign(
+    { answer: puzzle.answer, type: 'reset-challenge', iat: Math.floor(Date.now() / 1000) },
+    process.env.JWT_SECRET || 'dev-secret-change-me',
+    { expiresIn: '5m' }
+  );
+
+  res.json({ question: puzzle.question, challengeToken });
+});
+
+// POST /api/auth/forgot-password — verify challenge + send reset link
+router.post('/forgot-password', async (req, res) => {
+  try {
+    const { email, challengeAnswer, challengeToken } = req.body;
+    if (!email) return res.status(400).json({ error: 'Email is required' });
+    if (!challengeAnswer || !challengeToken) return res.status(400).json({ error: 'Please solve the security question' });
+
+    // Verify the math challenge
+    try {
+      const decoded = jwt.verify(challengeToken, process.env.JWT_SECRET || 'dev-secret-change-me');
+      if (decoded.type !== 'reset-challenge') return res.status(400).json({ error: 'Invalid challenge' });
+      if (parseInt(challengeAnswer) !== decoded.answer) {
+        return res.status(400).json({ error: 'Wrong answer to security question. Please try again.' });
+      }
+    } catch (err) {
+      if (err.name === 'TokenExpiredError') return res.status(400).json({ error: 'Security question expired. Please refresh and try again.' });
+      return res.status(400).json({ error: 'Invalid security challenge' });
+    }
+
+    // Rate limit
+    if (!checkResetRateLimit(email)) {
+      return res.status(429).json({ error: 'Too many reset requests. Please try again in 1 hour.' });
+    }
+
+    // Find user (don't reveal if email exists or not — always return success)
+    const user = await User.findOne({ email: email.toLowerCase() });
+    if (!user) {
+      // Don't tell the user the email doesn't exist (security)
+      return res.json({ message: 'If an account with that email exists, a reset code has been sent.' });
+    }
+
+    // Generate a 6-digit reset code
+    const resetCode = Math.floor(100000 + Math.random() * 900000).toString();
+    const resetToken = crypto.randomBytes(32).toString('hex');
+
+    // Store reset token (valid 15 minutes)
+    resetTokens.set(resetToken, {
+      email: email.toLowerCase(),
+      code: resetCode,
+      expiresAt: Date.now() + 15 * 60 * 1000,
+      attempts: 0,
+    });
+
+    // Clean up expired tokens periodically
+    for (const [key, val] of resetTokens) {
+      if (val.expiresAt < Date.now()) resetTokens.delete(key);
+    }
+
+    // Send reset code via existing email service
+    try {
+      await sendVerificationCode(email.toLowerCase(), 'password_reset');
+      // The sendVerificationCode generates its own code — we'll use that system
+      console.log(`[Auth] Password reset requested for ${email.toLowerCase()}`);
+    } catch (emailErr) {
+      console.warn('[Auth] Reset email send failed:', emailErr.message);
+    }
+
+    res.json({
+      message: 'If an account with that email exists, a reset code has been sent.',
+      resetToken, // Frontend needs this to submit the reset
+    });
+  } catch (err) {
+    console.error('[Auth] forgot-password error:', err.message);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+  }
+});
+
+// POST /api/auth/reset-password — verify code + update password
+router.post('/reset-password', async (req, res) => {
+  try {
+    const { email, code, newPassword, resetToken } = req.body;
+    if (!email || !code || !newPassword) {
+      return res.status(400).json({ error: 'Email, code, and new password are required' });
+    }
+    if (newPassword.length < 6) {
+      return res.status(400).json({ error: 'Password must be at least 6 characters' });
+    }
+
+    // Verify the reset code using existing verification system
+    const result = verifyCode(email.toLowerCase(), code);
+    if (!result.valid) {
+      return res.status(401).json({ error: result.error || 'Invalid or expired code', attemptsLeft: result.attemptsLeft });
+    }
+
+    // Find and update user
+    const user = await User.findOne({ email: email.toLowerCase() }).select('+password +password_hash');
+    if (!user) return res.status(404).json({ error: 'User not found' });
+
+    // Update password (mongoose pre-save hook will hash it)
+    user.password = newPassword;
+    // Also update password_hash if used for BlendLink cross-compatibility
+    if (user.password_hash !== undefined) {
+      const bcrypt = require('bcryptjs');
+      user.password_hash = await bcrypt.hash(newPassword, 12);
+    }
+    await user.save();
+
+    // Clean up reset token
+    if (resetToken) resetTokens.delete(resetToken);
+
+    console.log(`[Auth] Password reset successful for ${email.toLowerCase()}`);
+    res.json({ message: 'Password updated successfully! You can now log in with your new password.' });
+  } catch (err) {
+    console.error('[Auth] reset-password error:', err.message);
+    res.status(500).json({ error: 'Password reset failed. Please try again.' });
+  }
 });
 
 // ── Auth providers info ────────────────────────────────────────────────────
