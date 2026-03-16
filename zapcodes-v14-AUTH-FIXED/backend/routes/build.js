@@ -454,21 +454,80 @@ function sanitizeFilesForSave(files) {
   if (!files?.length) return files;
   return files.map(f => {
     if (!f.name?.endsWith('.html') || !f.content) return f;
-    // Replace base64 data URLs longer than 500 chars with a placeholder comment
-    // This prevents 2-5MB images from bloating MongoDB documents
     let html = f.content;
     const b64Regex = /data:(image|video)\/[^;]+;base64,[A-Za-z0-9+/=]{500,}/g;
     const matches = html.match(b64Regex);
     if (matches) {
       matches.forEach((match, i) => {
-        const mimeMatch = match.match(/data:(image|video\/[^;]+);base64,/);
-        const mime = mimeMatch ? mimeMatch[1] : 'image/png';
         html = html.replace(match, `https://picsum.photos/800/400?t=${Date.now()}-${i}`);
       });
-      console.log(`[SaveGuard] Stripped ${matches.length} base64 image(s) from ${f.name} to prevent MongoDB overflow`);
+      console.log(`[SaveGuard] Stripped ${matches.length} base64 image(s) from ${f.name}`);
     }
     return { ...f, content: html };
   });
+}
+
+// ── Trim user document when approaching MongoDB 16MB limit ──
+// Strips file content from old deployed sites and old project clones
+function trimUserDocumentSize(user) {
+  const MAX_SIZE = 14 * 1024 * 1024; // 14MB target (leave 2MB buffer)
+  const estimateSize = () => {
+    let size = 0;
+    (user.deployed_sites || []).forEach(s => {
+      (s.files || []).forEach(f => { size += (f.content?.length || 0); });
+    });
+    (user.saved_projects || []).forEach(p => {
+      (p.files || []).forEach(f => { size += (f.content?.length || 0); });
+    });
+    return size;
+  };
+
+  let currentSize = estimateSize();
+  if (currentSize <= MAX_SIZE) return; // Under limit, no trimming needed
+
+  console.log(`[TrimDoc] User document ~${(currentSize / 1024 / 1024).toFixed(1)}MB — trimming to fit 16MB limit`);
+
+  // Step 1: Strip base64 from ALL deployed sites and projects
+  (user.deployed_sites || []).forEach(s => {
+    s.files = sanitizeFilesForSave(s.files || []);
+  });
+  (user.saved_projects || []).forEach(p => {
+    p.files = sanitizeFilesForSave(p.files || []);
+  });
+  user.markModified('deployed_sites');
+  user.markModified('saved_projects');
+
+  currentSize = estimateSize();
+  if (currentSize <= MAX_SIZE) { console.log(`[TrimDoc] After base64 strip: ~${(currentSize / 1024 / 1024).toFixed(1)}MB — OK`); return; }
+
+  // Step 2: Trim old clone versions (keep only latest 2 per project)
+  const rootIds = new Set();
+  (user.saved_projects || []).forEach(p => { if (p.cloneOf) rootIds.add(p.cloneOf); });
+  rootIds.forEach(rootId => {
+    const clones = (user.saved_projects || []).filter(p => p.cloneOf === rootId && p.cloneVersion != null);
+    clones.sort((a, b) => (a.cloneVersion || 0) - (b.cloneVersion || 0));
+    // Keep only newest 2 clones, strip files from older ones
+    if (clones.length > 2) {
+      clones.slice(2).forEach(c => {
+        c.files = [{ name: 'index.html', content: '<!-- Content trimmed to save space. Rebuild to restore. -->' }];
+      });
+    }
+  });
+
+  currentSize = estimateSize();
+  if (currentSize <= MAX_SIZE) { console.log(`[TrimDoc] After clone trim: ~${(currentSize / 1024 / 1024).toFixed(1)}MB — OK`); return; }
+
+  // Step 3: Trim oldest deployed sites (keep files only for newest 3)
+  const sites = user.deployed_sites || [];
+  if (sites.length > 3) {
+    sites.sort((a, b) => new Date(b.lastUpdated || 0) - new Date(a.lastUpdated || 0));
+    sites.slice(3).forEach(s => {
+      s.files = [{ name: 'index.html', content: `<!-- Content trimmed. Re-deploy from project to restore. -->` }];
+    });
+  }
+
+  currentSize = estimateSize();
+  console.log(`[TrimDoc] Final size: ~${(currentSize / 1024 / 1024).toFixed(1)}MB`);
 }
 
 router.post('/save-project', auth, async (req, res) => {
@@ -478,6 +537,7 @@ router.post('/save-project', auth, async (req, res) => {
     const files = sanitizeFilesForSave(rawFiles);
     if (projectId) { const idx = (user.saved_projects || []).findIndex(p => p.projectId === projectId); if (idx >= 0) { user.saved_projects[idx].name = name || user.saved_projects[idx].name; user.saved_projects[idx].files = files; user.saved_projects[idx].preview = (preview || '').slice(0, 500000); user.saved_projects[idx].updatedAt = new Date(); user.saved_projects[idx].version = (user.saved_projects[idx].version || 1) + 1; user.saved_projects[idx].description = description || user.saved_projects[idx].description; if (subdomain && !user.saved_projects[idx].linkedSubdomain) user.saved_projects[idx].linkedSubdomain = subdomain; } else return res.status(404).json({ error: 'Not found' }); }
     else { if (!user.saved_projects) user.saved_projects = []; user.saved_projects.push({ projectId: `proj-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, name: name || 'Untitled', files, preview: (preview || '').slice(0, 500000), template: template || 'custom', description: description || '', linkedSubdomain: subdomain || null, version: 1, createdAt: new Date(), updatedAt: new Date() }); }
+    trimUserDocumentSize(user);
     await user.save();
     const proj = projectId ? user.saved_projects.find(p => p.projectId === projectId) : user.saved_projects[user.saved_projects.length - 1];
     res.json({ project: { projectId: proj.projectId, name: proj.name, version: proj.version, fileCount: proj.files.length, linkedSubdomain: proj.linkedSubdomain, updatedAt: proj.updatedAt }, message: 'Saved!' });
@@ -551,8 +611,8 @@ router.post('/deploy', auth, async (req, res) => {
     }
 
     user.markModified('deployed_sites');
+    trimUserDocumentSize(user); // Prevent 16MB MongoDB overflow
     await user.save();
-    const savedProj = user.saved_projects.find(p => p.linkedSubdomain === sub);
     res.json({ url: `https://${sub}.zapcodes.net`, subdomain: sub, deployed: true, hasBadge: shouldBadge, sites: user.deployed_sites.length, maxSites: config.maxSites, linkedProjectId: savedProj?.projectId });
   } catch (err) {
     console.error('[Deploy] Error:', err.message, err.stack?.split('\n')[1]);
@@ -1012,7 +1072,7 @@ router.post('/redeploy-from-project', auth, async (req, res) => {
 
     user.markModified('saved_projects');
     user.markModified('deployed_sites');
-    await user.save();
+    trimUserDocumentSize(user); await user.save();
 
     res.json({
       success: true,
@@ -1092,7 +1152,7 @@ router.post('/rollback', auth, async (req, res) => {
 
     user.markModified('saved_projects');
     user.markModified('deployed_sites');
-    await user.save();
+    trimUserDocumentSize(user); await user.save();
 
     res.json({
       success: true,
