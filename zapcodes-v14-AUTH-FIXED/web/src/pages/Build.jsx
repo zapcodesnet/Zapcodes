@@ -229,6 +229,13 @@ export default function Build() {
       const requestBody = { prompt, model: effectiveModel, template, projectName: projectName || 'My Website', projectId: currentProjectId || undefined };
       if (editFiles) { requestBody.existingFiles = editFiles; requestBody.isEditing = true; }
       else { if (autoAttachPrompt && systemPromptText && systemPromptText.trim().length > 50) requestBody.customSystemPrompt = systemPromptText; }
+
+      // ── User uploaded photo: tell AI to create a placeholder that we replace after build ──
+      if (uploadedPhoto && editFiles?.length > 0) {
+        requestBody.prompt = requestBody.prompt + '\n\n[IMPORTANT: The user uploaded their own photo. Create an <img> tag with EXACTLY this: id="user-uploaded-photo" src="USER_PHOTO_PLACEHOLDER" — place it exactly where the user describes. Style it according to user instructions (size, position, cover, etc). Do NOT use any other src. Do NOT delete any existing images on the site unless the user specifically asks. The placeholder will be replaced with the actual photo after generation.]';
+        requestBody._hasUploadedPhoto = true;
+      }
+
       // ── AI generated media: Do NOT send as referenceImages (too large, crashes API) ──
       // Instead, tell the AI via text that media will be auto-inserted after build
       const refMedia = getActiveReferenceMedia();
@@ -260,6 +267,21 @@ export default function Build() {
             else if (data.type === 'complete') {
               let completedFiles = data.files || [];
               let completedPreview = data.preview || '';
+
+              // ── Replace USER_PHOTO_PLACEHOLDER with actual uploaded photo ──
+              if (uploadedPhoto && completedFiles.length > 0) {
+                const photoDataUrl = `data:${uploadedPhoto.mimeType};base64,${uploadedPhoto.base64}`;
+                completedFiles = completedFiles.map(f => {
+                  if (!f.name.endsWith('.html')) return f;
+                  let html = f.content;
+                  if (html.includes('USER_PHOTO_PLACEHOLDER')) {
+                    html = html.replace(/USER_PHOTO_PLACEHOLDER/g, photoDataUrl);
+                  }
+                  return { ...f, content: html };
+                });
+                const htmlFile = completedFiles.find(f => f.name.endsWith('.html'));
+                if (htmlFile) completedPreview = htmlFile.content;
+              }
 
               // ── FIX #2: Auto-insert AI generated media into the new site ──
               // Insert generated images into HTML (replace picsum placeholders)
