@@ -200,7 +200,26 @@ export default function Build() {
     }
     return html.replace(/<body[^>]*>/, match => `${match}\n<img src="${dataUrl}" alt="AI Generated" style="width:100%;max-height:400px;object-fit:cover;" />`);
   };
-  const insertImageIntoSite = (base64, mimeType) => { if (!files.length) return alert('Generate a site first, then images can be inserted.'); const dataUrl = `data:${mimeType};base64,${base64}`; let injected = false; const updatedFiles = files.map(f => { if (!f.name.endsWith('.html')) return f; const updated = injectImageIntoHTML(f.content, dataUrl); if (updated !== f.content) injected = true; return { ...f, content: updated }; }); setFiles(updatedFiles); const htmlFile = updatedFiles.find(f => f.name.endsWith('.html')); if (htmlFile) { setPreview(htmlFile.content); if (iframeRef.current) iframeRef.current.srcdoc = htmlFile.content; } if (injected) alert('✅ Image inserted into your site! Check the preview.'); else alert("Image added. If you don't see it, click a section in the preview to refresh."); };
+  const insertImageIntoSite = (base64, mimeType) => {
+    if (!files.length) return alert('Generate a site first, then images can be inserted.');
+    const dataUrl = `data:${mimeType};base64,${base64}`;
+    const updatedFiles = files.map(f => {
+      if (!f.name.endsWith('.html')) return f;
+      let html = f.content;
+      // Only insert in ONE specific spot — after the first <header> closing tag, or after <body>
+      const imgTag = `<img src="${dataUrl}" alt="User image" style="width:100%;max-height:500px;object-fit:cover;display:block;margin:0 auto;" />`;
+      if (html.includes('</header>')) {
+        html = html.replace('</header>', `</header>\n${imgTag}`);
+      } else if (/<body[^>]*>/i.test(html)) {
+        html = html.replace(/(<body[^>]*>)/i, `$1\n${imgTag}`);
+      }
+      return { ...f, content: html };
+    });
+    setFiles(updatedFiles);
+    const htmlFile = updatedFiles.find(f => f.name.endsWith('.html'));
+    if (htmlFile) { setPreview(htmlFile.content); if (iframeRef.current) iframeRef.current.srcdoc = htmlFile.content; }
+    alert('✅ Image inserted below the header! Use the chat to tell AI exactly where to move it.');
+  };
   const saveMessageToMemory = async (role, content, mediaPrompts = {}) => { if (!currentProjectId) return; const msg = { role, content, mediaPrompts, timestamp: new Date().toISOString() }; try { await api.post('/api/build/save-message', { projectId: currentProjectId, message: msg }); } catch (_) {} };
   const getActiveMediaPrompts = () => ({ imagePrompt: imgResults.length > 0 ? imgPrompt : '', vibePrompt: vibeResult ? vibeCustomPrompt || vibePreset : '', videoPrompt: videoResult ? videoPrompt : '' });
   const getActiveReferenceMedia = () => { const media = []; if (imgResults.length > 0) imgResults.forEach(img => media.push({ base64: img.base64, mimeType: img.mimeType })); if (vibeResult) { const b64 = vibeResult.split(',')[1]; const mime = vibeResult.split(':')[1]?.split(';')[0] || 'image/png'; if (b64) media.push({ base64: b64, mimeType: mime }); } return media; };
@@ -233,23 +252,8 @@ export default function Build() {
       // ── User uploaded photo: tell AI to create a placeholder that we replace after build ──
       if (uploadedPhoto && editFiles?.length > 0) {
         requestBody.prompt = requestBody.prompt + '\n\n[IMPORTANT: The user uploaded their own photo. Create an <img> tag with EXACTLY this: id="user-uploaded-photo" src="USER_PHOTO_PLACEHOLDER" — place it exactly where the user describes. Style it according to user instructions (size, position, cover, etc). Do NOT use any other src. Do NOT delete any existing images on the site unless the user specifically asks. The placeholder will be replaced with the actual photo after generation.]';
-        requestBody._hasUploadedPhoto = true;
       }
 
-      // ── AI generated media: Do NOT send as referenceImages (too large, crashes API) ──
-      // Instead, tell the AI via text that media will be auto-inserted after build
-      const refMedia = getActiveReferenceMedia();
-      if (refMedia.length > 0) {
-        // Add text description to prompt instead of sending huge base64 blobs
-        const mediaNote = [];
-        if (imgResults.length > 0) mediaNote.push(`${imgResults.length} AI-generated image(s) will be auto-inserted into the site after generation`);
-        if (vibeResult) mediaNote.push('1 AI-edited photo will be auto-inserted into the site after generation');
-        if (videoResult?.publicUrl) mediaNote.push(`1 AI-generated video will be auto-inserted as hero background (URL: ${videoResult.publicUrl})`);
-        if (mediaNote.length > 0) {
-          requestBody.prompt = requestBody.prompt + '\n\n[NOTE: ' + mediaNote.join('. ') + '. Use placeholder image spots where they should go — do NOT use picsum.photos, use empty src="" or background placeholders that the auto-inserter can find.]';
-        }
-        // Do NOT send referenceImages — they are 2-4MB base64 that blow up the token limit
-      }
       if (videoResult?.publicUrl) requestBody.generatedVideoUrl = videoResult.publicUrl;
       const mediaPrompts = getActiveMediaPrompts();
       saveMessageToMemory('user', prompt, mediaPrompts);
@@ -283,46 +287,10 @@ export default function Build() {
                 if (htmlFile) completedPreview = htmlFile.content;
               }
 
-              // ── FIX #2: Auto-insert AI generated media into the new site ──
-              // Insert generated images into HTML (replace picsum placeholders)
-              if (imgResults.length > 0 && completedFiles.length > 0) {
-                completedFiles = completedFiles.map(f => {
-                  if (!f.name.endsWith('.html')) return f;
-                  let html = f.content;
-                  imgResults.forEach(img => {
-                    const dataUrl = `data:${img.mimeType};base64,${img.base64}`;
-                    html = injectImageIntoHTML(html, dataUrl);
-                  });
-                  return { ...f, content: html };
-                });
-                const htmlFile = completedFiles.find(f => f.name.endsWith('.html'));
-                if (htmlFile) completedPreview = htmlFile.content;
-              }
-              // Insert vibe-edited photo
-              if (vibeResult && completedFiles.length > 0) {
-                const b64 = vibeResult.split(',')[1];
-                const mime = vibeResult.split(':')[1]?.split(';')[0] || 'image/png';
-                if (b64) {
-                  completedFiles = completedFiles.map(f => {
-                    if (!f.name.endsWith('.html')) return f;
-                    const html = injectImageIntoHTML(f.content, `data:${mime};base64,${b64}`);
-                    return { ...f, content: html };
-                  });
-                  const htmlFile = completedFiles.find(f => f.name.endsWith('.html'));
-                  if (htmlFile) completedPreview = htmlFile.content;
-                }
-              }
-              // Insert video if generated
-              if (videoResult?.publicUrl && completedFiles.length > 0) {
-                completedFiles = completedFiles.map(f => {
-                  if (!f.name.endsWith('.html') || !f.content.includes('<body')) return f;
-                  const videoTag = `<video autoplay loop muted playsinline style="width:100%;max-height:500px;object-fit:cover;display:block;" src="${videoResult.publicUrl}"><source src="${videoResult.publicUrl}" type="video/mp4"></video>`;
-                  const html = f.content.replace(/(<body[^>]*>)/i, '$1\n' + videoTag);
-                  return { ...f, content: html };
-                });
-                const htmlFile = completedFiles.find(f => f.name.endsWith('.html'));
-                if (htmlFile) completedPreview = htmlFile.content;
-              }
+              // NOTE: AI-generated images/photos/videos are NOT auto-inserted.
+              // Users must click the "Insert" button on each image to add it.
+              // Auto-insertion was removed because it caused random placement,
+              // buffer overflow errors, and corrupted project saves.
 
               setFiles(completedFiles);
               setPreview(completedPreview);
