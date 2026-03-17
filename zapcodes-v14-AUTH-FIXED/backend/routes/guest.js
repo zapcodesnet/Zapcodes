@@ -15,8 +15,8 @@ const router = express.Router();
 const crypto = require('crypto');
 const rateLimit = require('express-rate-limit');
 
-
 const GuestSite = require('../models/GuestSite');
+const User = require('../models/User');
 const { callAI, callAIWithImage, generateImageImagen4, generateVideoVeo, parseFilesFromResponse } = require('../services/ai');
 const { auth } = require('../middleware/auth');
 
@@ -80,7 +80,7 @@ DESIGN RULES:
 2. Flexbox and CSS grid. Never float. Full mobile responsiveness.
 3. Hover effects with transition: all 0.3s ease. Scroll animations via IntersectionObserver.
 4. Google Fonts via <link>. At least 500 lines of code. Semantic HTML.
-5. Images: use https://picsum.photos/WIDTH/HEIGHT as placeholders (these will be replaced by AI images).
+5. Images: use https://placehold.co/WIDTHxHEIGHT/1a1a2e/aaa?text=Placeholder as placeholders.
 6. Hamburger menu for mobile navigation.
 7. html { scroll-behavior: smooth; }
 
@@ -258,19 +258,22 @@ IMPORTANT:
 
       // Smart inject: replaces next available placeholder each call
       const injectNextImage = (html, dataUrl) => {
-        // 1. picsum.photos
+        // 1. placehold.co
+        if (/https?:\/\/placehold\.co\/[^\s"')]+/.test(html))
+          return html.replace(/https?:\/\/placehold\.co\/[^\s"')]+/, dataUrl);
+        // 2. picsum.photos (legacy)
         if (/https?:\/\/picsum\.photos\/[^\s"')]+/.test(html))
           return html.replace(/https?:\/\/picsum\.photos\/[^\s"')]+/, dataUrl);
-        // 2. Other placeholder services
+        // 3. Other placeholder services
         const svcRe = /https?:\/\/(?:via\.placeholder\.com|placehold\.it|placeimg\.com|loremflickr\.com|dummyimage\.com|placeholder\.com)\/[^\s"')]+/;
         if (svcRe.test(html)) return html.replace(svcRe, dataUrl);
-        // 3. Empty src or src="#"
+        // 4. Empty src or src="#"
         if (/(<img\s[^>]*src=["'])["'#]/.test(html))
           return html.replace(/(<img\s[^>]*src=["'])["'#]/, `$1${dataUrl}"`);
-        // 4. CSS background-image empty/none
+        // 5. CSS background-image empty/none
         if (/background-image:\s*url\(['"]?['"]?\)/.test(html))
           return html.replace(/background-image:\s*url\(['"]?['"]?\)/, `background-image: url('${dataUrl}')`);
-        // 5. First <img> with any http src (hero swap)
+        // 6. First <img> with any http src (hero swap)
         if (/<img\s[^>]*src=["']https?:\/\/[^"']+["']/.test(html))
           return html.replace(/(<img\s[^>]*src=["'])https?:\/\/[^"']+/, `$1${dataUrl}`);
         return html;
@@ -432,7 +435,11 @@ router.get('/site/:subdomain', async (req, res) => {
   }
 });
 
-// ── POST /api/guest/claim-code — manual cross-device claim ───────────────
+// ══════════════════════════════════════════════════════════════════
+// POST /api/guest/claim-code — manual cross-device claim
+// FIX: Now imports generatedHtml into user's saved_projects + deployed_sites
+// FIX: Uses 'zapcodes' for claimedVia (valid enum value)
+// ══════════════════════════════════════════════════════════════════
 router.post('/claim-code', auth, async (req, res) => {
   try {
     const { claimCode } = req.body;
@@ -446,20 +453,60 @@ router.post('/claim-code', auth, async (req, res) => {
 
     if (!site) return res.status(404).json({ error: 'Invalid or expired claim code.' });
 
+    // Mark as claimed
     site.status = 'claimed';
     site.claimedBy = req.user._id;
     site.claimedAt = new Date();
-    site.claimedVia = 'zapcodes';
+    site.claimedVia = 'zapcodes'; // Must be 'zapcodes' or 'blendlink' — enum enforced
     await site.save();
+
+    // ── Import HTML into user's account ──
+    const user = await User.findById(req.user._id);
+    const html = site.generatedHtml || '';
+    if (user && html && site.subdomain) {
+      const siteFiles = [{ name: 'index.html', content: html }];
+      const projectId = `proj-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      if (!user.saved_projects) user.saved_projects = [];
+      // Prevent duplicates
+      if (!user.saved_projects.some(p => p.linkedSubdomain === site.subdomain)) {
+        user.saved_projects.push({
+          projectId,
+          name: site.projectName || site.subdomain || 'Guest Build',
+          files: siteFiles,
+          preview: html.slice(0, 50000),
+          template: site.templateKey || 'custom',
+          description: site.description || 'Claimed from guest build',
+          linkedSubdomain: site.subdomain,
+          version: 1,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        });
+      }
+      if (!user.deployed_sites.some(s => s.subdomain === site.subdomain)) {
+        user.deployed_sites.push({
+          subdomain: site.subdomain,
+          title: site.projectName || site.subdomain,
+          files: siteFiles,
+          hasBadge: true,
+          fileSize: html.length,
+          lastUpdated: new Date(),
+        });
+      }
+      user.markModified('saved_projects');
+      user.markModified('deployed_sites');
+      await user.save();
+      console.log(`[GuestClaim] ${user.email} claimed ${site.subdomain} via code (${html.length} chars imported)`);
+    }
 
     res.json({
       success: true,
       subdomain: site.subdomain,
       url: `https://${site.subdomain}.zapcodes.net`,
-      message: 'Site claimed! Now pick your permanent subdomain in your dashboard.',
+      message: 'Site claimed! Your project is now in your dashboard.',
     });
   } catch (err) {
-    res.status(500).json({ error: 'Claim failed' });
+    console.error('[GuestClaim] claim-code error:', err.message);
+    res.status(500).json({ error: 'Claim failed: ' + (err.message || '').slice(0, 100) });
   }
 });
 
