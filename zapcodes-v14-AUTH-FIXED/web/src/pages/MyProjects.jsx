@@ -175,105 +175,136 @@ export default function MyProjects() {
             const olderClones  = clones.filter(c => c.cloneVersion > 1);
             const historyOpen  = expandedHistory[proj.projectId];
 
-            // For Edit/Fix/Redeploy — use Clone 1 if it exists, else root project
-            const editTarget   = clone1?.projectId || proj.projectId;
+            // For Edit/Fix/Redeploy — always use Clone 1 (never the live root)
 
             return (
               <div key={proj.projectId} style={s.card}>
 
-                {/* ── Top: Name + Status ── */}
-                <div style={s.cardTop}>
-                  <div style={s.cardTopLeft}>
-                    <span style={s.cardTitle}>{proj.name}</span>
-                    <span style={{ ...s.versionBadge }}>v{proj.version || 1}</span>
-                    {proj.hasMemory && (
-                      <span title="Has AI memory" style={s.memoryBadge}>🧠</span>
-                    )}
-                  </div>
-                  <div style={{
-                    ...s.statusBadge,
-                    background: isLive ? 'rgba(34,197,94,.1)' : 'rgba(107,114,128,.08)',
-                    color: isLive ? '#22c55e' : '#6b7280',
-                    borderColor: isLive ? 'rgba(34,197,94,.25)' : 'rgba(107,114,128,.15)',
-                  }}>
-                    <span style={{ ...s.statusDot, background: isLive ? '#22c55e' : '#6b7280' }} />
-                    {isLive ? 'Live' : proj.linkedSubdomain ? 'Offline' : 'Draft'}
-                  </div>
-                </div>
-
-                {/* ── URL row ── */}
-                {proj.linkedSubdomain && (
-                  <div style={s.urlRow}>
-                    <a
-                      href={`https://${proj.linkedSubdomain}.zapcodes.net`}
-                      target="_blank"
-                      rel="noreferrer"
-                      style={{ ...s.urlLink, color: isLive ? '#22c55e' : '#6b7280' }}
-                    >
-                      {proj.linkedSubdomain}.zapcodes.net ↗
-                    </a>
-                    {isLive && liveSite?.lastUpdated && (
-                      <span style={s.metaText}>Last deployed {fmt(liveSite.lastUpdated)}</span>
-                    )}
+                {/* ══ LIVE SITE ROW (read-only — Shut Down only) ══ */}
+                {isLive && (
+                  <div style={{ marginBottom: 14, paddingBottom: 14, borderBottom: '1px solid var(--border)' }}>
+                    <div style={s.cardTop}>
+                      <div style={s.cardTopLeft}>
+                        <span style={s.cardTitle}>{proj.name}</span>
+                        <span style={{ ...s.versionBadge }}>v{proj.version || 1}</span>
+                      </div>
+                      <div style={{
+                        ...s.statusBadge,
+                        background: 'rgba(34,197,94,.1)', color: '#22c55e', borderColor: 'rgba(34,197,94,.25)',
+                      }}>
+                        <span style={{ ...s.statusDot, background: '#22c55e' }} />
+                        Live
+                      </div>
+                    </div>
+                    <div style={s.urlRow}>
+                      <a href={`https://${proj.linkedSubdomain}.zapcodes.net`} target="_blank" rel="noreferrer" style={{ ...s.urlLink, color: '#22c55e' }}>
+                        {proj.linkedSubdomain}.zapcodes.net ↗
+                      </a>
+                      {liveSite?.lastUpdated && (
+                        <span style={s.metaText}>Deployed {fmt(liveSite.lastUpdated)}</span>
+                      )}
+                    </div>
+                    <div style={{ ...s.actions, marginTop: 8 }}>
+                      <button
+                        style={s.shutdownBtn}
+                        onClick={() => handleShutdown(proj.linkedSubdomain, proj.projectId)}
+                        disabled={shuttingDown === proj.linkedSubdomain}
+                      >
+                        {shuttingDown === proj.linkedSubdomain ? 'Shutting down...' : '⛔ Shut Down'}
+                      </button>
+                    </div>
                   </div>
                 )}
 
-                {/* ── Meta row ── */}
-                <div style={s.metaRow}>
-                  <span>{proj.fileCount || 0} file{(proj.fileCount || 0) !== 1 ? 's' : ''}</span>
-                  <span style={s.metaDot}>·</span>
-                  <span>{proj.template || 'custom'}</span>
-                  <span style={s.metaDot}>·</span>
-                  <span>Updated {fmt(proj.updatedAt) || 'N/A'}</span>
-                </div>
-
-                {/* ── Action buttons ── */}
-                <div style={s.actions}>
-                  {/* If project has clones (was deployed before) — show Edit/Fix/Deploy */}
-                  {proj.linkedSubdomain && clone1 ? (
-                    <>
-                      <button
-                        style={s.btn('#6366f1')}
-                        onClick={() => navigate(`/build?project=${editTarget}&action=edit`)}
-                      >
+                {/* ══ LATEST CLONE ROW (editable — Edit, Fix, Deploy, Delete) ══ */}
+                {clone1 ? (
+                  <div style={{ marginBottom: proj.linkedSubdomain ? 8 : 0 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+                      <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-primary)' }}>
+                        {isLive ? '✏️ Latest Editable Version' : proj.linkedSubdomain ? '📁 ' + proj.name : '📁 ' + proj.name}
+                      </span>
+                      {!isLive && proj.linkedSubdomain && (
+                        <div style={{ ...s.statusBadge, background: 'rgba(107,114,128,.08)', color: '#6b7280', borderColor: 'rgba(107,114,128,.15)' }}>
+                          <span style={{ ...s.statusDot, background: '#6b7280' }} /> Offline
+                        </div>
+                      )}
+                      {clone1.hasMemory && <span title="Has AI memory" style={s.memoryBadge}>🧠</span>}
+                    </div>
+                    {!isLive && proj.linkedSubdomain && (
+                      <div style={s.urlRow}>
+                        <span style={{ ...s.urlLink, color: '#6b7280' }}>{proj.linkedSubdomain}.zapcodes.net</span>
+                      </div>
+                    )}
+                    <div style={s.metaRow}>
+                      <span>{clone1.fileCount || 0} file{(clone1.fileCount || 0) !== 1 ? 's' : ''}</span>
+                      <span style={s.metaDot}>·</span>
+                      <span>Updated {fmt(clone1.updatedAt || clone1.createdAt) || 'N/A'}</span>
+                    </div>
+                    <div style={s.actions}>
+                      <button style={s.btn('#6366f1')} onClick={() => navigate(`/build?project=${clone1.projectId}&action=edit`)}>
                         ✏️ Edit
                       </button>
-                      <button
-                        style={s.btn('#f59e0b')}
-                        onClick={() => navigate(`/build?project=${editTarget}&action=fix`)}
-                      >
+                      <button style={s.btn('#f59e0b')} onClick={() => navigate(`/build?project=${clone1.projectId}&action=fix`)}>
                         🔧 Fix Bugs
                       </button>
                       <button
                         style={s.btn('#22c55e')}
-                        onClick={() => handleRedeploy(editTarget, proj.linkedSubdomain)}
-                        disabled={redeploying === editTarget}
+                        onClick={() => handleRedeploy(clone1.projectId, proj.linkedSubdomain)}
+                        disabled={redeploying === clone1.projectId}
                       >
-                        {redeploying === editTarget ? 'Deploying...' : '🚀 Deploy'}
+                        {redeploying === clone1.projectId ? 'Deploying...' : '🚀 Deploy'}
                       </button>
-                      {isLive && (
-                        <button
-                          style={s.shutdownBtn}
-                          onClick={() => handleShutdown(proj.linkedSubdomain, proj.projectId)}
-                          disabled={shuttingDown === proj.linkedSubdomain}
-                        >
-                          {shuttingDown === proj.linkedSubdomain ? 'Shutting down...' : '⛔ Shut Down'}
-                        </button>
-                      )}
-                    </>
-                  ) : proj.linkedSubdomain && !clone1 ? (
-                    /* Clones still loading — use root project ID as fallback */
-                    <>
                       <button
-                        style={s.btn('#6366f1')}
-                        onClick={() => navigate(`/build?project=${proj.projectId}&action=edit`)}
+                        style={s.deleteBtn}
+                        onClick={() => handleDeleteProject(proj.projectId, proj.linkedSubdomain)}
+                        disabled={deleting === proj.projectId}
                       >
+                        {deleting === proj.projectId ? '...' : '🗑️ Delete'}
+                      </button>
+                    </div>
+                  </div>
+                ) : !proj.linkedSubdomain ? (
+                  /* ══ DRAFT PROJECT (never deployed) ══ */
+                  <div>
+                    <div style={s.cardTop}>
+                      <div style={s.cardTopLeft}>
+                        <span style={s.cardTitle}>{proj.name}</span>
+                        <span style={s.versionBadge}>Draft</span>
+                      </div>
+                    </div>
+                    <div style={s.metaRow}>
+                      <span>{proj.fileCount || 0} file{(proj.fileCount || 0) !== 1 ? 's' : ''}</span>
+                      <span style={s.metaDot}>·</span>
+                      <span>Updated {fmt(proj.updatedAt) || 'N/A'}</span>
+                    </div>
+                    <div style={s.actions}>
+                      <button style={s.btn('#6366f1')} onClick={() => navigate(`/build?project=${proj.projectId}&action=edit`)}>
                         ✏️ Edit
                       </button>
-                      <button
-                        style={s.btn('#f59e0b')}
-                        onClick={() => navigate(`/build?project=${proj.projectId}&action=fix`)}
-                      >
+                      <button style={s.btn('#8b5cf6')} onClick={() => navigate(`/build?project=${proj.projectId}&action=deploy`)}>
+                        🚀 Deploy
+                      </button>
+                      <button style={s.deleteBtn} onClick={() => handleDeleteProject(proj.projectId)} disabled={deleting === proj.projectId}>
+                        {deleting === proj.projectId ? '...' : '🗑️ Delete'}
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  /* ══ LINKED BUT NO CLONE YET (clones loading or missing) ══ */
+                  <div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+                      <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-primary)' }}>{proj.name}</span>
+                      {!isLive && (
+                        <div style={{ ...s.statusBadge, background: 'rgba(107,114,128,.08)', color: '#6b7280', borderColor: 'rgba(107,114,128,.15)' }}>
+                          <span style={{ ...s.statusDot, background: '#6b7280' }} /> Offline
+                        </div>
+                      )}
+                    </div>
+                    <div style={s.actions}>
+                      <button style={s.btn('#6366f1')} onClick={() => navigate(`/build?project=${proj.projectId}&action=edit`)}>
+                        ✏️ Edit
+                      </button>
+                      <button style={s.btn('#f59e0b')} onClick={() => navigate(`/build?project=${proj.projectId}&action=fix`)}>
                         🔧 Fix Bugs
                       </button>
                       <button
@@ -283,37 +314,14 @@ export default function MyProjects() {
                       >
                         {redeploying === proj.projectId ? 'Deploying...' : '🚀 Deploy'}
                       </button>
-                      {isLive && (
-                        <button
-                          style={s.shutdownBtn}
-                          onClick={() => handleShutdown(proj.linkedSubdomain, proj.projectId)}
-                          disabled={shuttingDown === proj.linkedSubdomain}
-                        >
-                          {shuttingDown === proj.linkedSubdomain ? 'Shutting down...' : '⛔ Shut Down'}
-                        </button>
-                      )}
-                    </>
-                  ) : (
-                    /* Never deployed — first-time deploy */
-                    <button
-                      style={s.btn('#8b5cf6')}
-                      onClick={() => navigate(`/build?project=${proj.projectId}&action=deploy`)}
-                    >
-                      🚀 Deploy
-                    </button>
-                  )}
+                      <button style={s.deleteBtn} onClick={() => handleDeleteProject(proj.projectId, proj.linkedSubdomain)} disabled={deleting === proj.projectId}>
+                        {deleting === proj.projectId ? '...' : '🗑️ Delete'}
+                      </button>
+                    </div>
+                  </div>
+                )}
 
-                  {/* Delete always available, pushed to the right */}
-                  <button
-                    style={s.deleteBtn}
-                    onClick={() => handleDeleteProject(proj.projectId, proj.linkedSubdomain)}
-                    disabled={deleting === proj.projectId}
-                  >
-                    {deleting === proj.projectId ? '...' : '🗑️'}
-                  </button>
-                </div>
-
-                {/* ── Version History (collapsible) ── */}
+                {/* ══ VERSION HISTORY (rollback clones) ══ */}
                 {proj.linkedSubdomain && (
                   <button
                     style={s.historyToggle}
