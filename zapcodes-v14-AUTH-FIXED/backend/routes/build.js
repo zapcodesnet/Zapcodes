@@ -1218,68 +1218,73 @@ router.post('/rollback', auth, async (req, res) => {
 
     const clone = (user.saved_projects || []).find(p => p.projectId === cloneProjectId);
     if (!clone) return res.status(404).json({ error: 'Clone not found' });
+    if (!clone.files?.length || clone.files[0]?.content?.includes('<!-- Clone trimmed')) {
+      return res.status(400).json({ error: 'This rollback version has no content. It may have been trimmed to save space.' });
+    }
 
     const sub = clone.linkedSubdomain;
     if (!sub) return res.status(400).json({ error: 'Clone has no linked subdomain' });
-
-    let site = user.deployed_sites.find(s => s.subdomain === sub);
-
-    // ── FIX: If site was shut down, re-create the deployed_sites entry ──
-    if (!site) {
-      const config = user.getTierConfig();
-      if (user.deployed_sites.length >= config.maxSites) {
-        return res.status(403).json({ error: `Site limit (${config.maxSites})`, upgrade: true });
-      }
-      const taken = await User.findOne({ 'deployed_sites.subdomain': sub, _id: { $ne: user._id } });
-      if (taken) return res.status(409).json({ error: 'Subdomain taken by another user' });
-
-      user.deployed_sites.push({
-        subdomain: sub,
-        title: clone.name || sub,
-        files: [],
-        hasBadge: !config.canRemoveBadge,
-        fileSize: 0,
-      });
-      site = user.deployed_sites.find(s => s.subdomain === sub);
-    }
 
     const rootId = clone.cloneOf || clone.projectId;
     const config = user.getTierConfig();
     const shouldBadge = !config.canRemoveBadge;
 
-    // Shift existing clone versions up
-    (user.saved_projects || []).forEach(p => {
-      if ((p.cloneOf === rootId || p.projectId === rootId) && p.cloneVersion != null) {
-        p.cloneVersion += 1;
+    // ── Step 1: Find or re-create the deployed site ──
+    let site = user.deployed_sites.find(s => s.subdomain === sub);
+    if (!site) {
+      if (user.deployed_sites.length >= config.maxSites) {
+        return res.status(403).json({ error: `Site limit (${config.maxSites})`, upgrade: true });
       }
-    });
+      const taken = await User.findOne({ 'deployed_sites.subdomain': sub, _id: { $ne: user._id } });
+      if (taken) return res.status(409).json({ error: 'Subdomain taken by another user' });
+      user.deployed_sites.push({ subdomain: sub, title: clone.name || sub, files: [], hasBadge: shouldBadge, fileSize: 0 });
+      site = user.deployed_sites.find(s => s.subdomain === sub);
+    }
 
-    // Create new Clone 1 from the rolled-back clone
-    const newClone = createCloneSnapshot(clone, 1);
-    user.saved_projects.push(newClone);
-
-    // Enforce max 5
-    enforceMaxClones(user, rootId);
-
-    // Deploy rolled-back files
-    let deployFiles = clone.files || [];
+    // ── Step 2: Deploy the rollback clone's files to the live site ──
+    let deployFiles = sanitizeFilesForSave(clone.files || []);
     if (shouldBadge) deployFiles = deployFiles.map(f => f.name.endsWith('.html') ? { ...f, content: f.content.replace('</body>', `${BADGE_SCRIPT}</body>`) } : f);
-
     site.files = deployFiles;
     site.title = clone.name || site.title;
     site.lastUpdated = new Date();
     site.hasBadge = shouldBadge;
+    site.fileSize = JSON.stringify(deployFiles).length;
+
+    // ── Step 3: Update the root project with rollback content ──
+    const rootProj = (user.saved_projects || []).find(p => p.projectId === rootId);
+    if (rootProj) {
+      rootProj.files = clone.files.map(f => ({ ...f })); // Deep copy
+      rootProj.updatedAt = new Date();
+      rootProj.version = (rootProj.version || 1) + 1;
+      rootProj.deployedAt = new Date();
+    }
+
+    // ── Step 4: Delete ALL old clones for this project ──
+    user.saved_projects = (user.saved_projects || []).filter(p => {
+      // Keep: root project, non-clones, clones of OTHER projects
+      if (p.projectId === rootId) return true; // keep root
+      if (p.cloneOf === rootId && p.cloneVersion != null) return false; // delete all clones of this project
+      return true; // keep everything else
+    });
+
+    // ── Step 5: Create one fresh clone (latest version) from rollback content ──
+    const newClone = createCloneSnapshot(rootProj || clone, 1);
+    newClone.name = `${clone.name || sub} (Rollback)`;
+    user.saved_projects.push(newClone);
 
     user.markModified('saved_projects');
     user.markModified('deployed_sites');
-    trimUserDocumentSize(user); await user.save();
+    trimUserDocumentSize(user);
+    await user.save();
+
+    console.log(`[Rollback] Rolled back ${sub} to clone ${cloneProjectId} → new live site + fresh clone ${newClone.projectId}`);
 
     res.json({
       success: true,
       url: `https://${sub}.zapcodes.net`,
       subdomain: sub,
       cloneId: newClone.projectId,
-      message: `Rolled back to version from ${clone.createdAt ? new Date(clone.createdAt).toLocaleDateString() : 'previous version'}`,
+      message: `Rolled back successfully! The site is now live and a fresh editable version has been created.`,
     });
   } catch (err) {
     console.error('[Rollback] Error:', err.message, err.stack?.split('\n')[1]);
