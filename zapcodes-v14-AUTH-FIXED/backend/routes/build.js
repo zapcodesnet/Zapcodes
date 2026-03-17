@@ -551,19 +551,37 @@ function trimUserDocumentSize(user) {
 }
 
 router.post('/save-project', auth, async (req, res) => {
-  try {
-    const user = req.user; const { projectId, name, files: rawFiles, preview, template, description, subdomain } = req.body;
+  const doSave = async (attempt = 0) => {
+    // Re-fetch user on retry to get latest version
+    const user = attempt === 0 ? req.user : await User.findById(req.user._id);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+
+    const { projectId, name, files: rawFiles, preview, template, description, subdomain } = req.body;
     if (!rawFiles?.length) return res.status(400).json({ error: 'No files' });
     const files = sanitizeFilesForSave(rawFiles);
     if (projectId) { const idx = (user.saved_projects || []).findIndex(p => p.projectId === projectId); if (idx >= 0) { user.saved_projects[idx].name = name || user.saved_projects[idx].name; user.saved_projects[idx].files = files; user.saved_projects[idx].preview = (preview || '').slice(0, 500000); user.saved_projects[idx].updatedAt = new Date(); user.saved_projects[idx].version = (user.saved_projects[idx].version || 1) + 1; user.saved_projects[idx].description = description || user.saved_projects[idx].description; if (subdomain && !user.saved_projects[idx].linkedSubdomain) user.saved_projects[idx].linkedSubdomain = subdomain; } else return res.status(404).json({ error: 'Not found' }); }
     else { if (!user.saved_projects) user.saved_projects = []; user.saved_projects.push({ projectId: `proj-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, name: name || 'Untitled', files, preview: (preview || '').slice(0, 500000), template: template || 'custom', description: description || '', linkedSubdomain: subdomain || null, version: 1, createdAt: new Date(), updatedAt: new Date() }); }
     trimUserDocumentSize(user);
+    user.markModified('saved_projects');
     await user.save();
     const proj = projectId ? user.saved_projects.find(p => p.projectId === projectId) : user.saved_projects[user.saved_projects.length - 1];
     res.json({ project: { projectId: proj.projectId, name: proj.name, version: proj.version, fileCount: proj.files.length, linkedSubdomain: proj.linkedSubdomain, updatedAt: proj.updatedAt }, message: 'Saved!' });
+  };
+
+  try {
+    await doSave(0);
   } catch (err) {
-    console.error('[SaveProject]', err.message);
-    res.status(500).json({ error: 'Save failed: ' + (err.message || '').slice(0, 100) });
+    // Retry once on version conflict (concurrent auto-save)
+    if (err.name === 'VersionError' || err.message?.includes('No matching document')) {
+      console.log('[SaveProject] Version conflict, retrying with fresh user...');
+      try { await doSave(1); } catch (retryErr) {
+        console.error('[SaveProject] Retry failed:', retryErr.message);
+        res.status(500).json({ error: 'Save failed: ' + (retryErr.message || '').slice(0, 100) });
+      }
+    } else {
+      console.error('[SaveProject]', err.message);
+      res.status(500).json({ error: 'Save failed: ' + (err.message || '').slice(0, 100) });
+    }
   }
 });
 
