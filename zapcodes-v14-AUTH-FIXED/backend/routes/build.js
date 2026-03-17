@@ -139,7 +139,7 @@ DESIGN RULES:
 7. Scroll animations: ALL elements MUST be visible by default (opacity: 1). Only add subtle entrance animations AFTER the element is already visible. Never set initial opacity to 0. Never hide content behind JavaScript animations.
 8. html { scroll-behavior: smooth; }
 9. Hamburger menu for mobile.
-10. IMAGES: Do NOT add images unless the user specifically asks for them. If the user requests images, use https://picsum.photos/WIDTH/HEIGHT as placeholder. If the user did NOT mention images, use CSS gradients, SVG icons, or emoji instead. Never add random stock photos the user didn't ask for.
+10. IMAGES: Do NOT add images unless the user specifically asks for them. If the user requests images, use https://placehold.co/WIDTHxHEIGHT/1a1a2e/aaa?text=Placeholder as placeholder (e.g. https://placehold.co/800x400/1a1a2e/aaa?text=Hero+Image). If the user did NOT mention images, use CSS gradients, SVG icons, or emoji instead. Never add random stock photos the user didn't ask for. NEVER change, replace, or remove existing images on the site unless the user explicitly asks.
 11. At least 500 lines of code with real visible content in every section.
 12. Semantic HTML: header, nav, main, section, article, footer. Every section needs min-height: 200px and visible text.
 13. ZERO TOLERANCE FOR BLANK PAGES: If your CSS has opacity: 0, transform: translateY, visibility: hidden, or display: none on ANY content section — the site is broken. All content MUST be visible without JavaScript. JavaScript animations should only ENHANCE already-visible content.
@@ -459,7 +459,7 @@ function sanitizeFilesForSave(files) {
     const matches = html.match(b64Regex);
     if (matches) {
       matches.forEach((match, i) => {
-        html = html.replace(match, `https://picsum.photos/800/400?t=${Date.now()}-${i}`);
+        html = html.replace(match, `https://placehold.co/800x400/1a1a2e/666?text=Image+removed+to+save+space`);
       });
       console.log(`[SaveGuard] Stripped ${matches.length} base64 image(s) from ${f.name}`);
     }
@@ -1131,12 +1131,22 @@ router.post('/redeploy-from-project', auth, async (req, res) => {
     const user = await User.findById(req.user._id);
     if (!user) return res.status(404).json({ error: 'User not found' });
 
-    const { projectId } = req.body;
+    const { projectId, currentFiles, name } = req.body;
     if (!projectId) return res.status(400).json({ error: 'Missing projectId' });
 
     const proj = (user.saved_projects || []).find(p => p.projectId === projectId);
     if (!proj) return res.status(404).json({ error: 'Project not found' });
     if (!proj.linkedSubdomain) return res.status(400).json({ error: 'Project not linked to a subdomain' });
+
+    // Use browser files if provided (most up-to-date), otherwise fall back to MongoDB
+    const sourceFiles = (currentFiles && currentFiles.length > 0) ? currentFiles : proj.files;
+    if (!sourceFiles || !sourceFiles.length) return res.status(400).json({ error: 'No files to deploy' });
+
+    // Update project in MongoDB with current files
+    if (currentFiles && currentFiles.length > 0) {
+      proj.files = sanitizeFilesForSave(currentFiles);
+      if (name) proj.name = name;
+    }
 
     const sub = proj.linkedSubdomain;
     let site = user.deployed_sites.find(s => s.subdomain === sub);
@@ -1178,15 +1188,16 @@ router.post('/redeploy-from-project', auth, async (req, res) => {
     // Enforce max 2 clones (delete oldest, keep 2 newest for rollback)
     enforceMaxClones(user, rootId);
 
-    // Deploy files
-    let deployFiles = sanitizeFilesForSave(proj.files || []);
+    // Deploy: use sourceFiles for live site (preserves images for visitors)
+    // Save sanitized version to project storage (saves MongoDB space)
+    let deployFiles = sourceFiles.map(f => ({ ...f })); // Deep copy
     if (shouldBadge) deployFiles = deployFiles.map(f => f.name.endsWith('.html') ? { ...f, content: f.content.replace('</body>', `${BADGE_SCRIPT}</body>`) } : f);
 
-    site.files = deployFiles;
+    site.files = sanitizeFilesForSave(deployFiles); // Strip base64 for MongoDB storage
     site.title = proj.name || site.title;
     site.lastUpdated = new Date();
     site.hasBadge = shouldBadge;
-    site.fileSize = JSON.stringify(deployFiles).length;
+    site.fileSize = JSON.stringify(site.files).length;
 
     proj.updatedAt = new Date();
     proj.version = (proj.version || 1) + 1;
