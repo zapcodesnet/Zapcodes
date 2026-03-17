@@ -45,7 +45,7 @@ function lightweightUser(user) {
 }
 
 // ── Helper: attempt to claim a guest site by fingerprint hash ─────────────
-// Also copies the site files into the user's saved_projects and deployed_sites
+// Also copies the site HTML into the user's saved_projects and deployed_sites
 async function attemptGuestClaim(userId, ip, deviceId) {
   try {
     if (!deviceId && !ip) return null;
@@ -56,40 +56,43 @@ async function attemptGuestClaim(userId, ip, deviceId) {
     site.status = 'claimed';
     site.claimedBy = userId;
     site.claimedAt = new Date();
-    site.claimedVia = 'zapcodes';
+    site.claimedVia = 'zapcodes'; // Must match enum: 'zapcodes' | 'blendlink' | null
     await site.save();
 
-    // ── Import files into user's account ──
+    // ── Import HTML into user's account ──
+    // Guest sites store HTML in 'generatedHtml', not 'files'
+    const html = site.generatedHtml || '';
     const user = await User.findById(userId);
-    if (user && site.files?.length) {
+    if (user && html && site.subdomain) {
+      const siteFiles = [{ name: 'index.html', content: html }];
       const projectId = `proj-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-      // Add to saved_projects
       if (!user.saved_projects) user.saved_projects = [];
       user.saved_projects.push({
         projectId,
-        name: site.title || site.subdomain || 'Guest Build',
-        files: site.files,
-        preview: '',
-        template: 'custom',
-        description: `Claimed from guest build (${site.subdomain}.zapcodes.net)`,
+        name: site.projectName || site.subdomain || 'Guest Build',
+        files: siteFiles,
+        preview: html.slice(0, 50000),
+        template: site.templateKey || 'custom',
+        description: site.description || `Claimed from guest build (${site.subdomain}.zapcodes.net)`,
         linkedSubdomain: site.subdomain,
         version: 1,
         createdAt: new Date(),
         updatedAt: new Date(),
       });
-      // Add to deployed_sites so it stays live
-      user.deployed_sites.push({
-        subdomain: site.subdomain,
-        title: site.title || site.subdomain,
-        files: site.files,
-        hasBadge: true,
-        fileSize: JSON.stringify(site.files).length,
-        lastUpdated: new Date(),
-      });
+      if (!user.deployed_sites.some(s => s.subdomain === site.subdomain)) {
+        user.deployed_sites.push({
+          subdomain: site.subdomain,
+          title: site.projectName || site.subdomain,
+          files: siteFiles,
+          hasBadge: true,
+          fileSize: html.length,
+          lastUpdated: new Date(),
+        });
+      }
       user.markModified('saved_projects');
       user.markModified('deployed_sites');
       await user.save();
-      console.log(`[GuestClaim] Site ${site.subdomain} claimed + imported for user ${userId} (${site.files.length} files)`);
+      console.log(`[GuestClaim] Site ${site.subdomain} claimed + imported for user ${userId} (${html.length} chars)`);
     }
 
     return { subdomain: site.subdomain, url: `https://${site.subdomain}.zapcodes.net`, claimCode: site.claimCode };
