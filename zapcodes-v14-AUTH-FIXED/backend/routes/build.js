@@ -4,6 +4,105 @@ const { auth } = require('../middleware/auth');
 const { callAI, callAIWithImage, parseFilesFromResponse, generateProjectMultiStep, verifyAndFix, generateImageImagen4, editPhotoVibeEditor, generateVideoVeo, summarizeProjectMessages, checkPromptClarity } = require('../services/ai');
 const User = require('../models/User');
 const axios = require('axios');
+const fs = require('fs');
+const path = require('path');
+
+// ══════════════════════════════════════════════════════════════════
+// PREBUILT TEMPLATE AUTO-LOADER
+// Reads all .html files from /backend/prebuilt-templates/ at startup.
+// To add new templates: just drop a .html file in that folder.
+// Naming: NN-keyword-keyword.html (e.g. 11-candy-crush-game.html)
+// ══════════════════════════════════════════════════════════════════
+const TEMPLATE_DIR = path.join(__dirname, '..', 'prebuilt-templates');
+const prebuiltTemplates = [];
+
+function loadPrebuiltTemplates() {
+  try {
+    if (!fs.existsSync(TEMPLATE_DIR)) { console.log('[Templates] No prebuilt-templates folder found'); return; }
+    const files = fs.readdirSync(TEMPLATE_DIR).filter(f => f.endsWith('.html')).sort();
+    files.forEach(filename => {
+      const html = fs.readFileSync(path.join(TEMPLATE_DIR, filename), 'utf-8');
+      // Extract keywords from filename: "11-candy-crush-game.html" → ["candy", "crush", "game"]
+      const keywords = filename.replace(/^\d+-/, '').replace('.html', '').split('-').filter(Boolean);
+      // Extract title from <title> tag if present
+      const titleMatch = html.match(/<title>([^<]+)<\/title>/i);
+      const title = titleMatch ? titleMatch[1].trim() : keywords.join(' ');
+      prebuiltTemplates.push({ filename, keywords, title, html, size: html.length });
+    });
+    console.log(`[Templates] Loaded ${prebuiltTemplates.length} prebuilt template(s): ${prebuiltTemplates.map(t => t.filename).join(', ')}`);
+  } catch (err) {
+    console.warn('[Templates] Failed to load:', err.message);
+  }
+}
+loadPrebuiltTemplates();
+
+// ── Template keyword matching ──
+// Scores each template against the user's prompt and returns the best match (or null)
+const TEMPLATE_KEYWORD_MAP = {
+  // Websites
+  'restaurant':   ['restaurant','food','menu','dining','cafe','bistro','pizza','sushi','bar','grill','bakery','coffee','diner','kitchen','chef','catering'],
+  'ecommerce':    ['ecommerce','store','shop','product','buy','sell','cart','checkout','marketplace','retail','merchandise','clothing','fashion'],
+  'portfolio':    ['portfolio','agency','freelance','creative','designer','photographer','artist','resume','cv','personal site','showcase'],
+  'saas':         ['saas','startup','software','platform','pricing','subscription','app landing','feature','testimonial','waitlist','beta'],
+  'real-estate':  ['real estate','property','house','apartment','listing','rent','mortgage','realtor','home','condo','realty','broker'],
+  'fitness':      ['fitness','gym','workout','exercise','training','yoga','crossfit','health','muscle','personal trainer','sport'],
+  'medical':      ['medical','dental','doctor','clinic','hospital','health','patient','appointment','dentist','therapy','wellness','nurse'],
+  'salon':        ['salon','beauty','hair','spa','nail','makeup','barber','skincare','facial','massage','cosmetic','stylist'],
+  'construction': ['construction','building','contractor','architecture','renovation','plumbing','electric','roofing','engineering','home improvement'],
+  'blog':         ['blog','article','post','write','journal','news','magazine','content','author','editorial','story','publish'],
+  // Games
+  'candy-crush':  ['candy','crush','match 3','match-3','puzzle game','gem','jewel','swap','tile','match three','bejeweled','sweet'],
+  // Future templates will auto-match via filename keywords too
+};
+
+function matchPrebuiltTemplate(prompt) {
+  if (!prompt || prebuiltTemplates.length === 0) return null;
+  const promptLower = prompt.toLowerCase();
+  let bestMatch = null;
+  let bestScore = 0;
+
+  for (const tmpl of prebuiltTemplates) {
+    let score = 0;
+
+    // Score from keyword map
+    for (const [category, keywords] of Object.entries(TEMPLATE_KEYWORD_MAP)) {
+      // Check if this template's filename contains the category
+      if (tmpl.filename.toLowerCase().includes(category.replace('-', ''))) {
+        for (const kw of keywords) {
+          if (promptLower.includes(kw)) score += kw.includes(' ') ? 3 : 2; // Multi-word matches score higher
+        }
+      }
+    }
+
+    // Score from filename keywords (catches new templates without manual keyword map)
+    for (const kw of tmpl.keywords) {
+      if (promptLower.includes(kw)) score += 2;
+    }
+
+    // Bonus: exact title match
+    if (promptLower.includes(tmpl.title.toLowerCase())) score += 5;
+
+    if (score > bestScore) {
+      bestScore = score;
+      bestMatch = tmpl;
+    }
+  }
+
+  // Minimum score threshold to avoid false matches
+  return bestScore >= 3 ? bestMatch : null;
+}
+
+// ── API endpoint to list available templates ──
+router.get('/prebuilt-templates', (req, res) => {
+  res.json({
+    templates: prebuiltTemplates.map(t => ({
+      filename: t.filename,
+      title: t.title,
+      keywords: t.keywords,
+      size: t.size,
+    }))
+  });
+});
 
 // ══════════ BL COIN COSTS ══════════
 const { BL_COIN_COSTS } = require('../config/blCoins');
@@ -348,11 +447,30 @@ router.post('/generate-with-progress', auth, async (req, res) => {
           files = result ? parseFilesFromResponse(result) : [];
         }
       } else {
-        sendProgress('generating_html', `Generating website using ${modelLabel}...`);
-        systemPrompt = (customSystemPrompt?.trim().length > 50) ? customSystemPrompt : GEN_PROMPT;
-        userPrompt = `Create a complete, production-ready website: ${prompt}\n\nProject: ${projectName || 'My Website'}\nColors: ${colorScheme || 'modern dark theme'}\n${features ? `Features: ${features.join(', ')}` : ''}\n${visionImages.length > 0 ? 'REFERENCE IMAGES ATTACHED: Study them carefully. Recreate the design, layout, colors, and structure as closely as possible.' : ''}\n\nIMPORTANT: Self-contained index.html with ALL CSS in <style> and ALL JS in <script>.`;
-        const result = await callAISmart(systemPrompt, userPrompt, model, undefined, visionImages, aiOpts);
-        files = result ? parseFilesFromResponse(result) : [];
+        // ── Check for prebuilt template match BEFORE generating from scratch ──
+        const matchedTemplate = matchPrebuiltTemplate(prompt || description || projectName || '');
+        
+        if (matchedTemplate) {
+          // ── PREBUILT TEMPLATE PATH: Use matched template as base, AI customizes it ──
+          sendProgress('generating_html', `Found "${matchedTemplate.title}" template — customizing with ${modelLabel}...`);
+          console.log(`[Templates] Matched "${matchedTemplate.filename}" (prompt: "${(prompt || '').slice(0, 60)}")`);
+          systemPrompt = (customSystemPrompt?.trim().length > 50) ? customSystemPrompt : GEN_PROMPT;
+          userPrompt = `You have a PREBUILT HTML template below. The user wants to build: "${prompt}"\n\nYour job:\n1. Use this template as a STARTING BASE — keep its structure, animations, and functionality\n2. CUSTOMIZE it based on the user's specific request (change text, colors, branding, features as needed)\n3. Keep ALL working JavaScript functionality intact\n4. Keep ALL CSS animations and transitions\n5. Update text content, colors, and branding to match what the user described\n6. If the user's request is very different from the template, still use the template's layout/structure as inspiration\n\nProject name: ${projectName || 'My Project'}\nColors: ${colorScheme || 'keep template colors or modern dark theme'}\n${features ? `Extra features: ${features.join(', ')}` : ''}\n\nIMPORTANT: Return a COMPLETE self-contained index.html. Do NOT strip any working JS or CSS.\n\n<prebuilt_template>\n${matchedTemplate.html}\n</prebuilt_template>`;
+          const result = await callAISmart(systemPrompt, userPrompt, model, undefined, visionImages, aiOpts);
+          files = result ? parseFilesFromResponse(result) : [];
+          // If AI failed to customize, use template as-is
+          if (!files?.length) {
+            sendProgress('generating', 'Using template directly...');
+            files = [{ name: 'index.html', content: matchedTemplate.html }];
+          }
+        } else {
+          // ── FROM SCRATCH PATH: No matching template, AI generates everything ──
+          sendProgress('generating_html', `Generating website using ${modelLabel}...`);
+          systemPrompt = (customSystemPrompt?.trim().length > 50) ? customSystemPrompt : GEN_PROMPT;
+          userPrompt = `Create a complete, production-ready website: ${prompt}\n\nProject: ${projectName || 'My Website'}\nColors: ${colorScheme || 'modern dark theme'}\n${features ? `Features: ${features.join(', ')}` : ''}\n${visionImages.length > 0 ? 'REFERENCE IMAGES ATTACHED: Study them carefully. Recreate the design, layout, colors, and structure as closely as possible.' : ''}\n\nIMPORTANT: Self-contained index.html with ALL CSS in <style> and ALL JS in <script>.`;
+          const result = await callAISmart(systemPrompt, userPrompt, model, undefined, visionImages, aiOpts);
+          files = result ? parseFilesFromResponse(result) : [];
+        }
       }
     }
     if (aborted || !connectionAlive) {
@@ -851,7 +969,7 @@ router.delete('/site/:subdomain', auth, async (req, res) => {
   }
 });
 
-router.get('/templates', (req, res) => res.json({ templates: [{ id: 'custom', name: 'Custom (AI Chat)', icon: '💬', desc: 'Describe anything' }, { id: 'portfolio', name: 'Portfolio', icon: '👤', desc: 'Personal portfolio' }, { id: 'landing', name: 'Landing Page', icon: '🚀', desc: 'Product landing' }, { id: 'blog', name: 'Blog', icon: '📝', desc: 'Blog template' }, { id: 'ecommerce', name: 'E-Commerce', icon: '🛒', desc: 'Online store' }, { id: 'dashboard', name: 'Dashboard', icon: '📊', desc: 'Admin dashboard' }, { id: 'webapp', name: 'Full-Stack App', icon: '⚡', desc: 'Frontend + backend' }, { id: 'saas', name: 'SaaS', icon: '💎', desc: 'SaaS with auth' }, { id: 'mobile', name: 'Mobile App', icon: '📱', desc: 'React Native' }] }));
+router.get('/templates', (req, res) => res.json({ templates: [{ id: 'custom', name: 'Custom (AI Chat)', icon: '💬', desc: 'Describe anything' }, { id: 'portfolio', name: 'Portfolio', icon: '👤', desc: 'Personal portfolio' }, { id: 'landing', name: 'Landing Page', icon: '🚀', desc: 'Product landing' }, { id: 'blog', name: 'Blog', icon: '📝', desc: 'Blog template' }, { id: 'ecommerce', name: 'E-Commerce', icon: '🛒', desc: 'Online store' }, { id: 'dashboard', name: 'Dashboard', icon: '📊', desc: 'Admin dashboard' }, { id: 'webapp', name: 'Full-Stack App', icon: '⚡', desc: 'Frontend + backend' }, { id: 'saas', name: 'SaaS', icon: '💎', desc: 'SaaS with auth' }, { id: 'mobile', name: 'Mobile App', icon: '📱', desc: 'React Native' }, { id: 'game', name: 'Mobile Game', icon: '🎮', desc: 'PWA game' }] }));
 
 router.get('/site-content/:subdomain', async (req, res) => { try { const sub = req.params.subdomain.toLowerCase().trim(); const user = await User.findOne({ 'deployed_sites.subdomain': sub }); if (!user) return res.status(404).json({ error: 'Not found' }); const site = user.deployed_sites.find(s => s.subdomain === sub); if (!site?.files?.length) return res.status(404).json({ error: 'No content' }); const indexFile = site.files.find(f => f.name === 'index.html' || f.name.endsWith('.html')); if (req.query.raw && indexFile) { res.setHeader('Content-Type', 'text/html'); return res.send(indexFile.content); } res.json({ subdomain: sub, title: site.title, files: site.files, hasBadge: site.hasBadge }); } catch { res.status(500).json({ error: 'Failed' }); } });
 
