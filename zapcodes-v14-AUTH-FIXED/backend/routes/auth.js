@@ -45,9 +45,10 @@ function lightweightUser(user) {
 }
 
 // ── Helper: attempt to claim a guest site by fingerprint hash ─────────────
+// Also copies the site files into the user's saved_projects and deployed_sites
 async function attemptGuestClaim(userId, ip, deviceId) {
   try {
-    if (!deviceId || !ip) return null;
+    if (!deviceId && !ip) return null;
     const GuestSite = require('../models/GuestSite');
     const hash = crypto.createHash('sha256').update(`${ip}||${deviceId}`).digest('hex');
     const site = await GuestSite.findActiveByHash(hash);
@@ -57,7 +58,40 @@ async function attemptGuestClaim(userId, ip, deviceId) {
     site.claimedAt = new Date();
     site.claimedVia = 'zapcodes';
     await site.save();
-    console.log(`[GuestClaim] Site ${site.subdomain} auto-claimed by user ${userId}`);
+
+    // ── Import files into user's account ──
+    const user = await User.findById(userId);
+    if (user && site.files?.length) {
+      const projectId = `proj-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      // Add to saved_projects
+      if (!user.saved_projects) user.saved_projects = [];
+      user.saved_projects.push({
+        projectId,
+        name: site.title || site.subdomain || 'Guest Build',
+        files: site.files,
+        preview: '',
+        template: 'custom',
+        description: `Claimed from guest build (${site.subdomain}.zapcodes.net)`,
+        linkedSubdomain: site.subdomain,
+        version: 1,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      });
+      // Add to deployed_sites so it stays live
+      user.deployed_sites.push({
+        subdomain: site.subdomain,
+        title: site.title || site.subdomain,
+        files: site.files,
+        hasBadge: true,
+        fileSize: JSON.stringify(site.files).length,
+        lastUpdated: new Date(),
+      });
+      user.markModified('saved_projects');
+      user.markModified('deployed_sites');
+      await user.save();
+      console.log(`[GuestClaim] Site ${site.subdomain} claimed + imported for user ${userId} (${site.files.length} files)`);
+    }
+
     return { subdomain: site.subdomain, url: `https://${site.subdomain}.zapcodes.net`, claimCode: site.claimCode };
   } catch (err) {
     console.warn('[GuestClaim] Auto-claim failed (non-fatal):', err.message);
