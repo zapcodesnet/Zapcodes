@@ -874,6 +874,107 @@ router.post('/clone-analyze', auth, async (req, res) => { try { let content = re
 
 router.post('/clone-rebuild', auth, async (req, res) => { try { const user = req.user; const model = getEffectiveModel(user, req.body.model, true) || 'gemini-2.5-flash'; const cost = BL_COSTS.generation[model] || 5000; if (user.role !== 'super-admin' && user.bl_coins < cost) return res.status(402).json({ error: 'Insufficient' }); user.spendCoins(cost, 'generation', `Clone (${getModelDisplayName(model)})`, model); user.incrementMonthlyUsage(model, 'generation'); if (user.getTierConfig().trialModels?.includes(model)) user.incrementTrial(model); await user.save(); const result = await callAI(GEN_PROMPT, `Rebuild:\n${JSON.stringify(req.body.analysis)}\n\nMods: ${req.body.modifications || 'Keep faithful'}`, model); let files = result ? parseFilesFromResponse(result) : []; if (!files.length) { user.creditCoins(cost, 'generation', 'Refund'); user.decrementMonthlyUsage(model, 'generation'); await user.save(); return res.status(500).json({ error: 'Failed. Refunded.' }); } res.json({ files, preview: generatePreviewHTML(files), model, blSpent: cost, balanceRemaining: user.bl_coins, fileCount: files.length }); } catch { res.status(500).json({ error: 'Clone failed' }); } });
 
+// ══════════════════════════════════════════════════════════════════
+// CLAIM GUEST SITE BY CODE — manual entry for users who lost auto-claim
+// Super admin can claim any code for testing
+// ══════════════════════════════════════════════════════════════════
+router.post('/claim-guest-site', auth, async (req, res) => {
+  try {
+    const user = await User.findById(req.user._id);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    const { claimCode } = req.body;
+    if (!claimCode?.trim()) return res.status(400).json({ error: 'Claim code required' });
+
+    let GuestSite;
+    try { GuestSite = require('../models/GuestSite'); } catch { return res.status(500).json({ error: 'Guest site system not available' }); }
+
+    const site = await GuestSite.findOne({
+      claimCode: claimCode.trim().toUpperCase(),
+      status: { $in: ['active', 'preview'] }, // Not already claimed
+    });
+
+    if (!site) {
+      // Super admin can also claim already-claimed sites for testing
+      if (user.role === 'super-admin') {
+        const anySite = await GuestSite.findOne({ claimCode: claimCode.trim().toUpperCase() });
+        if (anySite) {
+          // Re-claim for testing
+          anySite.status = 'claimed';
+          anySite.claimedBy = user._id;
+          anySite.claimedAt = new Date();
+          await anySite.save();
+          // Import into account
+          if (anySite.files?.length) {
+            const projectId = `proj-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+            if (!user.saved_projects) user.saved_projects = [];
+            user.saved_projects.push({
+              projectId, name: anySite.title || anySite.subdomain || 'Guest Build',
+              files: anySite.files, preview: '', template: 'custom',
+              description: `Claimed from guest build (code: ${claimCode})`,
+              linkedSubdomain: anySite.subdomain, version: 1,
+              createdAt: new Date(), updatedAt: new Date(),
+            });
+            // Check if site already exists in deployed_sites
+            if (!user.deployed_sites.some(s => s.subdomain === anySite.subdomain)) {
+              user.deployed_sites.push({
+                subdomain: anySite.subdomain, title: anySite.title || anySite.subdomain,
+                files: anySite.files, hasBadge: true,
+                fileSize: JSON.stringify(anySite.files).length, lastUpdated: new Date(),
+              });
+            }
+            user.markModified('saved_projects');
+            user.markModified('deployed_sites');
+            await user.save();
+          }
+          return res.json({ success: true, subdomain: anySite.subdomain, url: `https://${anySite.subdomain}.zapcodes.net`, message: `Admin re-claimed: ${anySite.subdomain}` });
+        }
+      }
+      return res.status(404).json({ error: 'Invalid or expired claim code. The code may have already been claimed or expired.' });
+    }
+
+    // Check if already claimed by someone else
+    if (site.claimedBy && site.claimedBy.toString() !== user._id.toString() && user.role !== 'super-admin') {
+      return res.status(409).json({ error: 'This site was already claimed by another user.' });
+    }
+
+    // Claim it
+    site.status = 'claimed';
+    site.claimedBy = user._id;
+    site.claimedAt = new Date();
+    site.claimedVia = 'code';
+    await site.save();
+
+    // Import files into user's account
+    if (site.files?.length) {
+      const projectId = `proj-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      if (!user.saved_projects) user.saved_projects = [];
+      user.saved_projects.push({
+        projectId, name: site.title || site.subdomain || 'Guest Build',
+        files: site.files, preview: '', template: 'custom',
+        description: `Claimed from guest build (code: ${claimCode})`,
+        linkedSubdomain: site.subdomain, version: 1,
+        createdAt: new Date(), updatedAt: new Date(),
+      });
+      if (!user.deployed_sites.some(s => s.subdomain === site.subdomain)) {
+        user.deployed_sites.push({
+          subdomain: site.subdomain, title: site.title || site.subdomain,
+          files: site.files, hasBadge: true,
+          fileSize: JSON.stringify(site.files).length, lastUpdated: new Date(),
+        });
+      }
+      user.markModified('saved_projects');
+      user.markModified('deployed_sites');
+      await user.save();
+    }
+
+    console.log(`[Claim] User ${user.email} claimed ${site.subdomain} via code ${claimCode}`);
+    res.json({ success: true, subdomain: site.subdomain, url: `https://${site.subdomain}.zapcodes.net`, message: `Site claimed! Visit My Projects to edit.` });
+  } catch (err) {
+    console.error('[Claim] Error:', err.message);
+    res.status(500).json({ error: 'Claim failed' });
+  }
+});
+
 router.get('/sites', auth, (req, res) => { const sites = (req.user.deployed_sites || []).map(s => { const lp = (req.user.saved_projects || []).find(p => p.linkedSubdomain === s.subdomain); return { ...(s.toObject ? s.toObject() : s), linkedProjectId: lp?.projectId || null }; }); res.json({ sites }); });
 
 router.post('/site/shutdown', auth, async (req, res) => {
