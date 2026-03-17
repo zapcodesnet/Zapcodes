@@ -389,31 +389,38 @@ export default function Build() {
         requestBody.prompt = requestBody.prompt + '\n\n[USER PHOTO: The user uploaded their own photo. Create an <img> tag with EXACTLY: id="user-uploaded-photo" src="USER_PHOTO_PLACEHOLDER". If the user specified WHERE to place it and HOW to style it, follow those instructions exactly. If the user did NOT specify where to place it, you MUST ask: "I see you uploaded a photo! Where would you like me to place it on your site? For example: hero section, about section, gallery, background, etc. Also let me know the size you want (full-width, small thumbnail, medium, etc.)". Do NOT guess — ask first if no placement instructions given. Do NOT delete any existing images unless user specifically asks. The placeholder will be replaced with the actual photo after generation.]';
       }
 
-      // ── AI-generated images: tell AI to use placeholders we replace after build ──
-      if (imgResults.length > 0 && editFiles?.length > 0) {
+      // ── Only inject media instructions when user's prompt REFERENCES the media ──
+      const promptLower = (prompt || '').toLowerCase();
+      const userMentionsImage = /image|photo|picture|generated|banner|placeholder|insert.*img|place.*img|add.*img|above|below|hero.*img|gallery|logo/.test(promptLower);
+      const userMentionsVideo = /video|youtube|vimeo|tiktok|embed|clip|play|stream|url.*video|video.*url/.test(promptLower);
+
+      // AI-generated images: only inject if user mentions images in their prompt
+      if (imgResults.length > 0 && userMentionsImage) {
         const placeholders = imgResults.map((_, i) => `AI_IMAGE_PLACEHOLDER_${i + 1}`);
-        requestBody.prompt = requestBody.prompt + `\n\n[AI GENERATED IMAGES: The user has ${imgResults.length} AI-generated image(s) ready. Use these EXACT placeholder src values — they will be replaced with the real images after generation:\n${placeholders.map((p, i) => `  Image ${i + 1}: src="${p}"`).join('\n')}\nIf the user specified WHERE to place the image(s), create <img> tags with the placeholder src values at those locations. Style them per user instructions.\nIf the user did NOT specify where, ask: "Where would you like me to place your AI-generated image(s)?"\nDo NOT use any other src for these images. Do NOT use generated-image.png or any made-up filenames.]`;
-      } else if (imgResults.length > 0) {
-        // New site build — also use placeholders
-        const placeholders = imgResults.map((_, i) => `AI_IMAGE_PLACEHOLDER_${i + 1}`);
-        requestBody.prompt = requestBody.prompt + `\n\n[AI GENERATED IMAGES: Include these image placeholders in the site. Use these EXACT src values:\n${placeholders.map((p, i) => `  Image ${i + 1}: src="${p}"`).join('\n')}\nPlace them where appropriate for the site design. They will be replaced with the real images after generation.]`;
+        if (editFiles?.length > 0) {
+          requestBody.prompt = requestBody.prompt + `\n\n[AI GENERATED IMAGES: The user has ${imgResults.length} AI-generated image(s) ready. Use these EXACT placeholder src values — they will be replaced with the real images after generation:\n${placeholders.map((p, i) => `  Image ${i + 1}: src="${p}"`).join('\n')}\nIf the user specified WHERE to place the image(s), create <img> tags with the placeholder src values at those locations. Style them per user instructions.\nIf the user did NOT specify where, ask: "Where would you like me to place your AI-generated image(s)?"\nDo NOT use any other src for these images.]`;
+        } else {
+          requestBody.prompt = requestBody.prompt + `\n\n[AI GENERATED IMAGES: Include these image placeholders in the site. Use these EXACT src values:\n${placeholders.map((p, i) => `  Image ${i + 1}: src="${p}"`).join('\n')}\nPlace them where appropriate for the site design. They will be replaced with the real images after generation.]`;
+        }
       }
 
-      // ── AI-generated video: tell AI to ask about placement ──
-      if (videoResult?.publicUrl && editFiles?.length > 0) {
-        requestBody.prompt = requestBody.prompt + `\n\n[AI GENERATED VIDEO: The user has an AI-generated video ready (URL: ${videoResult.publicUrl}). The embed code is: <video autoplay loop muted playsinline style="width:100%;max-height:500px;object-fit:cover;display:block;" src="${videoResult.publicUrl}"></video>. If the user specified WHERE to place it, insert the video there. If the user did NOT specify where, you MUST ask: "I have your AI-generated video ready! Where would you like me to place it? For example: hero background, about section, gallery, etc." Do NOT guess placement — ask first if no instructions given.]`;
+      // AI-generated video: only inject if user mentions video in their prompt
+      if (videoResult?.publicUrl && userMentionsVideo) {
+        requestBody.prompt = requestBody.prompt + `\n\n[AI GENERATED VIDEO: The user has an AI-generated video ready (URL: ${videoResult.publicUrl}). The embed code is: <video autoplay loop muted playsinline style="width:100%;max-height:500px;object-fit:cover;display:block;" src="${videoResult.publicUrl}"></video>. If the user specified WHERE to place it, insert the video there. If the user did NOT specify where, you MUST ask: "I have your AI-generated video ready! Where would you like me to place it?" Do NOT guess placement — ask first if no instructions given.]`;
       }
 
-      // ── Video URL: detect from state or prompt text (YouTube, Facebook, Vimeo, TikTok, etc.) ──
-      const videoFromState = youtubeUrl.trim() ? detectVideoPlatform(youtubeUrl) : null;
-      const urlInPrompt = requestBody.prompt.match(/https?:\/\/[^\s"'<>]+/g);
-      const videoFromPrompt = urlInPrompt ? urlInPrompt.map(u => detectVideoPlatform(u)).find(Boolean) : null;
-      const detectedVideo = videoFromState || videoFromPrompt;
-      if (detectedVideo) {
-        const sourceUrl = youtubeUrl.trim() || urlInPrompt?.find(u => detectVideoPlatform(u)) || '';
-        const embedHtml = getVideoEmbedHtml(sourceUrl);
-        if (embedHtml) {
-          requestBody.prompt = requestBody.prompt + `\n\n[MANDATORY VIDEO EMBED — DO NOT CHANGE THE URL]\nYou MUST insert this EXACT HTML code into the site. Do NOT use any other video URL. Do NOT substitute with a different video. Do NOT generate your own iframe. Copy and paste this EXACTLY:\n\n${embedHtml}\n\nRULES:\n1. Use the EXACT code above — do not modify the src URL\n2. Place it where the user described (or in the hero section if not specified)\n3. Do NOT add any other YouTube/video iframes\n4. Do NOT remove this embed or replace it with a different video\n5. If the user did NOT specify placement, ask: "Where would you like me to place this ${detectedVideo.platform} video?"`;
+      // Video URL embed: only inject if user mentions video/url in their prompt
+      if (userMentionsVideo) {
+        const videoFromState = youtubeUrl.trim() ? detectVideoPlatform(youtubeUrl) : null;
+        const urlInPrompt = requestBody.prompt.match(/https?:\/\/[^\s"'<>]+/g);
+        const videoFromPrompt = urlInPrompt ? urlInPrompt.map(u => detectVideoPlatform(u)).find(Boolean) : null;
+        const detectedVideo = videoFromState || videoFromPrompt;
+        if (detectedVideo) {
+          const sourceUrl = youtubeUrl.trim() || urlInPrompt?.find(u => detectVideoPlatform(u)) || '';
+          const embedHtml = getVideoEmbedHtml(sourceUrl);
+          if (embedHtml) {
+            requestBody.prompt = requestBody.prompt + `\n\n[MANDATORY VIDEO EMBED — DO NOT CHANGE THE URL]\nYou MUST insert this EXACT HTML code into the site. Do NOT use any other video URL. Do NOT substitute with a different video. Copy and paste this EXACTLY:\n\n${embedHtml}\n\nRULES:\n1. Use the EXACT code above — do not modify the src URL\n2. Place it where the user described (or in the hero section if not specified)\n3. Do NOT add any other YouTube/video iframes\n4. Do NOT remove this embed or replace it with a different video\n5. If the user did NOT specify placement, ask: "Where would you like me to place this ${detectedVideo.platform} video?"`;
+          }
         }
       }
 
@@ -533,7 +540,31 @@ export default function Build() {
       // Silent fail — auto-save is a safety net, not critical
     }
   };
-  const handleDeploy = async () => { if (!files.length) return alert('Generate or load files first'); setDeploying(true); try { if (editingDeployedSite && currentProjectId) { await api.post('/api/build/save-project', { projectId: currentProjectId, name: projectName || 'Untitled', files, preview, template, description: prompt }); const { data } = await api.post('/api/build/redeploy-from-project', { projectId: currentProjectId }); setDeployUrl(data.url); alert(`Re-deployed to ${data.url}!`); } else { if (!subdomain.trim()) return alert('Enter a subdomain'); const { data } = await api.post('/api/build/deploy', { subdomain: subdomain.toLowerCase(), files, title: projectName || subdomain }); setDeployUrl(data.url); if (data.linkedProjectId) setCurrentProjectId(data.linkedProjectId); setEditingDeployedSite(data.subdomain); alert(`Deployed to ${data.url}!`); } } catch (e) { alert(e.response?.data?.error || 'Deploy failed'); } finally { setDeploying(false); } };
+  const handleDeploy = async () => {
+    if (!files.length) return alert('Generate or load files first');
+    setDeploying(true);
+    try {
+      if (editingDeployedSite && currentProjectId) {
+        // Save first (but don't fail deploy if save has version conflict — auto-save already saved)
+        try {
+          await api.post('/api/build/save-project', { projectId: currentProjectId, name: projectName || 'Untitled', files, preview, template, description: prompt });
+        } catch (saveErr) {
+          console.warn('[Deploy] Pre-save failed (auto-save likely already saved):', saveErr.response?.data?.error || saveErr.message);
+        }
+        const { data } = await api.post('/api/build/redeploy-from-project', { projectId: currentProjectId });
+        setDeployUrl(data.url);
+        alert(`Re-deployed to ${data.url}!`);
+      } else {
+        if (!subdomain.trim()) return alert('Enter a subdomain');
+        const { data } = await api.post('/api/build/deploy', { subdomain: subdomain.toLowerCase(), files, title: projectName || subdomain });
+        setDeployUrl(data.url);
+        if (data.linkedProjectId) setCurrentProjectId(data.linkedProjectId);
+        setEditingDeployedSite(data.subdomain);
+        alert(`Deployed to ${data.url}!`);
+      }
+    } catch (e) { alert(e.response?.data?.error || 'Deploy failed'); }
+    finally { setDeploying(false); }
+  };
   const handleCloneAnalyze = async () => { if (!cloneUrl.trim()) return; setAnalyzing(true); try { const { data } = await api.post('/api/build/clone-analyze', { url: cloneUrl }); setCloneAnalysis(data.analysis); } catch (e) { alert(e.response?.data?.error || 'Failed'); } finally { setAnalyzing(false); } };
   const handleFileUpload = (fileList) => { const uploaded = Array.from(fileList); const zips = uploaded.filter(f => f.name.endsWith('.zip')); const texts = uploaded.filter(f => !f.name.endsWith('.zip')); if (zips.length) { const fd = new FormData(); zips.forEach(f => fd.append('files', f)); api.post('/api/files/upload', fd, { headers: { 'Content-Type': 'multipart/form-data' } }).then(({ data }) => { setFixFiles(p => [...p, ...data.files]); alert(`${data.totalFiles} files extracted`); }).catch(e => alert(e.response?.data?.error || 'ZIP failed')); } if (texts.length) Promise.all(texts.map(f => new Promise(r => { const rd = new FileReader(); rd.onload = e => r({ name: f.name, content: e.target.result }); rd.readAsText(f); }))).then(p => setFixFiles(prev => [...prev, ...p])); };
   const handleCodeFix = async () => { if (!fixFiles.length) return alert('Upload files first'); setFixing(true); try { const { data } = await api.post('/api/build/code-fix', { files: fixFiles, description: fixDescription, model: effectiveModel }); setFiles(data.files || []); setPreview(data.preview || ''); setCoinData(p => ({ ...p, balance: data.balanceRemaining })); if (iframeRef.current && data.preview) iframeRef.current.srcdoc = data.preview; setTab('build'); if (isMobile) setMobileView('preview'); } catch (e) { alert(e.response?.data?.error || 'Fix failed'); } finally { setFixing(false); } };
