@@ -468,8 +468,9 @@ function sanitizeFilesForSave(files) {
 }
 
 // ── Trim user document when approaching MongoDB 16MB limit ──
+// RULE: NEVER touch rollback clone files — they are the user's safety net
 function trimUserDocumentSize(user) {
-  const MAX_SIZE = 12 * 1024 * 1024; // 12MB target (4MB buffer for MongoDB overhead)
+  const MAX_SIZE = 12 * 1024 * 1024; // 12MB target
   const estimateSize = () => {
     let size = 0;
     (user.deployed_sites || []).forEach(s => {
@@ -487,11 +488,11 @@ function trimUserDocumentSize(user) {
 
   console.log(`[TrimDoc] User document content ~${(currentSize / 1024 / 1024).toFixed(1)}MB — trimming...`);
 
-  // Step 1: Strip ALL base64 from every project and site
+  // Step 1: Strip base64 from ALL projects and sites (safe — just removes embedded images)
   (user.deployed_sites || []).forEach(s => { s.files = sanitizeFilesForSave(s.files || []); });
   (user.saved_projects || []).forEach(p => {
     p.files = sanitizeFilesForSave(p.files || []);
-    p.preview = ''; // Clear preview field — can be large
+    p.preview = '';
   });
   user.markModified('deployed_sites');
   user.markModified('saved_projects');
@@ -499,43 +500,44 @@ function trimUserDocumentSize(user) {
   currentSize = estimateSize();
   if (currentSize <= MAX_SIZE) { console.log(`[TrimDoc] After base64 strip: ~${(currentSize / 1024 / 1024).toFixed(1)}MB — OK`); return; }
 
-  // Step 2: Remove ALL clone files (keep metadata only)
-  (user.saved_projects || []).forEach(p => {
-    if (p.cloneVersion != null && p.cloneOf) {
-      p.files = [{ name: 'index.html', content: '<!-- Clone trimmed to save space. Use Edit to rebuild. -->' }];
-    }
-  });
+  // Step 2: Enforce max 2 clones per project (fully delete old ones)
+  const rootIds = new Set();
+  (user.saved_projects || []).forEach(p => { if (p.cloneOf) rootIds.add(p.cloneOf); });
+  rootIds.forEach(rootId => enforceMaxClones(user, rootId));
 
   currentSize = estimateSize();
-  if (currentSize <= MAX_SIZE) { console.log(`[TrimDoc] After clone trim: ~${(currentSize / 1024 / 1024).toFixed(1)}MB — OK`); return; }
+  if (currentSize <= MAX_SIZE) { console.log(`[TrimDoc] After clone cleanup: ~${(currentSize / 1024 / 1024).toFixed(1)}MB — OK`); return; }
 
-  // Step 3: Trim deployed sites — keep full content only for the 2 most recent
+  // Step 3: Trim deployed sites — keep full content only for 2 most recent
+  // (deployed content can always be redeployed from project)
   const sites = [...(user.deployed_sites || [])];
   sites.sort((a, b) => new Date(b.lastUpdated || 0) - new Date(a.lastUpdated || 0));
   sites.forEach((s, i) => {
     if (i >= 2) {
-      s.files = [{ name: 'index.html', content: `<!-- Site trimmed. Re-deploy from project to restore. -->` }];
+      s.files = [{ name: 'index.html', content: '<!-- Site trimmed. Re-deploy from project to restore. -->' }];
     }
   });
 
   currentSize = estimateSize();
   if (currentSize <= MAX_SIZE) { console.log(`[TrimDoc] After site trim: ~${(currentSize / 1024 / 1024).toFixed(1)}MB — OK`); return; }
 
-  // Step 4: Truncate large HTML files in remaining projects (keep first 50KB each)
+  // Step 4: Truncate large root project HTML files (keep first 80KB)
+  // NEVER truncate clones — they are rollback safety
   (user.saved_projects || []).forEach(p => {
-    if (!p.cloneOf) { // Only root projects
+    if (!p.cloneOf && p.cloneVersion == null) { // Root projects only
       (p.files || []).forEach(f => {
-        if (f.content && f.content.length > 50000) {
-          f.content = f.content.slice(0, 50000) + '\n<!-- Truncated to save space --></body></html>';
+        if (f.content && f.content.length > 80000) {
+          f.content = f.content.slice(0, 80000) + '\n<!-- Truncated to save space --></body></html>';
         }
       });
     }
   });
 
   currentSize = estimateSize();
-  if (currentSize <= MAX_SIZE) { console.log(`[TrimDoc] After HTML truncate: ~${(currentSize / 1024 / 1024).toFixed(1)}MB — OK`); return; }
+  if (currentSize <= MAX_SIZE) { console.log(`[TrimDoc] After root truncate: ~${(currentSize / 1024 / 1024).toFixed(1)}MB — OK`); return; }
 
-  // Step 5: Nuclear option — keep only the 3 newest root projects with content
+  // Step 5: Last resort — trim oldest root projects (keep newest 3 with content)
+  // STILL never touch clones
   const roots = (user.saved_projects || []).filter(p => !p.cloneOf && p.cloneVersion == null);
   roots.sort((a, b) => new Date(b.updatedAt || 0) - new Date(a.updatedAt || 0));
   roots.forEach((p, i) => {
@@ -545,7 +547,7 @@ function trimUserDocumentSize(user) {
   });
 
   currentSize = estimateSize();
-  console.log(`[TrimDoc] Final size: ~${(currentSize / 1024 / 1024).toFixed(1)}MB${currentSize > MAX_SIZE ? ' — STILL OVER LIMIT' : ' — OK'}`);
+  console.log(`[TrimDoc] Final size: ~${(currentSize / 1024 / 1024).toFixed(1)}MB${currentSize > MAX_SIZE ? ' — STILL OVER' : ' — OK'}`);
 }
 
 router.post('/save-project', auth, async (req, res) => {
@@ -1081,14 +1083,16 @@ function createCloneSnapshot(sourceProject, cloneVersion) {
 }
 
 function enforceMaxClones(user, rootProjectId) {
+  const MAX_CLONES = 2; // Only keep 2 newest clones for rollback
   const clones = (user.saved_projects || [])
     .filter(p => (p.cloneOf === rootProjectId || p.projectId === rootProjectId) && p.cloneVersion != null)
     .sort((a, b) => (b.cloneVersion || 0) - (a.cloneVersion || 0));
 
-  if (clones.length > 5) {
-    const toDelete = clones.slice(5).map(c => c.projectId);
+  if (clones.length > MAX_CLONES) {
+    const toDelete = clones.slice(MAX_CLONES).map(c => c.projectId);
     user.saved_projects = user.saved_projects.filter(p => !toDelete.includes(p.projectId));
-    console.log(`[Clone] Deleted ${toDelete.length} excess clones for root ${rootProjectId}`);
+    user.markModified('saved_projects');
+    console.log(`[Clone] Fully deleted ${toDelete.length} old clone(s) for root ${rootProjectId} — keeping newest ${MAX_CLONES}`);
   }
 }
 
