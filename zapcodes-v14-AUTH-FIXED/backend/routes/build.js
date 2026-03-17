@@ -631,7 +631,7 @@ router.post('/deploy', auth, async (req, res) => {
     user.markModified('deployed_sites');
     trimUserDocumentSize(user); // Prevent 16MB MongoDB overflow
     await user.save();
-    res.json({ url: `https://${sub}.zapcodes.net`, subdomain: sub, deployed: true, hasBadge: shouldBadge, sites: user.deployed_sites.length, maxSites: config.maxSites, linkedProjectId: savedProj?.projectId });
+    res.json({ url: `https://${sub}.zapcodes.net`, subdomain: sub, deployed: true, hasBadge: shouldBadge, sites: user.deployed_sites.length, maxSites: config.maxSites, linkedProjectId: deployedProj?.projectId });
   } catch (err) {
     console.error('[Deploy] Error:', err.message, err.stack?.split('\n')[1]);
     res.status(500).json({ error: 'Deploy failed: ' + (err.message || '').slice(0, 100) });
