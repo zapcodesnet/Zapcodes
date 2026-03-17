@@ -591,7 +591,50 @@ router.get('/projects', auth, (req, res) => {
 router.get('/project/:projectId', auth, (req, res) => { const proj = (req.user.saved_projects || []).find(p => p.projectId === req.params.projectId); if (!proj) return res.status(404).json({ error: 'Not found' }); res.json({ project: proj }); });
 
 router.delete('/project/:projectId', auth, async (req, res) => {
-  try { const user = req.user; const idx = (user.saved_projects || []).findIndex(p => p.projectId === req.params.projectId); if (idx === -1) return res.status(404).json({ error: 'Not found' }); const project = user.saved_projects[idx]; let shutdownSite = null; if (project.linkedSubdomain) { const siteIdx = user.deployed_sites.findIndex(s => s.subdomain === project.linkedSubdomain); if (siteIdx >= 0) { shutdownSite = project.linkedSubdomain; user.deployed_sites.splice(siteIdx, 1); } } user.saved_projects.splice(idx, 1); await user.save(); res.json({ success: true, shutdownSite }); } catch { res.status(500).json({ error: 'Failed' }); }
+  try {
+    const user = req.user;
+    const projectId = req.params.projectId;
+    const project = (user.saved_projects || []).find(p => p.projectId === projectId);
+    if (!project) return res.status(404).json({ error: 'Not found' });
+
+    // Determine the root project ID (whether deleting root or clone)
+    const rootId = project.cloneOf || project.projectId;
+    const rootProject = (user.saved_projects || []).find(p => p.projectId === rootId);
+    const linkedSub = rootProject?.linkedSubdomain || project.linkedSubdomain;
+
+    // ── Collect ALL related project IDs (root + all clones) ──
+    const relatedIds = new Set();
+    (user.saved_projects || []).forEach(p => {
+      if (p.projectId === rootId || p.cloneOf === rootId) {
+        relatedIds.add(p.projectId);
+      }
+    });
+
+    // ── Shutdown and remove deployed site ──
+    let shutdownSite = null;
+    if (linkedSub) {
+      const siteIdx = user.deployed_sites.findIndex(s => s.subdomain === linkedSub);
+      if (siteIdx >= 0) {
+        shutdownSite = linkedSub;
+        user.deployed_sites.splice(siteIdx, 1);
+        user.markModified('deployed_sites');
+      }
+    }
+
+    // ── Remove ALL related projects (root + every clone) ──
+    const beforeCount = user.saved_projects.length;
+    user.saved_projects = (user.saved_projects || []).filter(p => !relatedIds.has(p.projectId));
+    user.markModified('saved_projects');
+    const deletedCount = beforeCount - user.saved_projects.length;
+
+    console.log(`[Delete] Removed ${deletedCount} project(s) for root ${rootId}${shutdownSite ? ` + shutdown site ${shutdownSite}` : ''}`);
+
+    await user.save();
+    res.json({ success: true, shutdownSite, deletedCount });
+  } catch (err) {
+    console.error('[Delete] Error:', err.message);
+    res.status(500).json({ error: 'Delete failed' });
+  }
 });
 
 router.post('/deploy', auth, async (req, res) => {
@@ -750,7 +793,39 @@ router.post('/site/shutdown', auth, async (req, res) => {
   }
 });
 
-router.delete('/site/:subdomain', auth, async (req, res) => { try { const user = req.user; const sub = req.params.subdomain; const si = user.deployed_sites.findIndex(s => s.subdomain === sub); if (si >= 0) user.deployed_sites.splice(si, 1); const pi = (user.saved_projects || []).findIndex(p => p.linkedSubdomain === sub); if (pi >= 0) user.saved_projects.splice(pi, 1); await user.save(); res.json({ success: true }); } catch { res.status(500).json({ error: 'Failed' }); } });
+router.delete('/site/:subdomain', auth, async (req, res) => {
+  try {
+    const user = req.user;
+    const sub = req.params.subdomain;
+
+    // Remove deployed site
+    const si = user.deployed_sites.findIndex(s => s.subdomain === sub);
+    if (si >= 0) { user.deployed_sites.splice(si, 1); user.markModified('deployed_sites'); }
+
+    // Find root project linked to this subdomain
+    const rootProject = (user.saved_projects || []).find(p => p.linkedSubdomain === sub && !p.cloneOf);
+    if (rootProject) {
+      const rootId = rootProject.projectId;
+      // Remove root + ALL its clones
+      const before = user.saved_projects.length;
+      user.saved_projects = (user.saved_projects || []).filter(p =>
+        p.projectId !== rootId && p.cloneOf !== rootId
+      );
+      const removed = before - user.saved_projects.length;
+      console.log(`[DeleteSite] Removed site ${sub} + ${removed} project(s)/clone(s)`);
+    } else {
+      // No root found, just remove any project linked to this subdomain
+      user.saved_projects = (user.saved_projects || []).filter(p => p.linkedSubdomain !== sub);
+    }
+
+    user.markModified('saved_projects');
+    await user.save();
+    res.json({ success: true });
+  } catch (err) {
+    console.error('[DeleteSite] Error:', err.message);
+    res.status(500).json({ error: 'Failed' });
+  }
+});
 
 router.get('/templates', (req, res) => res.json({ templates: [{ id: 'custom', name: 'Custom (AI Chat)', icon: '💬', desc: 'Describe anything' }, { id: 'portfolio', name: 'Portfolio', icon: '👤', desc: 'Personal portfolio' }, { id: 'landing', name: 'Landing Page', icon: '🚀', desc: 'Product landing' }, { id: 'blog', name: 'Blog', icon: '📝', desc: 'Blog template' }, { id: 'ecommerce', name: 'E-Commerce', icon: '🛒', desc: 'Online store' }, { id: 'dashboard', name: 'Dashboard', icon: '📊', desc: 'Admin dashboard' }, { id: 'webapp', name: 'Full-Stack App', icon: '⚡', desc: 'Frontend + backend' }, { id: 'saas', name: 'SaaS', icon: '💎', desc: 'SaaS with auth' }, { id: 'mobile', name: 'Mobile App', icon: '📱', desc: 'React Native' }] }));
 
