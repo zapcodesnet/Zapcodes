@@ -557,13 +557,13 @@ export default function Build() {
     setDeploying(true);
     try {
       if (editingDeployedSite && currentProjectId) {
-        // Save first (but don't fail deploy if save has version conflict — auto-save already saved)
-        try {
-          await api.post('/api/build/save-project', { projectId: currentProjectId, name: projectName || 'Untitled', files, preview, template, description: prompt });
-        } catch (saveErr) {
-          console.warn('[Deploy] Pre-save failed (auto-save likely already saved):', saveErr.response?.data?.error || saveErr.message);
-        }
-        const { data } = await api.post('/api/build/redeploy-from-project', { projectId: currentProjectId });
+        // Send CURRENT files from browser directly to redeploy
+        // This ensures the live site gets exactly what the user sees in preview
+        const { data } = await api.post('/api/build/redeploy-from-project', {
+          projectId: currentProjectId,
+          currentFiles: files, // Send browser files directly
+          name: projectName || 'Untitled',
+        });
         setDeployUrl(data.url);
         alert(`Re-deployed to ${data.url}!`);
       } else {
