@@ -279,8 +279,8 @@ export default function Build() {
 
   const insertImageIntoSite = (base64, mimeType) => {
     if (!files.length) return alert('Generate a site first, then images can be inserted.');
-    const placeholderId = `AI_MEDIA_${Date.now()}_${Math.random().toString(36).slice(2,6)}`;
-    setPendingMedia(prev => [...prev, { type: 'image', base64, mimeType, placeholderId, label: 'image' }]);
+    const slotNum = pendingMedia.filter(m => m.type === 'image').length + 1;
+    setPendingMedia(prev => [...prev, { type: 'image', base64, mimeType, slot: slotNum, label: 'image' }]);
     setChatInput(prev => prev || '');
     alert(`✅ Image queued! Now type WHERE you want it placed in the chat box below and press Send.`);
   };
@@ -410,17 +410,16 @@ export default function Build() {
       const currentPendingMedia = [...pendingMedia];
       if (currentPendingMedia.length > 0) {
         const mediaInstructions = currentPendingMedia.map((m, i) => {
+          const marker = `<!-- MEDIA_SLOT_${i + 1} -->`;
           if (m.type === 'image') {
-            return `Media ${i + 1} (image): Create an <img> tag with src="${m.placeholderId}" — this placeholder will be replaced with the actual image after generation. Place it EXACTLY where the user describes.`;
-          } else if (m.type === 'video-url') {
-            return `Media ${i + 1} (${m.label}): Insert this EXACT HTML where the user describes:\n${m.embedHtml}`;
-          } else if (m.type === 'veo-video') {
-            return `Media ${i + 1} (${m.label}): Insert this EXACT HTML where the user describes:\n${m.embedHtml}`;
+            return `Media ${i + 1}: Place this HTML comment EXACTLY where the user wants the image: ${marker}`;
+          } else if (m.type === 'video-url' || m.type === 'veo-video') {
+            return `Media ${i + 1}: Place this HTML comment EXACTLY where the user wants the ${m.label}: ${marker}`;
           }
           return '';
-        }).filter(Boolean).join('\n\n');
+        }).filter(Boolean).join('\n');
 
-        requestBody.prompt = requestBody.prompt + `\n\n[MEDIA TO PLACE — FOLLOW USER INSTRUCTIONS EXACTLY]\n${mediaInstructions}\n\nCRITICAL RULES:\n1. Place each media item EXACTLY where the user described in their message\n2. Do NOT delete, remove, or replace ANY existing images, videos, or content on the site\n3. Do NOT move any existing content unless the user specifically asks\n4. ONLY add the new media — keep everything else exactly as it is`;
+        requestBody.prompt = requestBody.prompt + `\n\n[MEDIA PLACEMENT]\nThe user has ${currentPendingMedia.length} media item(s) to place. Insert these HTML comments at the EXACT locations the user described:\n${mediaInstructions}\n\nRULES:\n1. Place each <!-- MEDIA_SLOT_N --> comment EXACTLY where the user said\n2. Do NOT delete or replace ANY existing images, videos, or content\n3. Do NOT move existing content unless user explicitly asked\n4. ONLY add the comment markers — the actual media will be injected automatically`;
       }
 
       // ── GLOBAL RULE: never delete existing content without explicit user request ──
@@ -460,14 +459,23 @@ export default function Build() {
                 if (htmlFile) completedPreview = htmlFile.content;
               }
 
-              // ── Replace pending media placeholders with actual content ──
+              // ── Replace MEDIA_SLOT comments with actual media content ──
               if (currentPendingMedia.length > 0 && completedFiles.length > 0) {
                 completedFiles = completedFiles.map(f => {
                   if (!f.name.endsWith('.html')) return f;
                   let html = f.content;
-                  currentPendingMedia.forEach(m => {
-                    if (m.type === 'image' && m.placeholderId && html.includes(m.placeholderId)) {
-                      html = html.replace(new RegExp(m.placeholderId, 'g'), `data:${m.mimeType};base64,${m.base64}`);
+                  currentPendingMedia.forEach((m, i) => {
+                    const marker = `<!-- MEDIA_SLOT_${i + 1} -->`;
+                    if (html.includes(marker)) {
+                      let replacement = '';
+                      if (m.type === 'image') {
+                        replacement = `<img src="data:${m.mimeType};base64,${m.base64}" alt="User image" style="width:100%;max-height:600px;object-fit:cover;display:block;margin:0 auto;border-radius:8px;" />`;
+                      } else if (m.type === 'video-url') {
+                        replacement = m.embedHtml;
+                      } else if (m.type === 'veo-video') {
+                        replacement = m.embedHtml;
+                      }
+                      html = html.replace(marker, replacement);
                     }
                   });
                   return { ...f, content: html };
@@ -529,11 +537,12 @@ export default function Build() {
   const handleSaveProject = async () => { if (!files.length) return alert('No files'); try { const payload = { projectId: currentProjectId, name: projectName || 'Untitled', files, preview, template, description: prompt }; if (editingDeployedSite) payload.subdomain = editingDeployedSite; const { data } = await api.post('/api/build/save-project', payload); setCurrentProjectId(data.project.projectId); alert(`Saved! (v${data.project.version})`); } catch (e) { alert(e.response?.data?.error || 'Save failed'); } };
 
   // ── Auto-save: silently saves current files to the project after every generation ──
+  // skipSanitize=true so base64 images are preserved during editing
   const autoSaveProject = async (filesToSave, previewToSave) => {
     try {
       const pid = currentProjectId;
       if (!pid || !filesToSave?.length) return;
-      const payload = { projectId: pid, name: projectName || 'Untitled', files: filesToSave, preview: (previewToSave || '').slice(0, 50000), template };
+      const payload = { projectId: pid, name: projectName || 'Untitled', files: filesToSave, preview: (previewToSave || '').slice(0, 50000), template, skipSanitize: true };
       if (editingDeployedSite) payload.subdomain = editingDeployedSite;
       const { data } = await api.post('/api/build/save-project', payload);
       if (data.project?.projectId) setCurrentProjectId(data.project.projectId);
