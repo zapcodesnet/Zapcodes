@@ -533,9 +533,7 @@ async function generateVideoVeo(prompt, options = {}) {
     return null;
   }
 
-  // ── APPROACH 1: Generative Language API (uses GEMINI_API_KEY — same as working images) ──
-  // NOTE: storageUri is NOT supported on this API. Video bytes come in the response.
-  // NOTE: Only veo-2.0-generate-001 is available here (veo-3.0 is NOT on GL API).
+  // ── APPROACH 1: Generative Language API (uses GEMINI_API_KEY) ──
   const apiKey = geminiKey || vertexKey;
   const glModels = ['veo-2.0-generate-001'];
 
@@ -543,6 +541,7 @@ async function generateVideoVeo(prompt, options = {}) {
     try {
       console.log(`[VideoGen] Trying ${modelId} via Generative Language API...`);
 
+      // Try newer generateVideo endpoint first, fall back to predictLongRunning
       const body = {
         instances: [{
           prompt: cleanPrompt,
@@ -558,37 +557,80 @@ async function generateVideoVeo(prompt, options = {}) {
         },
       };
 
-      // Do NOT add storageUri — Generative Language API doesn't support it
+      let startRes, operationName;
 
-      const startRes = await axios.post(
-        `${GEMINI_API_URL}/${modelId}:predictLongRunning?key=${apiKey}`,
-        body,
-        { headers: { 'Content-Type': 'application/json' }, timeout: 30000 }
-      );
+      // Try generateVideo (newer endpoint)
+      try {
+        startRes = await axios.post(
+          `${GEMINI_API_URL}/${modelId}:generateVideo?key=${apiKey}`,
+          { model: `models/${modelId}`, generateVideoConfig: { prompt: cleanPrompt, aspectRatio, durationSeconds, numberOfVideos: 1, personGeneration: 'dont_allow' } },
+          { headers: { 'Content-Type': 'application/json' }, timeout: 30000 }
+        );
+        operationName = startRes.data?.name;
+        if (operationName) console.log(`[VideoGen] generateVideo started: ${operationName}`);
+      } catch (e1) {
+        console.log(`[VideoGen] generateVideo not available (${e1.response?.status || e1.message}), trying predictLongRunning...`);
+      }
 
-      const operationName = startRes.data?.name;
+      // Fall back to predictLongRunning (older endpoint)
+      if (!operationName) {
+        startRes = await axios.post(
+          `${GEMINI_API_URL}/${modelId}:predictLongRunning?key=${apiKey}`,
+          body,
+          { headers: { 'Content-Type': 'application/json' }, timeout: 30000 }
+        );
+        operationName = startRes.data?.name;
+        if (operationName) console.log(`[VideoGen] predictLongRunning started: ${operationName}`);
+      }
+
       if (!operationName) {
         console.warn(`[VideoGen] ${modelId} returned no operation name`);
         continue;
       }
 
-      console.log(`[VideoGen] Operation started: ${operationName}`);
+      // ── Poll for completion — try multiple URL formats ──
+      // Google has changed the poll endpoint format over time
+      const pollUrls = [
+        `https://generativelanguage.googleapis.com/v1beta/${operationName}?key=${apiKey}`,
+        `https://generativelanguage.googleapis.com/v1/${operationName}?key=${apiKey}`,
+        `https://generativelanguage.googleapis.com/v1beta/operations/${operationName.split('/').pop()}?key=${apiKey}`,
+      ];
 
-      // Poll for completion — up to 4 minutes (48 × 5s)
+      // Find which poll URL works on the first attempt
+      let workingPollUrl = null;
+      for (const url of pollUrls) {
+        try {
+          const test = await axios.get(url, { timeout: 10000 });
+          workingPollUrl = url;
+          console.log(`[VideoGen] Poll URL working: ${url.split('?')[0]}`);
+          if (test.data?.done) {
+            if (test.data?.error) { console.warn(`[VideoGen] Operation error:`, JSON.stringify(test.data.error).slice(0, 300)); break; }
+            console.log(`[VideoGen] Raw response keys:`, Object.keys(test.data?.response || test.data || {}).join(', '));
+            const video = extractVideoFromResponse(test.data, apiKey);
+            if (video) { console.log(`[VideoGen] SUCCESS via ${modelId}`); return { ...video, model: modelId, durationSeconds, aspectRatio }; }
+          }
+          break;
+        } catch (e) {
+          if (e.response?.status !== 404) { workingPollUrl = url; break; }
+        }
+      }
+
+      if (!workingPollUrl) {
+        console.warn(`[VideoGen] All poll URLs returned 404 for operation: ${operationName}`);
+        console.warn(`[VideoGen] Tried: ${pollUrls.map(u => u.split('?')[0]).join(' | ')}`);
+        continue;
+      }
+
+      // Continue polling with the working URL
       for (let i = 0; i < 48; i++) {
         await new Promise(r => setTimeout(r, 5000));
         try {
-          const pollRes = await axios.get(
-            `https://generativelanguage.googleapis.com/v1beta/${operationName}?key=${apiKey}`,
-            { timeout: 10000 }
-          );
-
+          const pollRes = await axios.get(workingPollUrl, { timeout: 10000 });
           if (pollRes.data?.done) {
             if (pollRes.data?.error) {
               console.warn(`[VideoGen] ${modelId} operation error:`, JSON.stringify(pollRes.data.error).slice(0, 300));
               break;
             }
-            // Log raw response for debugging
             console.log(`[VideoGen] Raw response keys:`, Object.keys(pollRes.data?.response || pollRes.data || {}).join(', '));
             const video = extractVideoFromResponse(pollRes.data, apiKey);
             if (video) {
@@ -600,16 +642,14 @@ async function generateVideoVeo(prompt, options = {}) {
             break;
           }
         } catch (pollErr) {
-          console.warn(`[VideoGen] Poll error (attempt ${i + 1}):`, pollErr.message);
+          if (i % 10 === 0) console.warn(`[VideoGen] Poll attempt ${i + 1}: ${pollErr.message}`);
         }
       }
     } catch (err) {
       const status = err.response?.status;
       const msg = err.response?.data?.error?.message || err.message;
       console.warn(`[VideoGen] ${modelId} failed: ${status} — ${msg.slice(0, 300)}`);
-      if (status === 429) { console.warn('[VideoGen] Rate limited, trying next model'); continue; }
-      if (status === 400) { console.warn('[VideoGen] Bad request, trying next model'); continue; }
-      if (status === 403) { console.warn('[VideoGen] Forbidden — API may not be enabled or quota is 0'); continue; }
+      if (status === 429 || status === 400 || status === 403) continue;
     }
   }
 
@@ -653,13 +693,36 @@ async function generateVideoVeo(prompt, options = {}) {
 
         console.log(`[VideoGen] Vertex AI operation: ${operationName}`);
 
+        // Try multiple poll URL formats for Vertex AI
+        const opId = operationName.split('/').pop();
+        const vtxPollUrls = [
+          `https://${location}-aiplatform.googleapis.com/v1/${operationName}`,
+          `https://${location}-aiplatform.googleapis.com/v1/projects/${projectId}/locations/${location}/operations/${opId}`,
+        ];
+
+        let vtxPollUrl = null;
+        for (const url of vtxPollUrls) {
+          try {
+            await axios.get(url, { headers: { 'x-goog-api-key': vertexKey }, timeout: 10000 });
+            vtxPollUrl = url;
+            console.log(`[VideoGen] Vertex poll URL working: ${url}`);
+            break;
+          } catch (e) {
+            if (e.response?.status !== 404) { vtxPollUrl = url; break; }
+          }
+        }
+
+        if (!vtxPollUrl) {
+          console.warn(`[VideoGen] Vertex AI poll URLs all 404 for: ${operationName}`);
+          continue;
+        }
+
         for (let i = 0; i < 48; i++) {
           await new Promise(r => setTimeout(r, 5000));
           try {
-            const pollRes = await axios.get(
-              `https://${location}-aiplatform.googleapis.com/v1/${operationName}`,
-              { headers: { 'x-goog-api-key': vertexKey }, timeout: 10000 }
-            );
+            const pollRes = await axios.get(vtxPollUrl, {
+              headers: { 'x-goog-api-key': vertexKey }, timeout: 10000
+            });
 
             if (pollRes.data?.done) {
               if (pollRes.data?.error) {
@@ -675,7 +738,7 @@ async function generateVideoVeo(prompt, options = {}) {
               break;
             }
           } catch (pollErr) {
-            console.warn(`[VideoGen] Poll error (attempt ${i + 1}):`, pollErr.message);
+            if (i % 10 === 0) console.warn(`[VideoGen] Vertex poll attempt ${i + 1}: ${pollErr.message}`);
           }
         }
       } catch (err) {
