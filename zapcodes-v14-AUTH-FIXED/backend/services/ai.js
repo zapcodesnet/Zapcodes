@@ -16,13 +16,13 @@ const MODELS = {
   'gemini-2.5-flash': { model: 'gemini-2.5-flash', maxOutput: 65536, contextLimit: 1000000 },
   'gemini-3.1-pro':   { model: 'gemini-3.1-pro-preview', maxOutput: 65536, contextLimit: 1000000 },
   'haiku-4.5':        { model: 'claude-haiku-4-5-20251001', maxOutput: 16384, contextLimit: 180000 },
-  'sonnet-4.6':       { model: 'claude-sonnet-4-6', maxOutput: 16384, contextLimit: 200000 },
+  'sonnet-4.6':       { model: 'claude-sonnet-4-6', maxOutput: 64000, contextLimit: 200000 },
   'opus-4.6':         { model: 'claude-opus-4-6', maxOutput: 128000, contextLimit: 200000 },
   // Legacy aliases
   'gemini-flash': { model: 'gemini-2.5-flash', maxOutput: 65536, contextLimit: 1000000 },
   'gemini-pro':   { model: 'gemini-3.1-pro-preview', maxOutput: 65536, contextLimit: 1000000 },
   haiku:          { model: 'claude-haiku-4-5-20251001', maxOutput: 16384, contextLimit: 180000 },
-  sonnet:         { model: 'claude-sonnet-4-6', maxOutput: 16384, contextLimit: 200000 },
+  sonnet:         { model: 'claude-sonnet-4-6', maxOutput: 64000, contextLimit: 200000 },
 };
 
 const GROQ_MAX_OUTPUT = MODELS.groq.maxOutput;
@@ -223,7 +223,7 @@ async function callClaude(systemPrompt, userPrompt, options = {}) {
     return callGroq(systemPrompt, userPrompt, { maxTokens: GROQ_MAX_OUTPUT, signal: options.signal, onProgress: options.onProgress });
   }
   const modelId = options.model || MODELS['haiku-4.5'].model;
-  const maxTokens = options.maxTokens || 16384;
+  const maxTokens = options.maxTokens || 64000;
   const label = options.label || 'Claude';
 
   try {
@@ -388,7 +388,7 @@ async function generateImageImagen4(prompt, options = {}) {
         console.log(`[ImageGen] Trying ${mid}...`);
         const r = await axios.post(
           `${GEMINI_API_URL}/${mid}:predict?key=${vertexKey}`,
-          { instances: [{ prompt: cleanPrompt }], parameters: { sampleCount, aspectRatio, personGeneration: 'dont_allow', enhancePrompt: true } },
+          { instances: [{ prompt: cleanPrompt }], parameters: { sampleCount, aspectRatio, personGeneration: 'allow_adult', enhancePrompt: true } },
           { headers: { 'Content-Type': 'application/json' }, timeout: 90000 }
         );
         if (r.data?.predictions?.length) {
@@ -423,7 +423,7 @@ async function generateImageImagen4(prompt, options = {}) {
   if (vertexKey) {
     for (const mid of ['imagen-3.0-generate-002', 'imagen-3.0-generate-001']) {
       try {
-        const r = await axios.post(`${GEMINI_API_URL}/${mid}:predict?key=${vertexKey}`, { instances: [{ prompt: cleanPrompt }], parameters: { sampleCount: 1, aspectRatio, personGeneration: 'dont_allow' } }, { headers: { 'Content-Type': 'application/json' }, timeout: 90000 });
+        const r = await axios.post(`${GEMINI_API_URL}/${mid}:predict?key=${vertexKey}`, { instances: [{ prompt: cleanPrompt }], parameters: { sampleCount: 1, aspectRatio, personGeneration: 'allow_adult' } }, { headers: { 'Content-Type': 'application/json' }, timeout: 90000 });
         if (r.data?.predictions?.length) {
           const imgs = r.data.predictions.filter(p => p.bytesBase64Encoded).map(p => ({ base64: p.bytesBase64Encoded, mimeType: 'image/png' }));
           if (imgs.length) return imgs;
@@ -553,7 +553,7 @@ async function generateVideoVeo(prompt, options = {}) {
           aspectRatio,
           durationSeconds,
           sampleCount: 1,
-          personGeneration: 'dont_allow',
+          personGeneration: 'allow_adult',
         },
       };
 
@@ -563,7 +563,7 @@ async function generateVideoVeo(prompt, options = {}) {
       try {
         startRes = await axios.post(
           `${GEMINI_API_URL}/${modelId}:generateVideo?key=${apiKey}`,
-          { model: `models/${modelId}`, generateVideoConfig: { prompt: cleanPrompt, aspectRatio, durationSeconds, numberOfVideos: 1, personGeneration: 'dont_allow' } },
+          { model: `models/${modelId}`, generateVideoConfig: { prompt: cleanPrompt, aspectRatio, durationSeconds, numberOfVideos: 1, personGeneration: 'allow_adult' } },
           { headers: { 'Content-Type': 'application/json' }, timeout: 30000 }
         );
         operationName = startRes.data?.name;
@@ -674,7 +674,7 @@ async function generateVideoVeo(prompt, options = {}) {
             aspectRatio,
             durationSeconds,
             sampleCount: 1,
-            personGeneration: 'dont_allow',
+            personGeneration: 'allow_adult',
           },
         };
 
