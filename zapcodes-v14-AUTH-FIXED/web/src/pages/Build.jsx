@@ -384,9 +384,9 @@ export default function Build() {
       if (editFiles) { requestBody.existingFiles = editFiles; requestBody.isEditing = true; }
       else { if (autoAttachPrompt && systemPromptText && systemPromptText.trim().length > 50) requestBody.customSystemPrompt = systemPromptText; }
 
-      // ── User uploaded photo: tell AI to place it or ask where ──
-      if (uploadedPhoto && editFiles?.length > 0) {
-        requestBody.prompt = requestBody.prompt + '\n\n[USER PHOTO: The user uploaded their own photo. Create an <img> tag with EXACTLY: id="user-uploaded-photo" src="USER_PHOTO_PLACEHOLDER". If the user specified WHERE to place it and HOW to style it, follow those instructions exactly. If the user did NOT specify where to place it, you MUST ask: "I see you uploaded a photo! Where would you like me to place it on your site? For example: hero section, about section, gallery, background, etc. Also let me know the size you want (full-width, small thumbnail, medium, etc.)". Do NOT guess — ask first if no placement instructions given. Do NOT delete any existing images unless user specifically asks. The placeholder will be replaced with the actual photo after generation.]';
+      // ── User uploaded photo: ALWAYS inject when photo exists (both new + edit) ──
+      if (uploadedPhoto) {
+        requestBody.prompt = requestBody.prompt + '\n\n[USER PHOTO: The user uploaded their own photo. Create an <img> tag with EXACTLY: id="user-uploaded-photo" src="USER_PHOTO_PLACEHOLDER". If the user specified WHERE to place it, follow those instructions exactly. If the user did NOT specify where, ask: "Where would you like me to place your uploaded photo?". Do NOT delete any existing content on the site. The placeholder will be replaced with the actual photo after generation.]';
       }
 
       // ── Only inject media instructions when user's prompt REFERENCES the media ──
