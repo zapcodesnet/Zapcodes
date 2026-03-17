@@ -632,6 +632,13 @@ async function generateVideoVeo(prompt, options = {}) {
               break;
             }
             console.log(`[VideoGen] Raw response keys:`, Object.keys(pollRes.data?.response || pollRes.data || {}).join(', '));
+            // Check if video was filtered by safety settings
+            const genResp = pollRes.data?.response?.generateVideoResponse;
+            if (genResp?.raiMediaFilteredCount > 0) {
+              const reason = genResp.raiMediaFilteredReasons?.[0] || 'Content was filtered by safety settings';
+              console.warn(`[VideoGen] Video FILTERED: ${reason}`);
+              return { error: true, filtered: true, message: `Video blocked: ${reason}. Try rephrasing your prompt to avoid depicting people/faces directly.` };
+            }
             const video = extractVideoFromResponse(pollRes.data, apiKey);
             if (video) {
               console.log(`[VideoGen] SUCCESS via ${modelId} (Generative Language API)`);
@@ -653,102 +660,11 @@ async function generateVideoVeo(prompt, options = {}) {
     }
   }
 
-  // ── APPROACH 2: Vertex AI API fallback (uses different endpoint + project auth) ──
-  if (vertexKey) {
-    const projectId = process.env.GOOGLE_CLOUD_PROJECT || 'gen-lang-client-0709668137';
-    const location = 'us-central1';
-    const vtxModels = ['veo-3.1-generate-001', 'veo-3.0-generate-001', 'veo-2.0-generate-001'];
-
-    for (const modelId of vtxModels) {
-      try {
-        console.log(`[VideoGen] Trying ${modelId} via Vertex AI API...`);
-
-        const body = {
-          instances: [{
-            prompt: cleanPrompt,
-            ...(options.referenceImage ? {
-              image: { bytesBase64Encoded: options.referenceImage.base64, mimeType: options.referenceImage.mimeType || 'image/png' }
-            } : {}),
-          }],
-          parameters: {
-            aspectRatio,
-            durationSeconds,
-            sampleCount: 1,
-            personGeneration: 'allow_adult',
-          },
-        };
-
-        const bucketUri = process.env.GCS_BUCKET_URI;
-        if (bucketUri) body.parameters.storageUri = bucketUri;
-
-        const endpoint = `https://${location}-aiplatform.googleapis.com/v1/projects/${projectId}/locations/${location}/publishers/google/models/${modelId}:predictLongRunning`;
-
-        const opRes = await axios.post(endpoint, body, {
-          headers: { 'Content-Type': 'application/json', 'x-goog-api-key': vertexKey },
-          timeout: 30000,
-        });
-
-        const operationName = opRes.data?.name;
-        if (!operationName) { console.warn(`[VideoGen] ${modelId} no operation name`); continue; }
-
-        console.log(`[VideoGen] Vertex AI operation: ${operationName}`);
-
-        // Try multiple poll URL formats for Vertex AI
-        const opId = operationName.split('/').pop();
-        const vtxPollUrls = [
-          `https://${location}-aiplatform.googleapis.com/v1/${operationName}`,
-          `https://${location}-aiplatform.googleapis.com/v1/projects/${projectId}/locations/${location}/operations/${opId}`,
-        ];
-
-        let vtxPollUrl = null;
-        for (const url of vtxPollUrls) {
-          try {
-            await axios.get(url, { headers: { 'x-goog-api-key': vertexKey }, timeout: 10000 });
-            vtxPollUrl = url;
-            console.log(`[VideoGen] Vertex poll URL working: ${url}`);
-            break;
-          } catch (e) {
-            if (e.response?.status !== 404) { vtxPollUrl = url; break; }
-          }
-        }
-
-        if (!vtxPollUrl) {
-          console.warn(`[VideoGen] Vertex AI poll URLs all 404 for: ${operationName}`);
-          continue;
-        }
-
-        for (let i = 0; i < 48; i++) {
-          await new Promise(r => setTimeout(r, 5000));
-          try {
-            const pollRes = await axios.get(vtxPollUrl, {
-              headers: { 'x-goog-api-key': vertexKey }, timeout: 10000
-            });
-
-            if (pollRes.data?.done) {
-              if (pollRes.data?.error) {
-                console.warn(`[VideoGen] ${modelId} operation error:`, JSON.stringify(pollRes.data.error).slice(0, 300));
-                break;
-              }
-              const video = extractVideoFromResponse(pollRes.data, vertexKey);
-              if (video) {
-                console.log(`[VideoGen] SUCCESS via ${modelId} (Vertex AI)`);
-                return { ...video, model: modelId, durationSeconds, aspectRatio };
-              }
-              console.warn(`[VideoGen] Done but no video. Response:`, JSON.stringify(pollRes.data).slice(0, 500));
-              break;
-            }
-          } catch (pollErr) {
-            if (i % 10 === 0) console.warn(`[VideoGen] Vertex poll attempt ${i + 1}: ${pollErr.message}`);
-          }
-        }
-      } catch (err) {
-        const status = err.response?.status;
-        const msg = err.response?.data?.error?.message || err.message;
-        console.warn(`[VideoGen] Vertex AI ${modelId}: ${status} — ${msg.slice(0, 300)}`);
-        if (status === 400 || status === 403 || status === 429) continue;
-      }
-    }
-  }
+  // ── APPROACH 2: Vertex AI API — DISABLED ──
+  // Vertex AI video polling consistently returns 400 errors with API key auth.
+  // It requires OAuth2 service account credentials which we don't have configured.
+  // GL API (Approach 1) is the working path for video generation.
+  // To re-enable: set up a service account with Vertex AI permissions.
 
   console.warn('[VideoGen] All Veo models failed');
   return null;
