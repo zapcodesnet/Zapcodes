@@ -556,9 +556,10 @@ router.post('/save-project', auth, async (req, res) => {
     const user = attempt === 0 ? req.user : await User.findById(req.user._id);
     if (!user) return res.status(404).json({ error: 'User not found' });
 
-    const { projectId, name, files: rawFiles, preview, template, description, subdomain } = req.body;
+    const { projectId, name, files: rawFiles, preview, template, description, subdomain, skipSanitize } = req.body;
     if (!rawFiles?.length) return res.status(400).json({ error: 'No files' });
-    const files = sanitizeFilesForSave(rawFiles);
+    // Only sanitize on manual save/deploy — auto-save during editing preserves base64 images
+    const files = skipSanitize ? rawFiles : sanitizeFilesForSave(rawFiles);
     if (projectId) { const idx = (user.saved_projects || []).findIndex(p => p.projectId === projectId); if (idx >= 0) { user.saved_projects[idx].name = name || user.saved_projects[idx].name; user.saved_projects[idx].files = files; user.saved_projects[idx].preview = (preview || '').slice(0, 500000); user.saved_projects[idx].updatedAt = new Date(); user.saved_projects[idx].version = (user.saved_projects[idx].version || 1) + 1; user.saved_projects[idx].description = description || user.saved_projects[idx].description; if (subdomain && !user.saved_projects[idx].linkedSubdomain) user.saved_projects[idx].linkedSubdomain = subdomain; } else return res.status(404).json({ error: 'Not found' }); }
     else { if (!user.saved_projects) user.saved_projects = []; user.saved_projects.push({ projectId: `proj-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, name: name || 'Untitled', files, preview: (preview || '').slice(0, 500000), template: template || 'custom', description: description || '', linkedSubdomain: subdomain || null, version: 1, createdAt: new Date(), updatedAt: new Date() }); }
     trimUserDocumentSize(user);
@@ -924,7 +925,11 @@ router.post('/generate-video', auth, async (req, res) => {
       referenceImage: referenceImage || null,
     });
     if (!result) {
-      return res.status(500).json({ error: 'Video generation failed. Make sure Veo API is enabled and GCS_BUCKET_URI is set in Render.' });
+      return res.status(500).json({ error: 'Video generation failed. All Veo models were unavailable. Try again in a few minutes.' });
+    }
+    // Handle safety-filtered responses
+    if (result.error && result.filtered) {
+      return res.status(400).json({ error: result.message || 'Video was blocked by safety filters. Try a different prompt without people or faces.' });
     }
     if (user.role !== 'super-admin') {
       user.spendCoins(cost, 'generation', `AI Video (Veo): ${prompt.slice(0, 50)}`);
