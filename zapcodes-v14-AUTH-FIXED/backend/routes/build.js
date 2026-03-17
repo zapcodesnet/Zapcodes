@@ -887,126 +887,78 @@ router.post('/claim-guest-site', auth, async (req, res) => {
     const code = rawCode.trim().toUpperCase();
     console.log(`[Claim] User ${user.email} attempting code: ${code}`);
 
-    // Try to find the guest site — support multiple model/field name patterns
-    let site = null;
-    let GuestSite = null;
-
-    // Approach 1: Try the GuestSite model
-    try {
-      GuestSite = require('../models/GuestSite');
-      console.log('[Claim] GuestSite model loaded');
-    } catch (modelErr) {
-      console.warn('[Claim] GuestSite model not found:', modelErr.message);
+    let GuestSite;
+    try { GuestSite = require('../models/GuestSite'); } catch (e) {
+      console.error('[Claim] GuestSite model not found:', e.message);
+      return res.status(500).json({ error: 'Guest site system not available' });
     }
 
-    if (GuestSite) {
-      // Try both field name patterns: claimCode and claim_code
-      site = await GuestSite.findOne({ claimCode: code }).catch(() => null);
-      if (!site) site = await GuestSite.findOne({ claim_code: code }).catch(() => null);
-      if (!site) {
-        // Try case-insensitive regex
-        site = await GuestSite.findOne({ $or: [
-          { claimCode: { $regex: new RegExp(`^${code}$`, 'i') } },
-          { claim_code: { $regex: new RegExp(`^${code}$`, 'i') } },
-        ]}).catch(() => null);
-      }
-      console.log(`[Claim] GuestSite.findOne result: ${site ? site.subdomain : 'not found'}`);
-    }
-
-    // Approach 2: If model failed, try raw MongoDB collection
-    if (!site) {
-      try {
-        const mongoose = require('mongoose');
-        const db = mongoose.connection.db;
-        if (db) {
-          // Try common collection names
-          for (const collName of ['guestsites', 'guest_sites', 'guestSites', 'GuestSite']) {
-            try {
-              const found = await db.collection(collName).findOne({
-                $or: [{ claimCode: code }, { claim_code: code }, { claimCode: code.toLowerCase() }, { claim_code: code.toLowerCase() }]
-              });
-              if (found) {
-                site = found;
-                site._collectionName = collName;
-                console.log(`[Claim] Found in raw collection "${collName}": ${found.subdomain}`);
-                break;
-              }
-            } catch { /* collection doesn't exist, skip */ }
-          }
-        }
-      } catch (rawErr) {
-        console.warn('[Claim] Raw MongoDB lookup failed:', rawErr.message);
-      }
-    }
-
-    if (!site) {
-      console.log(`[Claim] Code "${code}" not found in any collection`);
-      return res.status(404).json({ error: `Code "${code}" not found. Check the code and try again. It may have already been claimed or expired.` });
-    }
-
-    // Check if already claimed by someone else (skip for super admin)
+    // Find the guest site by claim code (any status for super admin, active only for regular users)
     const isSuperAdmin = user.role === 'super-admin';
-    const alreadyClaimed = site.status === 'claimed' && site.claimedBy;
-    if (alreadyClaimed && !isSuperAdmin) {
+    let site = isSuperAdmin
+      ? await GuestSite.findOne({ claimCode: code })
+      : await GuestSite.findOne({ claimCode: code, status: 'active', expiresAt: { $gt: new Date() } });
+
+    if (!site) {
+      console.log(`[Claim] Code "${code}" not found`);
+      return res.status(404).json({ error: `Code "${code}" not found. Check the code and try again.` });
+    }
+
+    // Check if already claimed by someone else
+    if (site.status === 'claimed' && site.claimedBy && !isSuperAdmin) {
       if (site.claimedBy.toString() !== user._id.toString()) {
         return res.status(409).json({ error: 'This site was already claimed by another user.' });
       }
-      // Same user re-claiming — just re-import
     }
 
-    // Update the guest site status
-    try {
-      if (GuestSite && site._id && !site._collectionName) {
-        // Use Mongoose model
-        site.status = 'claimed';
-        site.claimedBy = user._id;
-        site.claimedAt = new Date();
-        site.claimedVia = 'code';
-        await site.save();
-      } else if (site._collectionName) {
-        // Use raw MongoDB
-        const mongoose = require('mongoose');
-        await mongoose.connection.db.collection(site._collectionName).updateOne(
-          { _id: site._id },
-          { $set: { status: 'claimed', claimedBy: user._id, claimedAt: new Date(), claimedVia: 'code' } }
-        );
-      }
-    } catch (updateErr) {
-      console.warn('[Claim] Failed to update guest site status (non-fatal):', updateErr.message);
-    }
+    // Update guest site status — use 'zapcodes' (valid enum value)
+    site.status = 'claimed';
+    site.claimedBy = user._id;
+    site.claimedAt = new Date();
+    site.claimedVia = 'zapcodes'; // Must be 'zapcodes' or 'blendlink' — enum enforced
+    await site.save();
 
-    // Import files into user's account
-    const siteFiles = site.files || [];
+    // Import into user's account
+    // Guest sites store HTML in 'generatedHtml', not 'files' array
+    const html = site.generatedHtml || '';
     const siteSub = site.subdomain || '';
-    const siteName = site.title || site.name || siteSub || 'Guest Build';
+    const siteName = site.projectName || site.title || siteSub || 'Guest Build';
 
-    if (siteFiles.length > 0 && siteSub) {
+    if (html && siteSub) {
+      const siteFiles = [{ name: 'index.html', content: html }];
       const projectId = `proj-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       if (!user.saved_projects) user.saved_projects = [];
-      user.saved_projects.push({
-        projectId, name: siteName, files: siteFiles, preview: '', template: 'custom',
-        description: `Claimed from guest build (code: ${code})`,
-        linkedSubdomain: siteSub, version: 1, createdAt: new Date(), updatedAt: new Date(),
-      });
+
+      // Check if already imported (prevent duplicates on re-claim)
+      const alreadyImported = user.saved_projects.some(p => p.linkedSubdomain === siteSub);
+      if (!alreadyImported) {
+        user.saved_projects.push({
+          projectId, name: siteName, files: siteFiles, preview: html.slice(0, 50000),
+          template: site.templateKey || 'custom',
+          description: site.description || `Claimed from guest build (code: ${code})`,
+          linkedSubdomain: siteSub, version: 1, createdAt: new Date(), updatedAt: new Date(),
+        });
+      }
+
       if (!user.deployed_sites.some(s => s.subdomain === siteSub)) {
         user.deployed_sites.push({
           subdomain: siteSub, title: siteName, files: siteFiles,
-          hasBadge: true, fileSize: JSON.stringify(siteFiles).length, lastUpdated: new Date(),
+          hasBadge: true, fileSize: html.length, lastUpdated: new Date(),
         });
       }
+
       user.markModified('saved_projects');
       user.markModified('deployed_sites');
       await user.save();
-      console.log(`[Claim] SUCCESS — ${user.email} claimed ${siteSub} (${siteFiles.length} files imported)`);
-      return res.json({ success: true, subdomain: siteSub, url: `https://${siteSub}.zapcodes.net`, message: `Site claimed! ${siteFiles.length} file(s) imported. Visit My Projects to edit.` });
+      console.log(`[Claim] SUCCESS — ${user.email} claimed ${siteSub} (${html.length} chars imported)`);
+      return res.json({ success: true, subdomain: siteSub, url: `https://${siteSub}.zapcodes.net`, message: `Site claimed! Your site and project are now in your account.` });
     }
 
-    // Site found but no files — still mark as claimed
-    console.log(`[Claim] ${user.email} claimed ${siteSub} but no files to import`);
-    res.json({ success: true, subdomain: siteSub, url: siteSub ? `https://${siteSub}.zapcodes.net` : '', message: `Site claimed but no files found. The guest build may have been empty.` });
+    console.log(`[Claim] ${user.email} claimed ${siteSub} but no HTML to import`);
+    res.json({ success: true, subdomain: siteSub, url: siteSub ? `https://${siteSub}.zapcodes.net` : '', message: 'Site claimed but no content found.' });
   } catch (err) {
-    console.error('[Claim] Error:', err.message, err.stack?.slice(0, 300));
-    res.status(500).json({ error: 'Claim failed: ' + (err.message || '').slice(0, 100) });
+    console.error('[Claim] Error:', err.message);
+    res.status(500).json({ error: 'Claim failed: ' + (err.message || '').slice(0, 150) });
   }
 });
 
