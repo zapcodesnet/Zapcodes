@@ -495,6 +495,8 @@ export default function Build() {
               const aiChatMsg = { role: 'ai', content: `✅ ${doneMsg}`, timestamp: new Date().toISOString() };
               setChatMessages(prev => [...prev.slice(-19), aiChatMsg]);
               saveMessageToMemory('ai', `Built with ${MODEL_LABELS[data.model] || data.model}. ${data.fileCount} file(s) generated.`);
+              // ── Auto-save after every successful generation ──
+              autoSaveProject(completedFiles, completedPreview);
               // Clear used media AFTER insertion
               if (imgResults.length > 0) setImgResults([]);
               if (vibeResult) setVibeResult(null);
@@ -515,6 +517,22 @@ export default function Build() {
   const handleStop = async () => { if (abortControllerRef.current) abortControllerRef.current.abort(); try { await api.post('/api/build/stop', { sessionId }); } catch {} setProgressStep('stopped'); setGenResult('stopped'); setProgressMessages(p => [...p, { step: 'stopped', message: 'Stopped. Coins refunded.', time: new Date() }]); setGenerating(false); };
   const handleDismissProgress = () => { setGenResult(null); setProgressMessages([]); setProgressStep(''); };
   const handleSaveProject = async () => { if (!files.length) return alert('No files'); try { const payload = { projectId: currentProjectId, name: projectName || 'Untitled', files, preview, template, description: prompt }; if (editingDeployedSite) payload.subdomain = editingDeployedSite; const { data } = await api.post('/api/build/save-project', payload); setCurrentProjectId(data.project.projectId); alert(`Saved! (v${data.project.version})`); } catch (e) { alert(e.response?.data?.error || 'Save failed'); } };
+
+  // ── Auto-save: silently saves current files to the project after every generation ──
+  const autoSaveProject = async (filesToSave, previewToSave) => {
+    try {
+      const pid = currentProjectId;
+      if (!pid || !filesToSave?.length) return;
+      const payload = { projectId: pid, name: projectName || 'Untitled', files: filesToSave, preview: (previewToSave || '').slice(0, 50000), template };
+      if (editingDeployedSite) payload.subdomain = editingDeployedSite;
+      const { data } = await api.post('/api/build/save-project', payload);
+      if (data.project?.projectId) setCurrentProjectId(data.project.projectId);
+      console.log(`[AutoSave] Saved v${data.project?.version || '?'} — ${filesToSave.length} file(s)`);
+    } catch (e) {
+      console.warn('[AutoSave] Failed:', e.response?.data?.error || e.message);
+      // Silent fail — auto-save is a safety net, not critical
+    }
+  };
   const handleDeploy = async () => { if (!files.length) return alert('Generate or load files first'); setDeploying(true); try { if (editingDeployedSite && currentProjectId) { await api.post('/api/build/save-project', { projectId: currentProjectId, name: projectName || 'Untitled', files, preview, template, description: prompt }); const { data } = await api.post('/api/build/redeploy-from-project', { projectId: currentProjectId }); setDeployUrl(data.url); alert(`Re-deployed to ${data.url}!`); } else { if (!subdomain.trim()) return alert('Enter a subdomain'); const { data } = await api.post('/api/build/deploy', { subdomain: subdomain.toLowerCase(), files, title: projectName || subdomain }); setDeployUrl(data.url); if (data.linkedProjectId) setCurrentProjectId(data.linkedProjectId); setEditingDeployedSite(data.subdomain); alert(`Deployed to ${data.url}!`); } } catch (e) { alert(e.response?.data?.error || 'Deploy failed'); } finally { setDeploying(false); } };
   const handleCloneAnalyze = async () => { if (!cloneUrl.trim()) return; setAnalyzing(true); try { const { data } = await api.post('/api/build/clone-analyze', { url: cloneUrl }); setCloneAnalysis(data.analysis); } catch (e) { alert(e.response?.data?.error || 'Failed'); } finally { setAnalyzing(false); } };
   const handleFileUpload = (fileList) => { const uploaded = Array.from(fileList); const zips = uploaded.filter(f => f.name.endsWith('.zip')); const texts = uploaded.filter(f => !f.name.endsWith('.zip')); if (zips.length) { const fd = new FormData(); zips.forEach(f => fd.append('files', f)); api.post('/api/files/upload', fd, { headers: { 'Content-Type': 'multipart/form-data' } }).then(({ data }) => { setFixFiles(p => [...p, ...data.files]); alert(`${data.totalFiles} files extracted`); }).catch(e => alert(e.response?.data?.error || 'ZIP failed')); } if (texts.length) Promise.all(texts.map(f => new Promise(r => { const rd = new FileReader(); rd.onload = e => r({ name: f.name, content: e.target.result }); rd.readAsText(f); }))).then(p => setFixFiles(prev => [...prev, ...p])); };
