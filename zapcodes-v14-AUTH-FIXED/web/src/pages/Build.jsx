@@ -389,9 +389,14 @@ export default function Build() {
         requestBody.prompt = requestBody.prompt + '\n\n[USER PHOTO: The user uploaded their own photo. Create an <img> tag with EXACTLY: id="user-uploaded-photo" src="USER_PHOTO_PLACEHOLDER". If the user specified WHERE to place it and HOW to style it, follow those instructions exactly. If the user did NOT specify where to place it, you MUST ask: "I see you uploaded a photo! Where would you like me to place it on your site? For example: hero section, about section, gallery, background, etc. Also let me know the size you want (full-width, small thumbnail, medium, etc.)". Do NOT guess — ask first if no placement instructions given. Do NOT delete any existing images unless user specifically asks. The placeholder will be replaced with the actual photo after generation.]';
       }
 
-      // ── AI-generated images: tell AI to ask about placement ──
+      // ── AI-generated images: tell AI to use placeholders we replace after build ──
       if (imgResults.length > 0 && editFiles?.length > 0) {
-        requestBody.prompt = requestBody.prompt + `\n\n[AI GENERATED IMAGE: The user has ${imgResults.length} AI-generated image(s) ready to insert. If the user specified WHERE to place the image(s) and HOW to style them, follow those instructions exactly. If the user did NOT specify where to place them, you MUST ask: "I have your AI-generated image(s) ready! Where would you like me to place them? For example: hero banner, about section, gallery grid, product showcase, etc. Also let me know the size (full-width, medium, thumbnail, etc.)". Do NOT auto-insert images randomly. Wait for user instructions on placement.]`;
+        const placeholders = imgResults.map((_, i) => `AI_IMAGE_PLACEHOLDER_${i + 1}`);
+        requestBody.prompt = requestBody.prompt + `\n\n[AI GENERATED IMAGES: The user has ${imgResults.length} AI-generated image(s) ready. Use these EXACT placeholder src values — they will be replaced with the real images after generation:\n${placeholders.map((p, i) => `  Image ${i + 1}: src="${p}"`).join('\n')}\nIf the user specified WHERE to place the image(s), create <img> tags with the placeholder src values at those locations. Style them per user instructions.\nIf the user did NOT specify where, ask: "Where would you like me to place your AI-generated image(s)?"\nDo NOT use any other src for these images. Do NOT use generated-image.png or any made-up filenames.]`;
+      } else if (imgResults.length > 0) {
+        // New site build — also use placeholders
+        const placeholders = imgResults.map((_, i) => `AI_IMAGE_PLACEHOLDER_${i + 1}`);
+        requestBody.prompt = requestBody.prompt + `\n\n[AI GENERATED IMAGES: Include these image placeholders in the site. Use these EXACT src values:\n${placeholders.map((p, i) => `  Image ${i + 1}: src="${p}"`).join('\n')}\nPlace them where appropriate for the site design. They will be replaced with the real images after generation.]`;
       }
 
       // ── AI-generated video: tell AI to ask about placement ──
@@ -445,10 +450,40 @@ export default function Build() {
                 if (htmlFile) completedPreview = htmlFile.content;
               }
 
-              // NOTE: AI-generated images/photos/videos are NOT auto-inserted.
-              // Users must click the "Insert" button on each image to add it.
-              // Auto-insertion was removed because it caused random placement,
-              // buffer overflow errors, and corrupted project saves.
+              // ── Replace AI_IMAGE_PLACEHOLDER_N with actual generated images ──
+              if (imgResults.length > 0 && completedFiles.length > 0) {
+                completedFiles = completedFiles.map(f => {
+                  if (!f.name.endsWith('.html')) return f;
+                  let html = f.content;
+                  imgResults.forEach((img, i) => {
+                    const placeholder = `AI_IMAGE_PLACEHOLDER_${i + 1}`;
+                    if (html.includes(placeholder)) {
+                      html = html.replace(new RegExp(placeholder, 'g'), `data:${img.mimeType};base64,${img.base64}`);
+                    }
+                  });
+                  return { ...f, content: html };
+                });
+                const htmlFile = completedFiles.find(f => f.name.endsWith('.html'));
+                if (htmlFile) completedPreview = htmlFile.content;
+              }
+
+              // ── Replace USER_PHOTO_PLACEHOLDER for vibe-transformed photos ──
+              if (vibeResult && completedFiles.length > 0) {
+                const b64 = vibeResult.split(',')[1];
+                const mime = vibeResult.split(':')[1]?.split(';')[0] || 'image/png';
+                if (b64) {
+                  completedFiles = completedFiles.map(f => {
+                    if (!f.name.endsWith('.html')) return f;
+                    let html = f.content;
+                    if (html.includes('USER_PHOTO_PLACEHOLDER')) {
+                      html = html.replace(/USER_PHOTO_PLACEHOLDER/g, `data:${mime};base64,${b64}`);
+                    }
+                    return { ...f, content: html };
+                  });
+                  const htmlFile = completedFiles.find(f => f.name.endsWith('.html'));
+                  if (htmlFile) completedPreview = htmlFile.content;
+                }
+              }
 
               setFiles(completedFiles);
               setPreview(completedPreview);
