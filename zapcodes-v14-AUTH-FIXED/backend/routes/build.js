@@ -659,7 +659,10 @@ router.delete('/project/:projectId', auth, async (req, res) => {
 
 router.post('/deploy', auth, async (req, res) => {
   try {
-    const user = req.user; const { subdomain, files: rawFiles, title } = req.body; const config = user.getTierConfig();
+    // Re-fetch user fresh to avoid version conflict with auto-save
+    const user = await User.findById(req.user._id);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    const { subdomain, files: rawFiles, title } = req.body; const config = user.getTierConfig();
     const sub = (subdomain || '').toLowerCase().trim();
     if (!/^[a-z0-9][a-z0-9-]{1,48}[a-z0-9]$/.test(sub)) return res.status(400).json({ error: 'Invalid subdomain' });
     if (RESERVED.includes(sub)) return res.status(400).json({ error: 'Reserved' });
@@ -1119,7 +1122,10 @@ function enforceMaxClones(user, rootProjectId) {
 // ══════════════════════════════════════════════════════════════════
 router.post('/redeploy-from-project', auth, async (req, res) => {
   try {
-    const user = req.user;
+    // Re-fetch user fresh to avoid version conflict with auto-save
+    const user = await User.findById(req.user._id);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+
     const { projectId } = req.body;
     if (!projectId) return res.status(400).json({ error: 'Missing projectId' });
 
@@ -1130,23 +1136,18 @@ router.post('/redeploy-from-project', auth, async (req, res) => {
     const sub = proj.linkedSubdomain;
     let site = user.deployed_sites.find(s => s.subdomain === sub);
 
-    // ── FIX: If site was shut down, re-create the deployed_sites entry ──
+    // ── If site was shut down, re-create the deployed_sites entry ──
     if (!site) {
       const config = user.getTierConfig();
       if (user.deployed_sites.length >= config.maxSites) {
         return res.status(403).json({ error: `Site limit (${config.maxSites})`, upgrade: true });
       }
-      // Check subdomain not taken by another user
       const taken = await User.findOne({ 'deployed_sites.subdomain': sub, _id: { $ne: user._id } });
       if (taken) return res.status(409).json({ error: 'Subdomain taken by another user' });
 
-      // Create fresh site entry
       user.deployed_sites.push({
-        subdomain: sub,
-        title: proj.name || sub,
-        files: [],
-        hasBadge: !config.canRemoveBadge,
-        fileSize: 0,
+        subdomain: sub, title: proj.name || sub, files: [],
+        hasBadge: !user.getTierConfig().canRemoveBadge, fileSize: 0,
       });
       site = user.deployed_sites.find(s => s.subdomain === sub);
     }
@@ -1154,7 +1155,7 @@ router.post('/redeploy-from-project', auth, async (req, res) => {
     const config = user.getTierConfig();
     const shouldBadge = !config.canRemoveBadge;
 
-    // ── Auto-clone BEFORE deploying ───────────────────────────────────────
+    // ── Create rollback clone BEFORE deploying ──
     const rootId = proj.cloneOf || proj.projectId;
 
     // Shift existing clone versions up by 1
@@ -1169,17 +1170,18 @@ router.post('/redeploy-from-project', auth, async (req, res) => {
     if (!user.saved_projects) user.saved_projects = [];
     user.saved_projects.push(newClone);
 
-    // Enforce max 5 clones
+    // Enforce max 2 clones (delete oldest, keep 2 newest for rollback)
     enforceMaxClones(user, rootId);
 
     // Deploy files
-    let deployFiles = proj.files || [];
+    let deployFiles = sanitizeFilesForSave(proj.files || []);
     if (shouldBadge) deployFiles = deployFiles.map(f => f.name.endsWith('.html') ? { ...f, content: f.content.replace('</body>', `${BADGE_SCRIPT}</body>`) } : f);
 
     site.files = deployFiles;
     site.title = proj.name || site.title;
     site.lastUpdated = new Date();
     site.hasBadge = shouldBadge;
+    site.fileSize = JSON.stringify(deployFiles).length;
 
     proj.updatedAt = new Date();
     proj.version = (proj.version || 1) + 1;
@@ -1187,7 +1189,8 @@ router.post('/redeploy-from-project', auth, async (req, res) => {
 
     user.markModified('saved_projects');
     user.markModified('deployed_sites');
-    trimUserDocumentSize(user); await user.save();
+    trimUserDocumentSize(user);
+    await user.save();
 
     res.json({
       success: true,
@@ -1207,7 +1210,9 @@ router.post('/redeploy-from-project', auth, async (req, res) => {
 // ══════════════════════════════════════════════════════════════════
 router.post('/rollback', auth, async (req, res) => {
   try {
-    const user = req.user;
+    // Re-fetch user fresh to avoid version conflict with auto-save
+    const user = await User.findById(req.user._id);
+    if (!user) return res.status(404).json({ error: 'User not found' });
     const { cloneProjectId } = req.body;
     if (!cloneProjectId) return res.status(400).json({ error: 'cloneProjectId required' });
 
