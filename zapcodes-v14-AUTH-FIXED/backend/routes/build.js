@@ -468,9 +468,8 @@ function sanitizeFilesForSave(files) {
 }
 
 // ── Trim user document when approaching MongoDB 16MB limit ──
-// Strips file content from old deployed sites and old project clones
 function trimUserDocumentSize(user) {
-  const MAX_SIZE = 14 * 1024 * 1024; // 14MB target (leave 2MB buffer)
+  const MAX_SIZE = 12 * 1024 * 1024; // 12MB target (4MB buffer for MongoDB overhead)
   const estimateSize = () => {
     let size = 0;
     (user.deployed_sites || []).forEach(s => {
@@ -478,21 +477,21 @@ function trimUserDocumentSize(user) {
     });
     (user.saved_projects || []).forEach(p => {
       (p.files || []).forEach(f => { size += (f.content?.length || 0); });
+      size += (p.preview?.length || 0);
     });
     return size;
   };
 
   let currentSize = estimateSize();
-  if (currentSize <= MAX_SIZE) return; // Under limit, no trimming needed
+  if (currentSize <= MAX_SIZE) return;
 
-  console.log(`[TrimDoc] User document ~${(currentSize / 1024 / 1024).toFixed(1)}MB — trimming to fit 16MB limit`);
+  console.log(`[TrimDoc] User document content ~${(currentSize / 1024 / 1024).toFixed(1)}MB — trimming...`);
 
-  // Step 1: Strip base64 from ALL deployed sites and projects
-  (user.deployed_sites || []).forEach(s => {
-    s.files = sanitizeFilesForSave(s.files || []);
-  });
+  // Step 1: Strip ALL base64 from every project and site
+  (user.deployed_sites || []).forEach(s => { s.files = sanitizeFilesForSave(s.files || []); });
   (user.saved_projects || []).forEach(p => {
     p.files = sanitizeFilesForSave(p.files || []);
+    p.preview = ''; // Clear preview field — can be large
   });
   user.markModified('deployed_sites');
   user.markModified('saved_projects');
@@ -500,34 +499,53 @@ function trimUserDocumentSize(user) {
   currentSize = estimateSize();
   if (currentSize <= MAX_SIZE) { console.log(`[TrimDoc] After base64 strip: ~${(currentSize / 1024 / 1024).toFixed(1)}MB — OK`); return; }
 
-  // Step 2: Trim old clone versions (keep only latest 2 per project)
-  const rootIds = new Set();
-  (user.saved_projects || []).forEach(p => { if (p.cloneOf) rootIds.add(p.cloneOf); });
-  rootIds.forEach(rootId => {
-    const clones = (user.saved_projects || []).filter(p => p.cloneOf === rootId && p.cloneVersion != null);
-    clones.sort((a, b) => (a.cloneVersion || 0) - (b.cloneVersion || 0));
-    // Keep only newest 2 clones, strip files from older ones
-    if (clones.length > 2) {
-      clones.slice(2).forEach(c => {
-        c.files = [{ name: 'index.html', content: '<!-- Content trimmed to save space. Rebuild to restore. -->' }];
-      });
+  // Step 2: Remove ALL clone files (keep metadata only)
+  (user.saved_projects || []).forEach(p => {
+    if (p.cloneVersion != null && p.cloneOf) {
+      p.files = [{ name: 'index.html', content: '<!-- Clone trimmed to save space. Use Edit to rebuild. -->' }];
     }
   });
 
   currentSize = estimateSize();
   if (currentSize <= MAX_SIZE) { console.log(`[TrimDoc] After clone trim: ~${(currentSize / 1024 / 1024).toFixed(1)}MB — OK`); return; }
 
-  // Step 3: Trim oldest deployed sites (keep files only for newest 3)
-  const sites = user.deployed_sites || [];
-  if (sites.length > 3) {
-    sites.sort((a, b) => new Date(b.lastUpdated || 0) - new Date(a.lastUpdated || 0));
-    sites.slice(3).forEach(s => {
-      s.files = [{ name: 'index.html', content: `<!-- Content trimmed. Re-deploy from project to restore. -->` }];
-    });
-  }
+  // Step 3: Trim deployed sites — keep full content only for the 2 most recent
+  const sites = [...(user.deployed_sites || [])];
+  sites.sort((a, b) => new Date(b.lastUpdated || 0) - new Date(a.lastUpdated || 0));
+  sites.forEach((s, i) => {
+    if (i >= 2) {
+      s.files = [{ name: 'index.html', content: `<!-- Site trimmed. Re-deploy from project to restore. -->` }];
+    }
+  });
 
   currentSize = estimateSize();
-  console.log(`[TrimDoc] Final size: ~${(currentSize / 1024 / 1024).toFixed(1)}MB`);
+  if (currentSize <= MAX_SIZE) { console.log(`[TrimDoc] After site trim: ~${(currentSize / 1024 / 1024).toFixed(1)}MB — OK`); return; }
+
+  // Step 4: Truncate large HTML files in remaining projects (keep first 50KB each)
+  (user.saved_projects || []).forEach(p => {
+    if (!p.cloneOf) { // Only root projects
+      (p.files || []).forEach(f => {
+        if (f.content && f.content.length > 50000) {
+          f.content = f.content.slice(0, 50000) + '\n<!-- Truncated to save space --></body></html>';
+        }
+      });
+    }
+  });
+
+  currentSize = estimateSize();
+  if (currentSize <= MAX_SIZE) { console.log(`[TrimDoc] After HTML truncate: ~${(currentSize / 1024 / 1024).toFixed(1)}MB — OK`); return; }
+
+  // Step 5: Nuclear option — keep only the 3 newest root projects with content
+  const roots = (user.saved_projects || []).filter(p => !p.cloneOf && p.cloneVersion == null);
+  roots.sort((a, b) => new Date(b.updatedAt || 0) - new Date(a.updatedAt || 0));
+  roots.forEach((p, i) => {
+    if (i >= 3) {
+      p.files = [{ name: 'index.html', content: '<!-- Project archived. Rebuild to restore. -->' }];
+    }
+  });
+
+  currentSize = estimateSize();
+  console.log(`[TrimDoc] Final size: ~${(currentSize / 1024 / 1024).toFixed(1)}MB${currentSize > MAX_SIZE ? ' — STILL OVER LIMIT' : ' — OK'}`);
 }
 
 router.post('/save-project', auth, async (req, res) => {
