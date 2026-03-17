@@ -20,6 +20,7 @@ const TEMPLATES = [
   { id: 'dashboard', name: 'Dashboard', icon: '📊' },
   { id: 'webapp', name: 'Web App', icon: '⚡' },
   { id: 'saas', name: 'SaaS', icon: '💎' },
+  { id: 'game', name: 'Mobile Game', icon: '🎮' },
 ];
 const UNLIMITED = 999999999;
 function isUnlimited(n) { return n >= UNLIMITED || n === Infinity; }
