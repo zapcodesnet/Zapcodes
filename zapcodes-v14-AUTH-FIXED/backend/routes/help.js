@@ -239,9 +239,16 @@ async function refreshPlatformKnowledge() {
   platformKnowledgeCache.loading = false;
 }
 
-// Refresh on startup (5s delay for boot) and every 6 hours
-setTimeout(refreshPlatformKnowledge, 5000);
-setInterval(refreshPlatformKnowledge, KNOWLEDGE_REFRESH_MS);
+// ── Knowledge scanner init — called from server.js AFTER port is open ──
+// This prevents fetch() calls from interfering with Render's port detection.
+let knowledgeScannerStarted = false;
+function initKnowledgeScanner() {
+  if (knowledgeScannerStarted) return;
+  knowledgeScannerStarted = true;
+  console.log('[Knowledge] Scanner initialized — first scan in 10s, then every 6h');
+  setTimeout(refreshPlatformKnowledge, 10000);
+  setInterval(refreshPlatformKnowledge, KNOWLEDGE_REFRESH_MS);
+}
 
 function getPlatformKnowledge() {
   if (platformKnowledgeCache.summary && platformKnowledgeCache.summary.length > 100) {
@@ -1113,3 +1120,4 @@ router.get('/test-imagen', auth, async (req, res) => {
 });
 
 module.exports = router;
+module.exports.initKnowledgeScanner = initKnowledgeScanner;
