@@ -962,6 +962,72 @@ router.post('/claim-guest-site', auth, async (req, res) => {
   }
 });
 
+// ══════════════════════════════════════════════════════════════════
+// POST /api/build/rename-subdomain — Let user choose their own subdomain
+// Changes preview-XXXXX to user's chosen subdomain everywhere
+// ══════════════════════════════════════════════════════════════════
+router.post('/rename-subdomain', auth, async (req, res) => {
+  try {
+    const user = await User.findById(req.user._id);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    const { oldSubdomain, newSubdomain } = req.body;
+    if (!oldSubdomain || !newSubdomain) return res.status(400).json({ error: 'Both old and new subdomain required' });
+
+    // Sanitize new subdomain
+    const clean = newSubdomain.toLowerCase().trim().replace(/[^a-z0-9-]/g, '').replace(/^-+|-+$/g, '').slice(0, 30);
+    if (clean.length < 2) return res.status(400).json({ error: 'Subdomain must be at least 2 characters (letters, numbers, hyphens only)' });
+    if (/^(www|api|admin|mail|ftp|preview|test|zapcodes|blendlink)$/i.test(clean)) {
+      return res.status(400).json({ error: 'That subdomain is reserved. Please choose another.' });
+    }
+
+    // Check if new subdomain is already taken by another user
+    const allUsers = await User.find({ 'deployed_sites.subdomain': clean, _id: { $ne: user._id } }).limit(1);
+    if (allUsers.length > 0) return res.status(409).json({ error: `"${clean}.zapcodes.net" is already taken. Try another name.` });
+
+    // Also check GuestSite collection for active previews
+    try {
+      const GuestSite = require('../models/GuestSite');
+      const existingGuest = await GuestSite.findOne({ subdomain: clean, status: 'active' });
+      if (existingGuest) return res.status(409).json({ error: `"${clean}.zapcodes.net" is already taken. Try another name.` });
+    } catch {}
+
+    // Check if old subdomain exists in user's account
+    const siteIdx = user.deployed_sites.findIndex(s => s.subdomain === oldSubdomain);
+    const projIdx = (user.saved_projects || []).findIndex(p => p.linkedSubdomain === oldSubdomain);
+
+    if (siteIdx < 0 && projIdx < 0) {
+      return res.status(404).json({ error: `Site "${oldSubdomain}" not found in your account.` });
+    }
+
+    // Rename in deployed_sites
+    if (siteIdx >= 0) {
+      user.deployed_sites[siteIdx].subdomain = clean;
+      user.deployed_sites[siteIdx].title = user.deployed_sites[siteIdx].title?.replace(oldSubdomain, clean) || clean;
+    }
+
+    // Rename in saved_projects
+    (user.saved_projects || []).forEach(p => {
+      if (p.linkedSubdomain === oldSubdomain) p.linkedSubdomain = clean;
+    });
+
+    // Also update GuestSite record if it exists
+    try {
+      const GuestSite = require('../models/GuestSite');
+      await GuestSite.findOneAndUpdate({ subdomain: oldSubdomain }, { subdomain: clean });
+    } catch {}
+
+    user.markModified('deployed_sites');
+    user.markModified('saved_projects');
+    await user.save();
+
+    console.log(`[Rename] ${user.email}: ${oldSubdomain} → ${clean}`);
+    res.json({ success: true, oldSubdomain, newSubdomain: clean, url: `https://${clean}.zapcodes.net`, message: `Your site is now live at ${clean}.zapcodes.net!` });
+  } catch (err) {
+    console.error('[Rename] Error:', err.message);
+    res.status(500).json({ error: 'Rename failed: ' + (err.message || '').slice(0, 100) });
+  }
+});
+
 router.get('/sites', auth, (req, res) => { const sites = (req.user.deployed_sites || []).map(s => { const lp = (req.user.saved_projects || []).find(p => p.linkedSubdomain === s.subdomain); return { ...(s.toObject ? s.toObject() : s), linkedProjectId: lp?.projectId || null }; }); res.json({ sites }); });
 
 router.post('/site/shutdown', auth, async (req, res) => {
