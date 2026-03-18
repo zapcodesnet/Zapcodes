@@ -27,6 +27,10 @@ export default function Dashboard() {
   const [claimCode, setClaimCode] = useState('');
   const [claimingCode, setClaimingCode] = useState(false);
   const [claimResult, setClaimResult] = useState(null);
+  const [chooseSubdomain, setChooseSubdomain] = useState(''); // After claim — let user pick subdomain
+  const [renamingSubdomain, setRenamingSubdomain] = useState(false);
+  const [renameError, setRenameError] = useState('');
+  const [claimedOldSub, setClaimedOldSub] = useState(''); // preview-XXXXX that was claimed
   const [widgetBanner, setWidgetBanner] = useState(null);
   const [bannerDismissed, setBannerDismissed] = useState(false);
 
@@ -64,13 +68,28 @@ export default function Dashboard() {
 
   const handleClaimCode = async () => {
     if (!claimCode.trim()) return;
-    setClaimingCode(true); setClaimResult(null);
+    setClaimingCode(true); setClaimResult(null); setRenameError('');
     try {
       const { data } = await api.post('/api/build/claim-guest-site', { claimCode: claimCode.trim() });
       setClaimResult({ success: true, message: data.message, url: data.url, subdomain: data.subdomain });
-      setClaimCode(''); fetchData();
+      setClaimedOldSub(data.subdomain || ''); // Store the preview-XXXXX subdomain
+      setClaimCode('');
+      fetchData();
     } catch (err) { setClaimResult({ success: false, message: err.response?.data?.error || 'Claim failed. Check the code and try again.' }); }
     finally { setClaimingCode(false); }
+  };
+
+  const handleRenameSubdomain = async () => {
+    const clean = chooseSubdomain.toLowerCase().trim().replace(/[^a-z0-9-]/g, '');
+    if (clean.length < 2) { setRenameError('Subdomain must be at least 2 characters'); return; }
+    setRenamingSubdomain(true); setRenameError('');
+    try {
+      const { data } = await api.post('/api/build/rename-subdomain', { oldSubdomain: claimedOldSub, newSubdomain: clean });
+      setClaimResult({ success: true, message: data.message, url: data.url, subdomain: data.newSubdomain, renamed: true });
+      setChooseSubdomain('');
+      fetchData();
+    } catch (err) { setRenameError(err.response?.data?.error || 'Rename failed'); }
+    finally { setRenamingSubdomain(false); }
   };
 
   const handleDeleteSite = async (subdomain) => { if (!confirm(`Permanently delete ${subdomain}.zapcodes.net?`)) return; try { await api.delete(`/api/build/site/${subdomain}`); setSites(s => s.filter(site => site.subdomain !== subdomain)); setProjects(p => p.filter(proj => proj.linkedSubdomain !== subdomain)); } catch { alert('Delete failed'); } };
@@ -112,7 +131,8 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* ══ CLAIM CODE SECTION ══ */}
+      {/* ══ CLAIM CODE SECTION — only show if user hasn't claimed a guest site yet ══ */}
+      {!sites.some(s => s.subdomain?.startsWith('preview-')) && !projects.some(p => p.linkedSubdomain?.startsWith('preview-')) && (
       <div style={{ background: 'linear-gradient(135deg, rgba(99,102,241,0.08), rgba(255,59,136,0.06))', border: '1px solid rgba(99,102,241,0.2)', borderRadius: 16, padding: '18px 20px', marginBottom: 20 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
           <span style={{ fontSize: 22 }}>🎟️</span>
@@ -122,11 +142,30 @@ export default function Dashboard() {
           <input style={{ flex: 1, padding: '10px 14px', borderRadius: 10, border: '1px solid var(--border)', background: 'var(--bg-elevated)', color: 'var(--text-primary)', fontSize: 15, fontWeight: 700, fontFamily: 'monospace', letterSpacing: 3, textTransform: 'uppercase', textAlign: 'center', maxWidth: 200 }} placeholder="ABC123" value={claimCode} onChange={e => { setClaimCode(e.target.value.toUpperCase()); setClaimResult(null); }} onKeyDown={e => { if (e.key === 'Enter') handleClaimCode(); }} maxLength={10} />
           <button style={{ padding: '10px 20px', borderRadius: 10, border: 'none', background: claimCode.trim() ? 'linear-gradient(135deg, #6366f1, #8b5cf6)' : 'var(--bg-elevated)', color: claimCode.trim() ? '#fff' : 'var(--text-muted)', fontWeight: 700, fontSize: 14, cursor: claimCode.trim() ? 'pointer' : 'default', transition: 'all .2s' }} onClick={handleClaimCode} disabled={!claimCode.trim() || claimingCode}>{claimingCode ? '⏳ Claiming...' : '🎉 Claim My Site'}</button>
         </div>
-        {claimResult && (<div style={{ marginTop: 10, padding: '10px 14px', borderRadius: 8, background: claimResult.success ? 'rgba(34,197,94,0.1)' : 'rgba(239,68,68,0.1)', border: `1px solid ${claimResult.success ? 'rgba(34,197,94,0.2)' : 'rgba(239,68,68,0.2)'}`, fontSize: 13, color: claimResult.success ? '#22c55e' : '#ef4444', fontWeight: 600 }}>
-          {claimResult.success ? '✅ ' : '❌ '}{claimResult.message}
-          {claimResult.success && claimResult.url && (<span> — <a href={claimResult.url} target="_blank" rel="noreferrer" style={{ color: '#22c55e' }}>Visit site ↗</a> or <a href="/projects" style={{ color: '#6366f1' }}>My Projects</a></span>)}
-        </div>)}
+        {claimResult && claimResult.success && !claimResult.renamed && claimedOldSub && (
+          <div style={{ marginTop: 12, padding: '14px 16px', borderRadius: 10, background: 'rgba(34,197,94,0.06)', border: '1px solid rgba(34,197,94,0.2)' }}>
+            <div style={{ fontSize: 14, fontWeight: 700, color: '#22c55e', marginBottom: 8 }}>✅ Site claimed! Now choose your subdomain:</div>
+            <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+              <input style={{ flex: 1, padding: '10px 12px', borderRadius: 10, border: renameError ? '1px solid #ef4444' : '1px solid var(--border)', background: 'var(--bg-elevated)', color: 'var(--text-primary)', fontSize: 14, fontWeight: 600, minWidth: 120 }} placeholder="mybusiness" value={chooseSubdomain} onChange={e => { setChooseSubdomain(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, '')); setRenameError(''); }} onKeyDown={e => { if (e.key === 'Enter') handleRenameSubdomain(); }} maxLength={30} />
+              <span style={{ color: 'var(--text-muted)', fontSize: 13, fontWeight: 600, whiteSpace: 'nowrap' }}>.zapcodes.net</span>
+              <button style={{ padding: '10px 16px', borderRadius: 10, border: 'none', background: chooseSubdomain.trim().length >= 2 ? '#22c55e' : 'var(--bg-elevated)', color: chooseSubdomain.trim().length >= 2 ? '#fff' : 'var(--text-muted)', fontWeight: 700, fontSize: 13, cursor: chooseSubdomain.trim().length >= 2 ? 'pointer' : 'default', whiteSpace: 'nowrap' }} onClick={handleRenameSubdomain} disabled={chooseSubdomain.trim().length < 2 || renamingSubdomain}>{renamingSubdomain ? '⏳...' : '✅ Confirm'}</button>
+            </div>
+            {renameError && <div style={{ marginTop: 6, fontSize: 12, color: '#ef4444', fontWeight: 600 }}>❌ {renameError}</div>}
+            <div style={{ marginTop: 6, fontSize: 11, color: 'var(--text-muted)' }}>Letters, numbers, and hyphens only. At least 2 characters.</div>
+          </div>
+        )}
+        {claimResult && claimResult.success && claimResult.renamed && (
+          <div style={{ marginTop: 10, padding: '10px 14px', borderRadius: 8, background: 'rgba(34,197,94,0.1)', border: '1px solid rgba(34,197,94,0.2)', fontSize: 13, color: '#22c55e', fontWeight: 600 }}>
+            ✅ {claimResult.message} — <a href={claimResult.url} target="_blank" rel="noreferrer" style={{ color: '#22c55e' }}>Visit your site ↗</a> or <a href="/projects" style={{ color: '#6366f1' }}>My Projects</a>
+          </div>
+        )}
+        {claimResult && !claimResult.success && (
+          <div style={{ marginTop: 10, padding: '10px 14px', borderRadius: 8, background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.2)', fontSize: 13, color: '#ef4444', fontWeight: 600 }}>
+            ❌ {claimResult.message}
+          </div>
+        )}
       </div>
+      )}
 
       <div style={s.grid}>
         <div style={s.card}><div style={s.cardTitle}>🪙 BL Coin Balance</div><div style={s.bigNum}>{balance.toLocaleString()}</div><div style={s.claimInfo}>Daily claim: <strong style={{ color: '#f59e0b' }}>{formatBL(dailyClaim)} BL</strong></div><button style={s.claimBtn(canClaim)} onClick={canClaim ? handleClaim : undefined} disabled={!canClaim || claiming}>{claiming ? '⏳ Claiming...' : canClaim ? `🎉 Claim ${formatBL(dailyClaim)} BL!` : `Next claim in ${formatCountdown(countdown)}`}</button><a href="/pricing" style={{ display: 'block', marginTop: 10, textAlign: 'center', color: '#f59e0b', fontSize: 12, fontWeight: 600, textDecoration: 'none' }}>🪙 Buy more BL Coins →</a></div>
