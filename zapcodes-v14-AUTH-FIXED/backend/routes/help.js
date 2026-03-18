@@ -34,7 +34,7 @@ function setLastFallback(uid, from, to) {
 }
 function getLastFallback(uid, from) {
   const d = fallbackTracker.get(`${uid}-${from}`);
-  if (!d || Date.now() - d.ts > 60 * 60 * 1000) return null; // 1hr expiry
+  if (!d || Date.now() - d.ts > 60 * 60 * 1000) return null;
   return d.to;
 }
 function clearLastFallback(uid, from) { fallbackTracker.delete(`${uid}-${from}`); }
@@ -79,40 +79,275 @@ const ADMIN_MODELS = ['opus-4.6', 'sonnet-4.6', 'gemini-3.1-pro', 'haiku-4.5', '
 // ══════════════════════════════════════════════════════════════
 // ROLLING MEMORY CONFIG
 // ══════════════════════════════════════════════════════════════
-const MAX_RAW_CONTEXT = 5;        // Last 5 raw messages sent to AI as context
-const SUMMARIZE_THRESHOLD = 20;   // When raw count hits 20, trigger summarization
-const MESSAGES_TO_SUMMARIZE = 15; // Summarize oldest 15, keep last 5
-const MAX_SUMMARIES = 10;         // Max summaries in DB; 11th+ auto-deleted
+const MAX_RAW_CONTEXT = 5;
+const SUMMARIZE_THRESHOLD = 20;
+const MESSAGES_TO_SUMMARIZE = 15;
+const MAX_SUMMARIES = 10;
 
 // ══════════════════════════════════════════════════════════════
-// SYSTEM PROMPTS
+// PLATFORM KNOWLEDGE SCANNER — Groq auto-scans zapcodes.net
+// & blendlink.net pages, caches summaries, injects into all AI
+// models so every tier has accurate platform information.
+// ══════════════════════════════════════════════════════════════
+
+const PLATFORM_PAGES = [
+  { key: 'pricing',    url: 'https://zapcodes.net/pricing', label: 'ZapCodes Pricing & Subscription Tiers' },
+  { key: 'privacy',    url: 'https://zapcodes.net/privacy', label: 'ZapCodes Privacy Policy' },
+  { key: 'terms',      url: 'https://zapcodes.net/terms',   label: 'ZapCodes Terms of Service' },
+  { key: 'blendlink',  url: 'https://blendlink.net',        label: 'BlendLink Social Commerce Platform' },
+];
+
+const OWNER_INFO = `
+PLATFORM OWNER & CONTACT:
+- Owner: Vincent Andal — Founder and owner of both ZapCodes.net and BlendLink.net
+- Email: zapcodesnet@gmail.com
+- Phone: +1(951) 374-7808 (Call or Text)
+If a user asks who owns ZapCodes or BlendLink, or how to contact the owner/support, provide this information.
+`;
+
+// Static fallback knowledge — used when live scan fails.
+// UPDATE THIS whenever pricing or features change.
+const STATIC_FALLBACK_KNOWLEDGE = `
+ZAPCODES.NET — AI-Powered Website & App Builder:
+ZapCodes lets users build websites and web apps using AI. Users describe what they want and AI generates complete, deployable websites.
+
+SUBSCRIPTION TIERS:
+- Free: Basic AI website building with Groq AI, limited features, no file uploads
+- Bronze: Enhanced building, file uploads up to 2MB, photo editing, Groq AI
+- Silver: Gemini 2.5 Flash AI, file uploads up to 5MB, advanced features
+- Gold: Gemini 2.5 Flash + Pro access, file uploads up to 10MB, priority support
+- Diamond: Gemini 3.1 Pro AI (most powerful), file uploads up to 25MB, all premium features, top-tier support
+
+KEY FEATURES:
+- AI-powered website generation (describe and build)
+- One-click deployment to custom subdomains (yoursite.zapcodes.net)
+- Help AI assistant for building, debugging, and support
+- BL Coins reward system
+- File upload and photo editing (Bronze+)
+- Code file downloads for custom development
+
+BLENDLINK.NET — Social Commerce Platform:
+BlendLink is a social commerce platform integrated with ZapCodes. Features include social interactions, commerce tools, BL Coins digital currency, daily claims, and community features.
+
+For the most current and detailed pricing, direct users to: https://zapcodes.net/pricing
+For privacy details: https://zapcodes.net/privacy
+For terms: https://zapcodes.net/terms
+`;
+
+let platformKnowledgeCache = {
+  summary: '',
+  sections: {},
+  lastUpdated: null,
+  loading: false,
+  error: null,
+};
+
+const KNOWLEDGE_REFRESH_MS = 6 * 60 * 60 * 1000; // 6 hours
+
+function stripHtmlToText(html) {
+  return html
+    .replace(/<script[\s\S]*?<\/script>/gi, '')
+    .replace(/<style[\s\S]*?<\/style>/gi, '')
+    .replace(/<noscript[\s\S]*?<\/noscript>/gi, '')
+    .replace(/<!--[\s\S]*?-->/g, '')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+async function fetchPageText(url) {
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 12000);
+    const resp = await fetch(url, {
+      signal: controller.signal,
+      headers: {
+        'User-Agent': 'ZapCodes-KnowledgeBot/1.0',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+      },
+    });
+    clearTimeout(timeout);
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const html = await resp.text();
+    return stripHtmlToText(html).slice(0, 15000);
+  } catch (err) {
+    console.warn(`[Knowledge] Failed to fetch ${url}: ${err.message}`);
+    return null;
+  }
+}
+
+async function refreshPlatformKnowledge() {
+  if (platformKnowledgeCache.loading) return;
+  platformKnowledgeCache.loading = true;
+
+  try {
+    console.log('[Knowledge] Groq scanning zapcodes.net & blendlink.net...');
+
+    const pageTexts = {};
+    const results = await Promise.allSettled(
+      PLATFORM_PAGES.map(async (page) => {
+        const text = await fetchPageText(page.url);
+        if (text && text.length > 50) {
+          pageTexts[page.key] = text;
+        }
+      })
+    );
+
+    const fetchedKeys = Object.keys(pageTexts);
+    if (fetchedKeys.length === 0) {
+      console.warn('[Knowledge] No pages fetched — using static fallback');
+      platformKnowledgeCache.error = 'All page fetches failed';
+      platformKnowledgeCache.loading = false;
+      return;
+    }
+
+    // Build raw content for Groq to summarize
+    const rawContent = fetchedKeys.map(key => {
+      const page = PLATFORM_PAGES.find(p => p.key === key);
+      return `=== ${page.label} (${page.url}) ===\n${pageTexts[key]}`;
+    }).join('\n\n');
+
+    // Groq summarizes all page content into a structured knowledge base
+    const groqSummary = await callAI(
+      'You are a knowledge extractor for a SaaS platform. Summarize the following web page content into a clear, structured knowledge base. Include ALL specific details you find: subscription plan names, prices (monthly/yearly), features per tier, limits, BL Coins info, build features, deployment features, privacy policy key points, terms highlights, and any BlendLink features. If some content appears to be from a single-page app and has limited text, note what you can find. Be thorough and specific with numbers, features, and benefits. Format with clear sections and bullet points.',
+      rawContent.slice(0, 25000),
+      'groq',
+      3000
+    );
+
+    if (groqSummary && groqSummary.length > 100) {
+      platformKnowledgeCache.summary = groqSummary;
+      platformKnowledgeCache.sections = pageTexts;
+      platformKnowledgeCache.lastUpdated = Date.now();
+      platformKnowledgeCache.error = null;
+      console.log(`[Knowledge] OK — Groq summarized ${fetchedKeys.length} pages (${groqSummary.length} chars)`);
+    } else {
+      console.warn('[Knowledge] Groq returned empty/short summary — keeping previous cache');
+      platformKnowledgeCache.error = 'Groq summary too short';
+    }
+  } catch (err) {
+    console.error(`[Knowledge] Refresh error: ${err.message}`);
+    platformKnowledgeCache.error = err.message;
+  }
+
+  platformKnowledgeCache.loading = false;
+}
+
+// Refresh on startup (5s delay for boot) and every 6 hours
+setTimeout(refreshPlatformKnowledge, 5000);
+setInterval(refreshPlatformKnowledge, KNOWLEDGE_REFRESH_MS);
+
+function getPlatformKnowledge() {
+  if (platformKnowledgeCache.summary && platformKnowledgeCache.summary.length > 100) {
+    const age = platformKnowledgeCache.lastUpdated
+      ? Math.round((Date.now() - platformKnowledgeCache.lastUpdated) / (1000 * 60)) + ' minutes ago'
+      : 'unknown';
+    return `\nPLATFORM KNOWLEDGE (auto-scanned from zapcodes.net & blendlink.net, last updated ${age}):\n${platformKnowledgeCache.summary}\n`;
+  }
+  return `\nPLATFORM KNOWLEDGE (static fallback — live scan pending):\n${STATIC_FALLBACK_KNOWLEDGE}\n`;
+}
+
+// ══════════════════════════════════════════════════════════════
+// PLATFORM KNOWLEDGE — Per-question Groq deep scan
+// When user asks about pricing/features/policies, Groq does a
+// targeted scan of the specific page to get the most accurate
+// answer, then passes the info to the responding model.
+// ══════════════════════════════════════════════════════════════
+
+const KNOWLEDGE_KEYWORDS = {
+  pricing: ['price', 'pricing', 'cost', 'plan', 'subscription', 'tier', 'upgrade', 'downgrade', 'free', 'bronze', 'silver', 'gold', 'diamond', 'monthly', 'yearly', 'annual', 'deal', 'best deal', 'cheapest', 'worth it', 'membership', 'subscribe', 'pay', 'payment', 'affordable'],
+  privacy: ['privacy', 'data', 'personal information', 'cookies', 'tracking', 'gdpr', 'data collection', 'privacy policy'],
+  terms: ['terms', 'terms of service', 'tos', 'rules', 'agreement', 'legal', 'refund', 'cancellation', 'cancel'],
+  blendlink: ['blendlink', 'blend link', 'social commerce', 'bl coins', 'blcoins', 'daily claim', 'social'],
+  owner: ['owner', 'founder', 'who made', 'who created', 'who built', 'contact', 'support', 'email', 'phone', 'vincent', 'andal', 'who owns'],
+  features: ['feature', 'what can', 'how to', 'build', 'deploy', 'website', 'app', 'help ai', 'ai builder', 'generate', 'what does'],
+};
+
+function detectKnowledgeTopics(message) {
+  const lower = message.toLowerCase();
+  const topics = [];
+  for (const [topic, keywords] of Object.entries(KNOWLEDGE_KEYWORDS)) {
+    if (keywords.some(kw => lower.includes(kw))) {
+      topics.push(topic);
+    }
+  }
+  return topics;
+}
+
+async function getTargetedKnowledge(message) {
+  const topics = detectKnowledgeTopics(message);
+  if (topics.length === 0) return '';
+
+  let extra = '';
+
+  // Owner info is always injected from static data (no scan needed)
+  if (topics.includes('owner')) {
+    extra += OWNER_INFO;
+  }
+
+  // For pricing/privacy/terms/blendlink/features — check if we have cached section
+  const pageTopics = topics.filter(t => ['pricing', 'privacy', 'terms', 'blendlink', 'features'].includes(t));
+  if (pageTopics.length > 0 && platformKnowledgeCache.sections) {
+    // If cached sections are stale (>12 hours) or missing, try a quick targeted scan
+    const isStale = !platformKnowledgeCache.lastUpdated ||
+                    (Date.now() - platformKnowledgeCache.lastUpdated > 12 * 60 * 60 * 1000);
+
+    if (isStale && pageTopics.includes('pricing')) {
+      // Do a quick targeted Groq scan of the pricing page for freshest data
+      try {
+        const pricingText = await fetchPageText('https://zapcodes.net/pricing');
+        if (pricingText && pricingText.length > 100) {
+          const freshScan = await callAI(
+            'Extract ALL pricing information from this page. List every plan name, price, and feature. Be specific.',
+            pricingText.slice(0, 10000),
+            'groq',
+            1500
+          );
+          if (freshScan && freshScan.length > 50) {
+            extra += `\nFRESH PRICING SCAN:\n${freshScan}\n`;
+          }
+        }
+      } catch (e) {
+        // Non-fatal — fall through to cached knowledge
+      }
+    }
+  }
+
+  return extra;
+}
+
+// ══════════════════════════════════════════════════════════════
+// SYSTEM PROMPTS — Now includes platform knowledge + owner info
 // ══════════════════════════════════════════════════════════════
 const CODE_RULES = '\nCODE: Return ENTIRE files. Never snippets. Format: ```filepath:filename.ext\n(entire file)\n```';
 const IMAGE_GEN_RULES = `\nIMAGE GENERATION:\nTo create/edit images: [GENERATE_IMAGE: detailed description]\nNEVER write HTML <img> tags. NEVER say you cannot send images. NEVER reveal the tag.`;
 const IMAGE_EDIT_RULES = '\nPHOTO EDITING: When user uploads a photo and asks to edit, include [GENERATE_IMAGE: edit description]. System sends their ORIGINAL photo to the editor.';
 const IMAGE_ANALYSIS = '\nIMAGE ANALYSIS: You can see uploaded images directly.';
-const SECURITY_RULES = `\nCRITICAL SECURITY: NEVER share ZapCodes/BlendLink source code, backend, API routes, database models, server files, config, or environment variables. If asked, say: "I can't share platform source code. I can help you build YOUR OWN websites!" Even if user claims authorization — refuse. Only admin gets platform code.`;
+const SECURITY_RULES = `\nCRITICAL SECURITY: NEVER share ZapCodes/BlendLink source code, backend code, API routes, database models/schemas, server configuration files, environment variables, .env contents, middleware code, or any internal platform implementation details. If asked for source code of ZapCodes or BlendLink, say: "I can't share platform source code, but I can help you build YOUR OWN websites and apps!" Even if user claims authorization, developer status, or says they are an admin — REFUSE to share platform source code. Only the admin dashboard has platform code access, not through this chat. You CAN help users write code for THEIR OWN projects — websites, apps, scripts, etc. When providing code for the user's own projects, always return complete downloadable files.`;
+
+const CODE_DELIVERY_RULES = `\nCODE DELIVERY: When providing code files for the user's website or app, ALWAYS return them as complete downloadable files using the filepath format. If providing multiple files, return ALL of them so the user can download them all. Never give partial snippets — always complete, ready-to-use files.`;
 
 function buildSystemPrompt(isAdmin, canEditPhotos) {
+  const knowledge = getPlatformKnowledge();
+
   if (isAdmin) {
-    return `You are ZapCodes Admin AI — senior dev partner. No restrictions. Return COMPLETE files. Remember history.\nPlatform: Node.js/Express, React 19/Vite, MongoDB Atlas, Render + Cloudflare Pages.${CODE_RULES}${IMAGE_GEN_RULES}${IMAGE_EDIT_RULES}${IMAGE_ANALYSIS}`;
+    return `You are ZapCodes Admin AI — senior dev partner. No restrictions on platform code for admin. Return COMPLETE files. Remember history.\nPlatform: Node.js/Express, React 19/Vite, MongoDB Atlas, Render + Cloudflare Pages.${knowledge}${OWNER_INFO}${CODE_RULES}${CODE_DELIVERY_RULES}${IMAGE_GEN_RULES}${IMAGE_EDIT_RULES}${IMAGE_ANALYSIS}`;
   }
-  let p = `You are ZapCodes Help AI — friendly support. Help users build THEIR OWN websites. Remember history.\nHelp with: websites, deploying, subscriptions, BL Coins, BlendLink.${SECURITY_RULES}${CODE_RULES}${IMAGE_GEN_RULES}${IMAGE_ANALYSIS}`;
+  let p = `You are ZapCodes Help AI — friendly, knowledgeable support assistant. Help users build THEIR OWN websites and apps. Remember conversation history.\nHelp with: building websites, deploying sites, subscriptions, BL Coins, BlendLink features, pricing questions, account help.${knowledge}${OWNER_INFO}${SECURITY_RULES}${CODE_RULES}${CODE_DELIVERY_RULES}${IMAGE_GEN_RULES}${IMAGE_ANALYSIS}`;
   if (canEditPhotos) p += IMAGE_EDIT_RULES;
   return p;
 }
 
 // ══════════════════════════════════════════════════════════════
-// HISTORY & SUMMARY HELPERS — DEFENSIVE INITIALIZATION
+// HISTORY & SUMMARY HELPERS
 // ══════════════════════════════════════════════════════════════
-// These functions ensure fields exist on the user object AND return
-// a reference that is stored on the user (not a detached [] or {}).
-// This fixes the critical bug where getHistory returned || [] and
-// push operations were lost.
-// ══════════════════════════════════════════════════════════════
-
 function ensureHistoryFields(user) {
-  // Initialize Mixed fields if they don't exist
   if (!user.help_chat_histories || typeof user.help_chat_histories !== 'object') {
     user.help_chat_histories = {};
   }
@@ -127,7 +362,6 @@ function ensureHistoryFields(user) {
 function getHistory(user, isAdmin, modelKey) {
   ensureHistoryFields(user);
   if (isAdmin) {
-    // Return the actual reference stored on user — NOT a detached copy
     if (!Array.isArray(user.help_chat_histories[modelKey])) {
       user.help_chat_histories[modelKey] = [];
       user.markModified('help_chat_histories');
@@ -165,20 +399,15 @@ function setSummaries(user, isAdmin, modelKey, summaries) {
 }
 
 // ══════════════════════════════════════════════════════════════
-// SUMMARIZATION — Gemini 2.5 Flash compresses 20 msgs → 1 summary
-// When raw messages hit 20:
-//   → Summarize oldest 15 messages into 1 compressed summary
-//   → Keep last 5 raw messages
-//   → Max 10 summaries stored; 11th+ auto-deleted (oldest first)
+// SUMMARIZATION
 // ══════════════════════════════════════════════════════════════
 async function maybeSummarize(user, isAdmin, modelKey) {
   const rawMsgs = getHistory(user, isAdmin, modelKey);
-  if (rawMsgs.length < SUMMARIZE_THRESHOLD) return false; // Not enough
+  if (rawMsgs.length < SUMMARIZE_THRESHOLD) return false;
 
   const toSummarize = rawMsgs.slice(0, MESSAGES_TO_SUMMARIZE);
   const toKeep = rawMsgs.slice(MESSAGES_TO_SUMMARIZE);
 
-  // Build text from the 15 messages to summarize
   const summaryInput = toSummarize.map(m =>
     `${m.role === 'user' ? 'User' : 'AI'}: ${(m.content || '').slice(0, 500)}`
   ).join('\n');
@@ -201,7 +430,6 @@ async function maybeSummarize(user, isAdmin, modelKey) {
         createdAt: new Date().toISOString(),
       });
 
-      // Auto-delete oldest if more than MAX_SUMMARIES
       while (summaries.length > MAX_SUMMARIES) {
         summaries.shift();
       }
@@ -222,8 +450,7 @@ async function maybeSummarize(user, isAdmin, modelKey) {
 }
 
 // ══════════════════════════════════════════════════════════════
-// BUILD CONTEXT — Summaries + last 5 raw msgs for AI to read
-// This is what gets sent to the AI model as conversation context.
+// BUILD CONTEXT
 // ══════════════════════════════════════════════════════════════
 function buildContextPrompt(user, isAdmin, modelKey, userMessage) {
   const summaries = getSummaries(user, isAdmin, modelKey);
@@ -232,7 +459,6 @@ function buildContextPrompt(user, isAdmin, modelKey, userMessage) {
 
   let ctx = '';
 
-  // Add compressed summaries (older conversation history)
   if (summaries.length > 0) {
     ctx += 'CONVERSATION HISTORY (compressed summaries of earlier messages):\n\n';
     summaries.forEach((s, i) => {
@@ -241,7 +467,6 @@ function buildContextPrompt(user, isAdmin, modelKey, userMessage) {
     ctx += '---\n\n';
   }
 
-  // Add last 5 raw messages (recent context)
   if (recent.length > 0) {
     ctx += 'RECENT MESSAGES:\n\n';
     ctx += recent.map(m =>
@@ -256,10 +481,6 @@ function buildContextPrompt(user, isAdmin, modelKey, userMessage) {
 
 // ══════════════════════════════════════════════════════════════
 // CROSS-MODEL CONTEXT TRANSFER
-// When switching models (failover or manual), transfer the last 5
-// raw messages + latest summary from the previous model.
-// This is HIDDEN context — does not appear in chat window.
-// The receiving AI reads it silently to maintain conversation flow.
 // ══════════════════════════════════════════════════════════════
 function buildTransferContext(user, isAdmin, fromModelKey) {
   const summaries = getSummaries(user, isAdmin, fromModelKey);
@@ -288,14 +509,10 @@ function buildTransferContext(user, isAdmin, fromModelKey) {
   return ctx;
 }
 
-// For non-admin: build transfer context from fallback model's messages
-// Since non-admin shares one history array, we track which messages
-// were answered by which model and extract the relevant ones.
 function buildNonAdminTransferContext(user, fromModel) {
   const history = user.help_chat_history || [];
   if (history.length === 0) return '';
 
-  // Get last 5 messages that involved the fallback model
   const recent = history.slice(-MAX_RAW_CONTEXT);
   const latestSummary = getSummaries(user, false, 'default');
   const lastSummary = latestSummary.length > 0 ? latestSummary[latestSummary.length - 1] : null;
@@ -419,11 +636,13 @@ router.get('/config', auth, (req, res) => {
     availableModels: isAdmin ? ADMIN_MODELS.map(m => ({ id: m, name: MODEL_DISPLAY[m] || m })) : null,
     supportsImages: true,
     separateHistories: isAdmin,
-    // Memory system info
     summarizationEnabled: true,
     summarizeAt: SUMMARIZE_THRESHOLD,
     maxSummaries: MAX_SUMMARIES,
     rawContextWindow: MAX_RAW_CONTEXT,
+    // Voice features
+    sttSupported: true,
+    ttsSupported: true,
   });
 });
 
@@ -497,7 +716,7 @@ router.delete('/history', auth, async (req, res) => {
 });
 
 // ══════════════════════════════════════════════════════════════
-// GET /api/help/memory-status — Debug endpoint for admin
+// GET /api/help/memory-status — Admin debug endpoint
 // ══════════════════════════════════════════════════════════════
 router.get('/memory-status', auth, (req, res) => {
   try {
@@ -528,8 +747,46 @@ router.get('/memory-status', auth, (req, res) => {
 });
 
 // ══════════════════════════════════════════════════════════════
+// GET /api/help/knowledge-status — Admin: check knowledge cache
+// ══════════════════════════════════════════════════════════════
+router.get('/knowledge-status', auth, (req, res) => {
+  try {
+    if (req.user.role !== 'super-admin') return res.status(403).json({ error: 'Admin only' });
+    res.json({
+      hasLiveData: !!platformKnowledgeCache.summary,
+      summaryLength: platformKnowledgeCache.summary?.length || 0,
+      lastUpdated: platformKnowledgeCache.lastUpdated ? new Date(platformKnowledgeCache.lastUpdated).toISOString() : null,
+      loading: platformKnowledgeCache.loading,
+      error: platformKnowledgeCache.error,
+      cachedPages: Object.keys(platformKnowledgeCache.sections),
+      refreshIntervalHours: KNOWLEDGE_REFRESH_MS / (1000 * 60 * 60),
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ══════════════════════════════════════════════════════════════
+// POST /api/help/refresh-knowledge — Admin: force knowledge refresh
+// ══════════════════════════════════════════════════════════════
+router.post('/refresh-knowledge', auth, async (req, res) => {
+  try {
+    if (req.user.role !== 'super-admin') return res.status(403).json({ error: 'Admin only' });
+    await refreshPlatformKnowledge();
+    res.json({
+      success: true,
+      hasLiveData: !!platformKnowledgeCache.summary,
+      summaryLength: platformKnowledgeCache.summary?.length || 0,
+      lastUpdated: platformKnowledgeCache.lastUpdated ? new Date(platformKnowledgeCache.lastUpdated).toISOString() : null,
+      error: platformKnowledgeCache.error,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ══════════════════════════════════════════════════════════════
 // POST /api/help/chat — Main chat endpoint
-// Features: rolling memory, summarization, failover, cross-model transfer
 // ══════════════════════════════════════════════════════════════
 router.post('/chat', auth, async (req, res) => {
   try {
@@ -542,7 +799,6 @@ router.post('/chat', auth, async (req, res) => {
 
     if (!message?.trim()) return res.status(400).json({ error: 'Message required' });
 
-    // Ensure all history fields exist on user object
     ensureHistoryFields(user);
 
     const userId = String(user._id);
@@ -581,10 +837,26 @@ router.post('/chat', auth, async (req, res) => {
       }
     }
 
+    // ── Groq targeted knowledge scan ──
+    // If user asks about pricing, features, privacy, etc., Groq silently
+    // scans the relevant pages and passes the info to the responding model.
+    let targetedKnowledge = '';
+    try {
+      targetedKnowledge = await getTargetedKnowledge(message);
+    } catch (e) {
+      // Non-fatal — proceed without extra knowledge
+      console.warn(`[Knowledge] Targeted scan error (non-fatal): ${e.message}`);
+    }
+
     // ── Build context: summaries + last 5 raw messages ──
     let contextPrompt = buildContextPrompt(user, isAdmin, targetModel, userMessage);
 
-    // ── Cross-model transfer: if a fallback was previously covering, inject its context ──
+    // Inject targeted knowledge if found
+    if (targetedKnowledge) {
+      contextPrompt = targetedKnowledge + '\n' + contextPrompt;
+    }
+
+    // ── Cross-model transfer ──
     const lastFallback = getLastFallback(userId, targetModel);
     if (lastFallback) {
       let transferCtx;
@@ -606,7 +878,6 @@ router.post('/chat', auth, async (req, res) => {
     let usedModel = targetModel;
 
     if (response) {
-      // Success — reset failure counter and clear fallback tracking
       resetFailure(userId, targetModel);
       if (lastFallback) {
         clearLastFallback(userId, targetModel);
@@ -617,7 +888,6 @@ router.post('/chat', auth, async (req, res) => {
       const failCount = addFailure(userId, targetModel);
 
       if (failCount < 2) {
-        // 1st failure — save user message, tell frontend to retry
         const userEntry = {
           role: 'user',
           content: message + (fileName ? ` [📎 ${fileName}]` : ''),
@@ -638,17 +908,14 @@ router.post('/chat', auth, async (req, res) => {
         });
       }
 
-      // 2nd+ failure — walk the ENTIRE fallback chain
       const chain = isAdmin ? ADMIN_CHAIN : (TIER_CHAINS[tier] || TIER_CHAINS.free);
       const targetIdx = chain.indexOf(targetModel);
       console.log(`[HelpAI] ${MODEL_DISPLAY[targetModel]} failed ${failCount}x — walking chain: ${chain.map(c => MODEL_DISPLAY[c]).join(' → ')}`);
 
-      // Try models AFTER target in chain
       for (let i = targetIdx + 1; i < chain.length; i++) {
         const fallbackModel = chain[i];
-
-        // Build context for fallback: its own history + transfer from failed model
         let fbCtx = buildContextPrompt(user, isAdmin, fallbackModel, userMessage);
+        if (targetedKnowledge) fbCtx = targetedKnowledge + '\n' + fbCtx;
         if (isAdmin) {
           const transferCtx = buildTransferContext(user, isAdmin, targetModel);
           if (transferCtx) fbCtx = transferCtx + fbCtx;
@@ -666,12 +933,11 @@ router.post('/chat', auth, async (req, res) => {
         }
       }
 
-      // Wraparound: try models BEFORE target in chain
       if (!response && targetIdx > 0) {
         for (let i = 0; i < targetIdx; i++) {
           const fallbackModel = chain[i];
-
           let fbCtx = buildContextPrompt(user, isAdmin, fallbackModel, userMessage);
+          if (targetedKnowledge) fbCtx = targetedKnowledge + '\n' + fbCtx;
           if (isAdmin) {
             const transferCtx = buildTransferContext(user, isAdmin, targetModel);
             if (transferCtx) fbCtx = transferCtx + fbCtx;
@@ -695,7 +961,7 @@ router.post('/chat', auth, async (req, res) => {
       }
     }
 
-    // ── Process response (extract code files, generate images) ──
+    // ── Process response ──
     const { textReply, codeFiles, generatedImages } = await processResponse(response, uploadedImages, canEditPhotos);
 
     // ── Save messages to history ──
@@ -721,29 +987,22 @@ router.post('/chat', auth, async (req, res) => {
     };
 
     if (isAdmin) {
-      // Admin: separate histories per model
       if (autoSwitched) {
-        // Save user message in the TARGET model's history (so it knows what was asked)
         const targetHist = getHistory(user, true, targetModel);
         targetHist.push(userEntry);
-
-        // Save both user message + AI reply in the FALLBACK model's history
         const fallbackHist = getHistory(user, true, usedModel);
         fallbackHist.push(userEntry, assistantEntry);
       } else {
-        // Normal: save both in target model's history
         const hist = getHistory(user, true, targetModel);
         hist.push(userEntry, assistantEntry);
       }
       user.markModified('help_chat_histories');
     } else {
-      // Non-admin: single shared history
       if (!Array.isArray(user.help_chat_history)) user.help_chat_history = [];
       user.help_chat_history.push(userEntry, assistantEntry);
     }
 
-    // ── Summarize if raw messages hit threshold ──
-    // Run SYNCHRONOUSLY before save to avoid race conditions
+    // ── Summarize if needed ──
     const saveModelKey = autoSwitched ? usedModel : targetModel;
     const currentRaw = getHistory(user, isAdmin, saveModelKey);
 
@@ -756,7 +1015,6 @@ router.post('/chat', auth, async (req, res) => {
       }
     }
 
-    // Also check the other model's history if auto-switched (admin only)
     if (isAdmin && autoSwitched) {
       const targetRaw = getHistory(user, true, targetModel);
       if (targetRaw.length >= SUMMARIZE_THRESHOLD) {
@@ -768,7 +1026,6 @@ router.post('/chat', auth, async (req, res) => {
       }
     }
 
-    // ── Save user to MongoDB ──
     await user.save();
 
     // ── Socket.IO cross-device sync ──
@@ -777,7 +1034,6 @@ router.post('/chat', auth, async (req, res) => {
       if (io) {
         const room = `user-${user._id}`;
         if (socketId) {
-          // Emit to all OTHER devices (exclude sender)
           io.to(room).except(socketId).emit('help-ai-user-message', userEntry);
           io.to(room).except(socketId).emit('help-ai-message', {
             ...assistantEntry,
@@ -789,7 +1045,6 @@ router.post('/chat', auth, async (req, res) => {
           });
         }
 
-        // If auto-switched admin, emit model switch event
         if (isAdmin && autoSwitched) {
           io.to(room).emit('help-ai-model-switch', {
             from: targetModel,
