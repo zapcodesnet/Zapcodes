@@ -112,54 +112,25 @@ export default function HelpAI() {
     setMessages(prev => [...prev, { role: 'user', content: input, file: uploadFile?.name || null, msgId: localId }]);
     const currentInput = input;
     setInput(''); setLoading(true); setSwitchNotice(null);
-
     try {
       const body = { message: currentInput };
       if (selectedModel) body.model = selectedModel;
       if (uploadFile) { body.fileData = uploadFile.data; body.fileType = uploadFile.type; body.fileName = uploadFile.name; }
       if (socketIdRef.current) body.socketId = socketIdRef.current;
-
       const { data } = await api.post('/api/help/chat', body);
       if (data.userMsgId) seenMsgIds.current.add(data.userMsgId);
       if (data.assistantMsgId) seenMsgIds.current.add(data.assistantMsgId);
-
-      setMessages(prev => {
-        const updated = [...prev];
-        const idx = updated.findLastIndex(m => m.msgId === localId);
-        if (idx !== -1 && data.userMsgId) updated[idx] = { ...updated[idx], msgId: data.userMsgId };
-        return updated;
-      });
-
+      setMessages(prev => { const updated = [...prev]; const idx = updated.findLastIndex(m => m.msgId === localId); if (idx !== -1 && data.userMsgId) updated[idx] = { ...updated[idx], msgId: data.userMsgId }; return updated; });
       if (data.autoSwitched) {
-        if (config?.isAdmin) {
-          const newModel = data.activeModel;
-          const newModelName = config.availableModels?.find(m => m.id === newModel)?.name || newModel;
-          const oldModelName = config.availableModels?.find(m => m.id === data.switchedFrom)?.name || data.switchedFrom;
-          setSwitchNotice(`${oldModelName} unavailable — switched to ${newModelName}`);
-          setSelectedModel(newModel); seenMsgIds.current.clear(); setHistoryLoaded(false);
-          setTimeout(() => loadHistory(newModel), 100);
-        } else {
-          setSwitchNotice(data.switchReason || 'Switched to backup AI');
-          setMessages(prev => [...prev, { role: 'assistant', content: data.reply, model: data.model, files: data.files || [], images: data.images || [], msgId: data.assistantMsgId }]);
-        }
-      } else {
-        setMessages(prev => [...prev, { role: 'assistant', content: data.reply, model: data.model, files: data.files || [], images: data.images || [], msgId: data.assistantMsgId }]);
-      }
-    } catch (err) {
-      setMessages(prev => [...prev, { role: 'assistant', content: err.response?.data?.error || 'Something went wrong.', isError: true }]);
-    } finally { setLoading(false); setUploadFile(null); }
+        if (config?.isAdmin) { const newModel = data.activeModel; const newModelName = config.availableModels?.find(m => m.id === newModel)?.name || newModel; const oldModelName = config.availableModels?.find(m => m.id === data.switchedFrom)?.name || data.switchedFrom; setSwitchNotice(`${oldModelName} unavailable — switched to ${newModelName}`); setSelectedModel(newModel); seenMsgIds.current.clear(); setHistoryLoaded(false); setTimeout(() => loadHistory(newModel), 100); }
+        else { setSwitchNotice(data.switchReason || 'Switched to backup AI'); setMessages(prev => [...prev, { role: 'assistant', content: data.reply, model: data.model, files: data.files || [], images: data.images || [], msgId: data.assistantMsgId }]); }
+      } else { setMessages(prev => [...prev, { role: 'assistant', content: data.reply, model: data.model, files: data.files || [], images: data.images || [], msgId: data.assistantMsgId }]); }
+    } catch (err) { setMessages(prev => [...prev, { role: 'assistant', content: err.response?.data?.error || 'Something went wrong.', isError: true }]); }
+    finally { setLoading(false); setUploadFile(null); }
   }, [input, selectedModel, uploadFile, loading, config, loadHistory]);
 
   const handleKeyDown = (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); } };
-
-  const handleFileSelect = (e) => {
-    const file = e.target.files?.[0]; if (!file) return;
-    if (file.size > (config?.maxFileSize || 0)) { alert(`File too large. Max ${config?.maxFileSizeMB || 0}MB.`); return; }
-    const reader = new FileReader();
-    reader.onload = () => setUploadFile({ name: file.name, type: file.type, data: reader.result.split(',')[1] });
-    reader.readAsDataURL(file); e.target.value = '';
-  };
-
+  const handleFileSelect = (e) => { const file = e.target.files?.[0]; if (!file) return; if (file.size > (config?.maxFileSize || 0)) { alert(`File too large. Max ${config?.maxFileSizeMB || 0}MB.`); return; } const reader = new FileReader(); reader.onload = () => setUploadFile({ name: file.name, type: file.type, data: reader.result.split(',')[1] }); reader.readAsDataURL(file); e.target.value = ''; };
   const downloadFile = (f) => { const b = new Blob([f.content], { type: 'text/plain' }); const u = URL.createObjectURL(b); const a = document.createElement('a'); a.href = u; a.download = f.name; a.click(); URL.revokeObjectURL(u); };
   const downloadAllFiles = (files) => files.forEach(f => downloadFile(f));
   const copyFile = (f) => navigator.clipboard.writeText(f.content);
@@ -169,7 +140,6 @@ export default function HelpAI() {
     const lastUserIdx = messages.findLastIndex(m => m.role === 'user');
     if (lastUserIdx === -1) return;
     const retryContent = messages[lastUserIdx].content;
-    // Remove last user message + everything after it (AI response, errors)
     setMessages(prev => prev.slice(0, lastUserIdx));
     setLoading(true); setSwitchNotice(null);
     const localId = `retry-${Date.now()}`;
@@ -182,26 +152,13 @@ export default function HelpAI() {
       const { data } = await api.post('/api/help/chat', body);
       if (data.userMsgId) seenMsgIds.current.add(data.userMsgId);
       if (data.assistantMsgId) seenMsgIds.current.add(data.assistantMsgId);
-      setMessages(prev => {
-        const updated = [...prev];
-        const idx = updated.findLastIndex(m => m.msgId === localId);
-        if (idx !== -1 && data.userMsgId) updated[idx] = { ...updated[idx], msgId: data.userMsgId };
-        return [...updated, { role: 'assistant', content: data.reply, model: data.model, files: data.files || [], images: data.images || [], msgId: data.assistantMsgId }];
-      });
+      setMessages(prev => { const updated = [...prev]; const idx = updated.findLastIndex(m => m.msgId === localId); if (idx !== -1 && data.userMsgId) updated[idx] = { ...updated[idx], msgId: data.userMsgId }; return [...updated, { role: 'assistant', content: data.reply, model: data.model, files: data.files || [], images: data.images || [], msgId: data.assistantMsgId }]; });
       if (data.autoSwitched) setSwitchNotice(data.switchReason || 'Switched to backup AI');
-    } catch (err) {
-      setMessages(prev => [...prev, { role: 'assistant', content: err.response?.data?.error || 'Something went wrong.', isError: true }]);
-    } finally { setLoading(false); }
+    } catch (err) { setMessages(prev => [...prev, { role: 'assistant', content: err.response?.data?.error || 'Something went wrong.', isError: true }]); }
+    finally { setLoading(false); }
   }, [messages, loading, selectedModel]);
-  const downloadImage = (img, idx) => {
-    try { const ext = (img.mimeType || 'image/png').split('/')[1] || 'png'; const b = atob(img.base64); const a = new Uint8Array(b.length); for (let i = 0; i < b.length; i++) a[i] = b.charCodeAt(i); const bl = new Blob([a], { type: img.mimeType || 'image/png' }); const u = URL.createObjectURL(bl); const el = document.createElement('a'); el.href = u; el.download = `zapcodes-ai-image-${idx + 1}.${ext}`; el.click(); URL.revokeObjectURL(u); } catch (e) {}
-  };
-
-  const clearHistory = async () => {
-    const mn = config?.isAdmin ? (config.availableModels?.find(m => m.id === selectedModel)?.name || selectedModel) : 'all';
-    if (!confirm(`Clear ${config?.isAdmin ? mn : 'all'} conversation history?`)) return;
-    try { await api.delete(`/api/help/history${config?.isAdmin ? `?model=${selectedModel}` : ''}`); setMessages([]); setHistoryLoaded(false); seenMsgIds.current.clear(); } catch (e) {}
-  };
+  const downloadImage = (img, idx) => { try { const ext = (img.mimeType || 'image/png').split('/')[1] || 'png'; const b = atob(img.base64); const a = new Uint8Array(b.length); for (let i = 0; i < b.length; i++) a[i] = b.charCodeAt(i); const bl = new Blob([a], { type: img.mimeType || 'image/png' }); const u = URL.createObjectURL(bl); const el = document.createElement('a'); el.href = u; el.download = `zapcodes-ai-image-${idx + 1}.${ext}`; el.click(); URL.revokeObjectURL(u); } catch (e) {} };
+  const clearHistory = async () => { const mn = config?.isAdmin ? (config.availableModels?.find(m => m.id === selectedModel)?.name || selectedModel) : 'all'; if (!confirm(`Clear ${config?.isAdmin ? mn : 'all'} conversation history?`)) return; try { await api.delete(`/api/help/history${config?.isAdmin ? `?model=${selectedModel}` : ''}`); setMessages([]); setHistoryLoaded(false); seenMsgIds.current.clear(); } catch (e) {} };
 
   const handleDragStart = (e) => { e.preventDefault(); const t = e.touches?.[0] || e; const r = iconRef.current?.getBoundingClientRect(); if (!r) return; setDragOffset({ x: t.clientX - r.left, y: t.clientY - r.top }); setDragging(true); dragStartTime.current = Date.now(); dragMoved.current = false; };
   const handleDragMove = useCallback((e) => { if (!dragging) return; e.preventDefault(); const t = e.touches?.[0] || e; setIconPos({ x: Math.max(0, Math.min(window.innerWidth - 52, t.clientX - dragOffset.x)), y: Math.max(0, Math.min(window.innerHeight - 52, t.clientY - dragOffset.y)) }); dragMoved.current = true; }, [dragging, dragOffset]);
@@ -209,7 +166,10 @@ export default function HelpAI() {
   useEffect(() => { if (dragging) { const o = { passive: false }; window.addEventListener('mousemove', handleDragMove); window.addEventListener('mouseup', handleDragEnd); window.addEventListener('touchmove', handleDragMove, o); window.addEventListener('touchend', handleDragEnd); return () => { window.removeEventListener('mousemove', handleDragMove); window.removeEventListener('mouseup', handleDragEnd); window.removeEventListener('touchmove', handleDragMove); window.removeEventListener('touchend', handleDragEnd); }; } }, [dragging, handleDragMove, handleDragEnd]);
 
   if (!user) return null;
-  const defaultPos = isMobile ? { x: window.innerWidth - 58, y: 60 } : { x: window.innerWidth - 72, y: window.innerHeight - 72 };
+  // FIX: Desktop icon now at top-right (y: 8) instead of bottom-right (y: window.innerHeight - 72)
+  // This prevents the ? icon from blocking the Deploy/Re-deploy button
+  // Mobile stays at top-right (y: 60) as before — both remain draggable
+  const defaultPos = isMobile ? { x: window.innerWidth - 58, y: 60 } : { x: window.innerWidth - 72, y: 8 };
   const pos = iconPos || defaultPos;
   const isFullView = fullScreen || isMobile;
   const canUpload = config?.canUpload;
@@ -241,18 +201,11 @@ export default function HelpAI() {
           {config?.isAdmin && config?.availableModels && (
             <div style={{ padding: '6px 12px', background: 'rgba(99,102,241,.06)', borderBottom: '1px solid rgba(99,102,241,.15)', display: 'flex', gap: 4, flexWrap: 'wrap', alignItems: 'center' }}>
               <span style={{ fontSize: 10, color: '#6366f1', fontWeight: 700 }}>AI:</span>
-              {config.availableModels.map(m => (
-                <button key={m.id} onClick={() => switchModel(m.id)} style={{ padding: '2px 8px', borderRadius: 4, fontSize: 10, fontWeight: 600, cursor: 'pointer', border: selectedModel === m.id ? '1px solid #6366f1' : '1px solid rgba(255,255,255,.08)', background: selectedModel === m.id ? 'rgba(99,102,241,.2)' : 'transparent', color: selectedModel === m.id ? '#a5b4fc' : 'rgba(255,255,255,.4)', transition: 'all .15s' }}>{m.name}</button>
-              ))}
+              {config.availableModels.map(m => (<button key={m.id} onClick={() => switchModel(m.id)} style={{ padding: '2px 8px', borderRadius: 4, fontSize: 10, fontWeight: 600, cursor: 'pointer', border: selectedModel === m.id ? '1px solid #6366f1' : '1px solid rgba(255,255,255,.08)', background: selectedModel === m.id ? 'rgba(99,102,241,.2)' : 'transparent', color: selectedModel === m.id ? '#a5b4fc' : 'rgba(255,255,255,.4)', transition: 'all .15s' }}>{m.name}</button>))}
             </div>
           )}
 
-          {switchNotice && (
-            <div style={{ padding: '6px 12px', background: 'rgba(234,179,8,.1)', borderBottom: '1px solid rgba(234,179,8,.2)', fontSize: 11, color: '#eab308', textAlign: 'center', fontWeight: 600, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <span>⚡ {switchNotice}</span>
-              <button onClick={() => setSwitchNotice(null)} style={{ background: 'none', border: 'none', color: '#eab308', cursor: 'pointer', fontSize: 14, padding: 0 }}>✕</button>
-            </div>
-          )}
+          {switchNotice && (<div style={{ padding: '6px 12px', background: 'rgba(234,179,8,.1)', borderBottom: '1px solid rgba(234,179,8,.2)', fontSize: 11, color: '#eab308', textAlign: 'center', fontWeight: 600, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}><span>⚡ {switchNotice}</span><button onClick={() => setSwitchNotice(null)} style={{ background: 'none', border: 'none', color: '#eab308', cursor: 'pointer', fontSize: 14, padding: 0 }}>✕</button></div>)}
 
           <div style={{ flex: 1, overflowY: 'auto', padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: 8 }}>
             {loadingHistory && <div style={{ textAlign: 'center', padding: '20px 0', fontSize: 12, color: 'rgba(255,255,255,.3)' }}>Loading {activeName} conversation...</div>}
@@ -268,66 +221,23 @@ export default function HelpAI() {
                     {m.model && m.role === 'assistant' && !m.isError && <div style={{ fontSize: 9, color: 'rgba(255,255,255,.2)', marginTop: 4, textAlign: 'right' }}>{m.model}</div>}
                   </div>
                 </div>
-                {/* ── Copy + Retry action buttons ── */}
                 <div style={{ display: 'flex', justifyContent: m.role === 'user' ? 'flex-end' : 'flex-start', marginLeft: m.role === 'assistant' ? 36 : 0, marginTop: 2, gap: 4, opacity: 0.35 }} className="zcMsgActions" onMouseEnter={e => e.currentTarget.style.opacity = '1'} onMouseLeave={e => e.currentTarget.style.opacity = '0.35'}>
                   <button onClick={() => copyMessage(m.content, m.msgId || `msg-${i}`)} title="Copy message" style={tinyBtn}>{copiedMsgId === (m.msgId || `msg-${i}`) ? '\u2713' : '\ud83d\udccb'}</button>
                   {m.role === 'user' && i === messages.findLastIndex(x => x.role === 'user') && <button onClick={retryMessage} title="Retry this message" style={tinyBtn}>{'\u21bb'}</button>}
                   {m.isError && <button onClick={retryMessage} title="Retry" style={{ ...tinyBtn, color: '#f87171' }}>{'\u21bb'}</button>}
                 </div>
-                {m.images?.length > 0 && (
-                  <div style={{ marginLeft: 36, marginTop: 6, display: 'flex', flexDirection: 'column', gap: 6 }}>
-                    {m.images.map((img, ii) => (
-                      <div key={ii} style={{ position: 'relative', borderRadius: 12, overflow: 'hidden', border: '1px solid rgba(99,102,241,.25)', background: '#0a0a1a', maxWidth: isFullView ? '70%' : '82%' }}>
-                        <img src={`data:${img.mimeType || 'image/png'};base64,${img.base64}`} alt={img.prompt || 'AI generated'} style={{ width: '100%', display: 'block', cursor: 'pointer', borderRadius: 12 }} onClick={() => setImageZoom(img)} />
-                        <div style={{ display: 'flex', gap: 4, padding: '6px 8px', background: 'rgba(0,0,0,.5)', position: 'absolute', bottom: 0, right: 0, borderTopLeftRadius: 10 }}>
-                          <button onClick={() => downloadImage(img, ii)} style={{ padding: '3px 10px', borderRadius: 6, border: 'none', background: '#6366f1', color: '#fff', cursor: 'pointer', fontSize: 10, fontWeight: 700 }}>⬇ Save</button>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-                {m.files?.length > 0 && (
-                  <div style={{ marginLeft: 36, marginTop: 6, display: 'flex', flexDirection: 'column', gap: 4 }}>
-                    {m.files.length > 1 && <button onClick={() => downloadAllFiles(m.files)} style={{ padding: '6px 12px', borderRadius: 8, border: '1px solid rgba(34,197,94,.3)', background: 'rgba(34,197,94,.08)', color: '#22c55e', cursor: 'pointer', fontSize: 11, fontWeight: 700, alignSelf: 'flex-start' }}>⬇ Download All ({m.files.length} files)</button>}
-                    {m.files.map((f, fi) => (
-                      <div key={fi} style={{ background: 'rgba(99,102,241,.08)', border: '1px solid rgba(99,102,241,.2)', borderRadius: 10, overflow: 'hidden' }}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '6px 10px', borderBottom: '1px solid rgba(99,102,241,.15)' }}>
-                          <span style={{ fontSize: 12, fontWeight: 700, color: '#a5b4fc' }}>📄 {f.name}</span>
-                          <div style={{ display: 'flex', gap: 4 }}>
-                            <button onClick={() => copyFile(f)} style={{ padding: '3px 8px', borderRadius: 4, border: 'none', background: 'rgba(99,102,241,.2)', color: '#a5b4fc', cursor: 'pointer', fontSize: 10, fontWeight: 600 }}>📋 Copy</button>
-                            <button onClick={() => downloadFile(f)} style={{ padding: '3px 8px', borderRadius: 4, border: 'none', background: '#6366f1', color: '#fff', cursor: 'pointer', fontSize: 10, fontWeight: 600 }}>⬇ Download</button>
-                          </div>
-                        </div>
-                        <pre style={{ margin: 0, padding: 8, fontSize: 10, lineHeight: 1.4, color: '#c0c0d0', background: '#0a0a1a', maxHeight: 150, overflowY: 'auto', fontFamily: 'Consolas, monospace', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>{f.content.slice(0, 2000)}{f.content.length > 2000 ? `\n\n... (${Math.round(f.content.length / 1000)}K chars — download for full file)` : ''}</pre>
-                      </div>
-                    ))}
-                  </div>
-                )}
+                {m.images?.length > 0 && (<div style={{ marginLeft: 36, marginTop: 6, display: 'flex', flexDirection: 'column', gap: 6 }}>{m.images.map((img, ii) => (<div key={ii} style={{ position: 'relative', borderRadius: 12, overflow: 'hidden', border: '1px solid rgba(99,102,241,.25)', background: '#0a0a1a', maxWidth: isFullView ? '70%' : '82%' }}><img src={`data:${img.mimeType || 'image/png'};base64,${img.base64}`} alt={img.prompt || 'AI generated'} style={{ width: '100%', display: 'block', cursor: 'pointer', borderRadius: 12 }} onClick={() => setImageZoom(img)} /><div style={{ display: 'flex', gap: 4, padding: '6px 8px', background: 'rgba(0,0,0,.5)', position: 'absolute', bottom: 0, right: 0, borderTopLeftRadius: 10 }}><button onClick={() => downloadImage(img, ii)} style={{ padding: '3px 10px', borderRadius: 6, border: 'none', background: '#6366f1', color: '#fff', cursor: 'pointer', fontSize: 10, fontWeight: 700 }}>⬇ Save</button></div></div>))}</div>)}
+                {m.files?.length > 0 && (<div style={{ marginLeft: 36, marginTop: 6, display: 'flex', flexDirection: 'column', gap: 4 }}>{m.files.length > 1 && <button onClick={() => downloadAllFiles(m.files)} style={{ padding: '6px 12px', borderRadius: 8, border: '1px solid rgba(34,197,94,.3)', background: 'rgba(34,197,94,.08)', color: '#22c55e', cursor: 'pointer', fontSize: 11, fontWeight: 700, alignSelf: 'flex-start' }}>⬇ Download All ({m.files.length} files)</button>}{m.files.map((f, fi) => (<div key={fi} style={{ background: 'rgba(99,102,241,.08)', border: '1px solid rgba(99,102,241,.2)', borderRadius: 10, overflow: 'hidden' }}><div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '6px 10px', borderBottom: '1px solid rgba(99,102,241,.15)' }}><span style={{ fontSize: 12, fontWeight: 700, color: '#a5b4fc' }}>📄 {f.name}</span><div style={{ display: 'flex', gap: 4 }}><button onClick={() => copyFile(f)} style={{ padding: '3px 8px', borderRadius: 4, border: 'none', background: 'rgba(99,102,241,.2)', color: '#a5b4fc', cursor: 'pointer', fontSize: 10, fontWeight: 600 }}>📋 Copy</button><button onClick={() => downloadFile(f)} style={{ padding: '3px 8px', borderRadius: 4, border: 'none', background: '#6366f1', color: '#fff', cursor: 'pointer', fontSize: 10, fontWeight: 600 }}>⬇ Download</button></div></div><pre style={{ margin: 0, padding: 8, fontSize: 10, lineHeight: 1.4, color: '#c0c0d0', background: '#0a0a1a', maxHeight: 150, overflowY: 'auto', fontFamily: 'Consolas, monospace', whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>{f.content.slice(0, 2000)}{f.content.length > 2000 ? `\n\n... (${Math.round(f.content.length / 1000)}K chars — download for full file)` : ''}</pre></div>))}</div>)}
               </div>
             ))}
-            {loading && (
-              <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
-                <div style={{ width: 28, height: 28, borderRadius: 14, background: 'linear-gradient(135deg, #6366f1, #8b5cf6)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}><span style={{ fontSize: 12, fontWeight: 800, color: '#fff' }}>?</span></div>
-                <div style={{ padding: '12px 16px', borderRadius: '16px 16px 16px 4px', background: 'rgba(255,255,255,.05)' }}>
-                  <div style={{ display: 'flex', gap: 5 }}>{[0, 1, 2].map(n => <span key={n} style={{ width: 7, height: 7, borderRadius: 4, background: '#6366f1', display: 'inline-block', animation: 'zcDot 1.4s infinite both', animationDelay: `${n * 0.2}s` }} />)}</div>
-                </div>
-              </div>
-            )}
+            {loading && (<div style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}><div style={{ width: 28, height: 28, borderRadius: 14, background: 'linear-gradient(135deg, #6366f1, #8b5cf6)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}><span style={{ fontSize: 12, fontWeight: 800, color: '#fff' }}>?</span></div><div style={{ padding: '12px 16px', borderRadius: '16px 16px 16px 4px', background: 'rgba(255,255,255,.05)' }}><div style={{ display: 'flex', gap: 5 }}>{[0, 1, 2].map(n => <span key={n} style={{ width: 7, height: 7, borderRadius: 4, background: '#6366f1', display: 'inline-block', animation: 'zcDot 1.4s infinite both', animationDelay: `${n * 0.2}s` }} />)}</div></div></div>)}
             <div ref={chatEndRef} />
           </div>
 
-          {uploadFile && (
-            <div style={{ padding: '6px 14px', background: 'rgba(99,102,241,.08)', borderTop: '1px solid rgba(99,102,241,.15)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <span style={{ fontSize: 11, color: '#a5b4fc', fontWeight: 600 }}>📎 {uploadFile.name}</span>
-              <button onClick={() => setUploadFile(null)} style={{ background: 'none', border: 'none', color: '#ef4444', cursor: 'pointer', fontSize: 14, padding: '0 4px' }}>✕</button>
-            </div>
-          )}
+          {uploadFile && (<div style={{ padding: '6px 14px', background: 'rgba(99,102,241,.08)', borderTop: '1px solid rgba(99,102,241,.15)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}><span style={{ fontSize: 11, color: '#a5b4fc', fontWeight: 600 }}>📎 {uploadFile.name}</span><button onClick={() => setUploadFile(null)} style={{ background: 'none', border: 'none', color: '#ef4444', cursor: 'pointer', fontSize: 14, padding: '0 4px' }}>✕</button></div>)}
 
           <div style={{ padding: '10px 12px', borderTop: '1px solid rgba(255,255,255,.06)', background: '#07071a', display: 'flex', gap: 8, alignItems: 'flex-end', flexShrink: 0 }}>
-            {canUpload && (
-              <><button onClick={() => fileInputRef.current?.click()} style={{ width: 36, height: 36, borderRadius: 18, border: '1px solid rgba(255,255,255,.1)', background: 'transparent', color: '#6366f1', cursor: 'pointer', fontSize: 16, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>📎</button>
-              <input ref={fileInputRef} type="file" accept="image/*,.txt,.html,.css,.js,.jsx,.json,.py,.md,.csv,.pdf,.ts,.tsx" onChange={handleFileSelect} style={{ display: 'none' }} /></>
-            )}
+            {canUpload && (<><button onClick={() => fileInputRef.current?.click()} style={{ width: 36, height: 36, borderRadius: 18, border: '1px solid rgba(255,255,255,.1)', background: 'transparent', color: '#6366f1', cursor: 'pointer', fontSize: 16, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>📎</button><input ref={fileInputRef} type="file" accept="image/*,.txt,.html,.css,.js,.jsx,.json,.py,.md,.csv,.pdf,.ts,.tsx" onChange={handleFileSelect} style={{ display: 'none' }} /></>)}
             <textarea value={input} onChange={e => setInput(e.target.value)} onKeyDown={handleKeyDown} placeholder={config?.isAdmin ? `Ask ${activeName}...` : 'Ask about ZapCodes...'} rows={4} style={{ flex: 1, padding: '9px 14px', borderRadius: 14, border: '1px solid rgba(255,255,255,.08)', background: 'rgba(255,255,255,.03)', color: '#e0e0f0', fontSize: 13, fontFamily: 'inherit', resize: 'vertical', outline: 'none', minHeight: 80, maxHeight: 200, overflow: 'auto', lineHeight: 1.5 }} />
             <button onClick={sendMessage} disabled={loading || (!input.trim() && !uploadFile)} style={{ width: 36, height: 36, borderRadius: 18, border: 'none', background: loading || (!input.trim() && !uploadFile) ? 'rgba(255,255,255,.04)' : 'linear-gradient(135deg, #6366f1, #8b5cf6)', color: '#fff', cursor: loading ? 'not-allowed' : 'pointer', fontSize: 16, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>↑</button>
           </div>
@@ -335,15 +245,7 @@ export default function HelpAI() {
         </div>
       )}
 
-      {imageZoom && (
-        <div onClick={() => setImageZoom(null)} style={{ position: 'fixed', inset: 0, zIndex: 20000, background: 'rgba(0,0,0,.88)', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', padding: 20 }}>
-          <img src={`data:${imageZoom.mimeType || 'image/png'};base64,${imageZoom.base64}`} alt="Preview" style={{ maxWidth: '90vw', maxHeight: '80vh', borderRadius: 12, boxShadow: '0 20px 60px rgba(0,0,0,.8)' }} onClick={e => e.stopPropagation()} />
-          <div style={{ display: 'flex', gap: 10, marginTop: 16 }} onClick={e => e.stopPropagation()}>
-            <button onClick={() => downloadImage(imageZoom, 0)} style={{ padding: '10px 24px', borderRadius: 10, border: 'none', background: '#6366f1', color: '#fff', cursor: 'pointer', fontSize: 14, fontWeight: 700 }}>⬇ Download</button>
-            <button onClick={() => setImageZoom(null)} style={{ padding: '10px 24px', borderRadius: 10, border: '1px solid rgba(255,255,255,.2)', background: 'transparent', color: '#fff', cursor: 'pointer', fontSize: 14, fontWeight: 600 }}>✕ Close</button>
-          </div>
-        </div>
-      )}
+      {imageZoom && (<div onClick={() => setImageZoom(null)} style={{ position: 'fixed', inset: 0, zIndex: 20000, background: 'rgba(0,0,0,.88)', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', padding: 20 }}><img src={`data:${imageZoom.mimeType || 'image/png'};base64,${imageZoom.base64}`} alt="Preview" style={{ maxWidth: '90vw', maxHeight: '80vh', borderRadius: 12, boxShadow: '0 20px 60px rgba(0,0,0,.8)' }} onClick={e => e.stopPropagation()} /><div style={{ display: 'flex', gap: 10, marginTop: 16 }} onClick={e => e.stopPropagation()}><button onClick={() => downloadImage(imageZoom, 0)} style={{ padding: '10px 24px', borderRadius: 10, border: 'none', background: '#6366f1', color: '#fff', cursor: 'pointer', fontSize: 14, fontWeight: 700 }}>⬇ Download</button><button onClick={() => setImageZoom(null)} style={{ padding: '10px 24px', borderRadius: 10, border: '1px solid rgba(255,255,255,.2)', background: 'transparent', color: '#fff', cursor: 'pointer', fontSize: 14, fontWeight: 600 }}>✕ Close</button></div></div>)}
 
       <style>{`
         @keyframes zcPulse { 0%, 100% { transform: scale(1); opacity: 1; } 50% { transform: scale(1.2); opacity: 0; } }
