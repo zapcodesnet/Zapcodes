@@ -20,28 +20,41 @@ function findPackage(id) {
   // Legacy IDs
   const legacyMap = { '30k': '50k', '80k': '150k' };
   if (legacyMap[key]) return { pkgId: legacyMap[key], pkg: TOPUP_PACKAGES[legacyMap[key]] };
+  // Name-based aliases (what pricing page might send)
+  const nameMap = {
+    'starter': '50k', 'basic': '50k', 'small': '50k', 'tier1': '50k', 'pack1': '50k',
+    'pro': '150k', 'medium': '150k', 'popular': '150k', 'tier2': '150k', 'pack2': '150k',
+    'premium': '400k', 'large': '400k', 'best': '400k', 'best_value': '400k', 'best-value': '400k', 'bestvalue': '400k', 'tier3': '400k', 'pack3': '400k',
+    'ultimate': '1m', 'mega': '1m', 'max': '1m', 'enterprise': '1m', 'tier4': '1m', 'pack4': '1m',
+    // Price-based names
+    '4.99': '50k', '499': '50k',
+    '9.99': '150k', '999': '150k',
+    '14.99': '400k', '1499': '400k',
+    '29.99': '1m', '2999': '1m',
+  };
+  if (nameMap[key]) return { pkgId: nameMap[key], pkg: TOPUP_PACKAGES[nameMap[key]] };
   // Match by coin amount (frontend might send "50000" or "1000000")
   const num = parseInt(key.replace(/[^0-9]/g, ''));
   if (num) {
     for (const [k, v] of Object.entries(TOPUP_PACKAGES)) {
       if (v.coins === num) return { pkgId: k, pkg: v };
     }
+    // Match by price in cents
+    for (const [k, v] of Object.entries(TOPUP_PACKAGES)) {
+      if (v.price === num) return { pkgId: k, pkg: v };
+    }
   }
-  // Match by price in cents ("499", "2999")
-  for (const [k, v] of Object.entries(TOPUP_PACKAGES)) {
-    if (v.price === num) return { pkgId: k, pkg: v };
-  }
-  // Match by dollar price string ("4.99", "$29.99")
+  // Match by dollar price string ("$29.99")
   const dollars = parseFloat(key.replace(/[^0-9.]/g, ''));
   if (dollars) {
     for (const [k, v] of Object.entries(TOPUP_PACKAGES)) {
       if (v.price === Math.round(dollars * 100)) return { pkgId: k, pkg: v };
     }
   }
-  // Index-based ("0", "1", "2", "3" or "tier1", "tier2")
-  const idx = parseInt(key.replace(/[^0-9]/g, ''));
+  // Index-based ("0", "1", "2", "3")
+  const idx = parseInt(key);
   const keys = Object.keys(TOPUP_PACKAGES);
-  if (idx >= 0 && idx < keys.length) return { pkgId: keys[idx], pkg: TOPUP_PACKAGES[keys[idx]] };
+  if (!isNaN(idx) && idx >= 0 && idx < keys.length) return { pkgId: keys[idx], pkg: TOPUP_PACKAGES[keys[idx]] };
   return null;
 }
 
