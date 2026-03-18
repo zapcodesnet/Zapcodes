@@ -165,12 +165,14 @@ export default function Pricing() {
     finally { setLoading(null); }
   };
 
+  // FIX: Now sends quantity for the ultimate package multiplier
   const handleTopup = async (pkg) => {
     if (!user) return (window.location.href = '/register');
     const topupId = pkg.id;
+    const qty = pkg.multiplier ? ultimateQty : 1;
     setLoading(`topup-${topupId}`);
     try {
-      const { data } = await api.post('/api/coins/topup', { package: topupId, provider: payProvider });
+      const { data } = await api.post('/api/coins/topup', { package: topupId, quantity: qty, provider: payProvider });
       if (data.url) window.location.href = data.url;
     } catch (err) { alert(err.response?.data?.error || 'Top-up failed'); }
     finally { setLoading(null); }
