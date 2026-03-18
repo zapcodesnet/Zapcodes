@@ -27,10 +27,11 @@ export default function Dashboard() {
   const [claimCode, setClaimCode] = useState('');
   const [claimingCode, setClaimingCode] = useState(false);
   const [claimResult, setClaimResult] = useState(null);
-  const [chooseSubdomain, setChooseSubdomain] = useState(''); // After claim — let user pick subdomain
+  const [chooseSubdomain, setChooseSubdomain] = useState('');
   const [renamingSubdomain, setRenamingSubdomain] = useState(false);
   const [renameError, setRenameError] = useState('');
-  const [claimedOldSub, setClaimedOldSub] = useState(''); // preview-XXXXX that was claimed
+  const [claimedOldSub, setClaimedOldSub] = useState('');
+  const [pendingRename, setPendingRename] = useState(false); // ← NEW: keeps rename UI visible
   const [widgetBanner, setWidgetBanner] = useState(null);
   const [bannerDismissed, setBannerDismissed] = useState(false);
 
@@ -72,9 +73,11 @@ export default function Dashboard() {
     try {
       const { data } = await api.post('/api/build/claim-guest-site', { claimCode: claimCode.trim() });
       setClaimResult({ success: true, message: data.message, url: data.url, subdomain: data.subdomain });
-      setClaimedOldSub(data.subdomain || ''); // Store the preview-XXXXX subdomain
+      setClaimedOldSub(data.subdomain || '');
       setClaimCode('');
-      fetchData();
+      setPendingRename(true); // ← Show rename UI independently
+      // NOTE: Do NOT call fetchData() here — it would refresh sites[], hiding the
+      // claim section before the user can pick a subdomain. We fetch AFTER rename.
     } catch (err) { setClaimResult({ success: false, message: err.response?.data?.error || 'Claim failed. Check the code and try again.' }); }
     finally { setClaimingCode(false); }
   };
@@ -87,9 +90,17 @@ export default function Dashboard() {
       const { data } = await api.post('/api/build/rename-subdomain', { oldSubdomain: claimedOldSub, newSubdomain: clean });
       setClaimResult({ success: true, message: data.message, url: data.url, subdomain: data.newSubdomain, renamed: true });
       setChooseSubdomain('');
-      fetchData();
+      setPendingRename(false); // ← Rename done, hide the UI
+      fetchData(); // ← NOW safe to refresh
     } catch (err) { setRenameError(err.response?.data?.error || 'Rename failed'); }
     finally { setRenamingSubdomain(false); }
+  };
+
+  const handleSkipRename = () => {
+    // User wants to keep the preview-XXXXX subdomain as-is
+    setPendingRename(false);
+    setClaimResult(prev => prev ? { ...prev, renamed: true, message: `Site claimed as ${claimedOldSub}.zapcodes.net` } : prev);
+    fetchData(); // Refresh the dashboard now
   };
 
   const handleDeleteSite = async (subdomain) => { if (!confirm(`Permanently delete ${subdomain}.zapcodes.net?`)) return; try { await api.delete(`/api/build/site/${subdomain}`); setSites(s => s.filter(site => site.subdomain !== subdomain)); setProjects(p => p.filter(proj => proj.linkedSubdomain !== subdomain)); } catch { alert('Delete failed'); } };
@@ -113,6 +124,12 @@ export default function Dashboard() {
   const canClaim = usageData?.can_claim_daily ?? (coinData?.canClaim && countdown <= 0);
   const referralLink = `https://zapcodes.net/register?ref=${user?.referralCode || user?.referral_code || ''}`;
 
+  // Show the claim-code input only if user hasn't already claimed a preview site
+  // AND we're not in the middle of a rename flow
+  const showClaimCodeInput = !pendingRename
+    && !sites.some(si => si.subdomain?.startsWith('preview-'))
+    && !projects.some(p => p.linkedSubdomain?.startsWith('preview-'));
+
   if (loading) return <div style={{ padding: 40, textAlign: 'center', color: 'var(--text-secondary)' }}>Loading dashboard...</div>;
 
   return (<>
@@ -131,8 +148,8 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* ══ CLAIM CODE SECTION — only show if user hasn't claimed a guest site yet ══ */}
-      {!sites.some(s => s.subdomain?.startsWith('preview-')) && !projects.some(p => p.linkedSubdomain?.startsWith('preview-')) && (
+      {/* ══ CLAIM CODE INPUT — hidden once a preview site exists or rename is in progress ══ */}
+      {showClaimCodeInput && (
       <div style={{ background: 'linear-gradient(135deg, rgba(99,102,241,0.08), rgba(255,59,136,0.06))', border: '1px solid rgba(99,102,241,0.2)', borderRadius: 16, padding: '18px 20px', marginBottom: 20 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
           <span style={{ fontSize: 22 }}>🎟️</span>
@@ -142,29 +159,37 @@ export default function Dashboard() {
           <input style={{ flex: 1, padding: '10px 14px', borderRadius: 10, border: '1px solid var(--border)', background: 'var(--bg-elevated)', color: 'var(--text-primary)', fontSize: 15, fontWeight: 700, fontFamily: 'monospace', letterSpacing: 3, textTransform: 'uppercase', textAlign: 'center', maxWidth: 200 }} placeholder="ABC123" value={claimCode} onChange={e => { setClaimCode(e.target.value.toUpperCase()); setClaimResult(null); }} onKeyDown={e => { if (e.key === 'Enter') handleClaimCode(); }} maxLength={10} />
           <button style={{ padding: '10px 20px', borderRadius: 10, border: 'none', background: claimCode.trim() ? 'linear-gradient(135deg, #6366f1, #8b5cf6)' : 'var(--bg-elevated)', color: claimCode.trim() ? '#fff' : 'var(--text-muted)', fontWeight: 700, fontSize: 14, cursor: claimCode.trim() ? 'pointer' : 'default', transition: 'all .2s' }} onClick={handleClaimCode} disabled={!claimCode.trim() || claimingCode}>{claimingCode ? '⏳ Claiming...' : '🎉 Claim My Site'}</button>
         </div>
-        {claimResult && claimResult.success && !claimResult.renamed && claimedOldSub && (
-          <div style={{ marginTop: 12, padding: '14px 16px', borderRadius: 10, background: 'rgba(34,197,94,0.06)', border: '1px solid rgba(34,197,94,0.2)' }}>
-            <div style={{ fontSize: 14, fontWeight: 700, color: '#22c55e', marginBottom: 8 }}>✅ Site claimed! Now choose your subdomain:</div>
-            <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
-              <input style={{ flex: 1, padding: '10px 12px', borderRadius: 10, border: renameError ? '1px solid #ef4444' : '1px solid var(--border)', background: 'var(--bg-elevated)', color: 'var(--text-primary)', fontSize: 14, fontWeight: 600, minWidth: 120 }} placeholder="mybusiness" value={chooseSubdomain} onChange={e => { setChooseSubdomain(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, '')); setRenameError(''); }} onKeyDown={e => { if (e.key === 'Enter') handleRenameSubdomain(); }} maxLength={30} />
-              <span style={{ color: 'var(--text-muted)', fontSize: 13, fontWeight: 600, whiteSpace: 'nowrap' }}>.zapcodes.net</span>
-              <button style={{ padding: '10px 16px', borderRadius: 10, border: 'none', background: chooseSubdomain.trim().length >= 2 ? '#22c55e' : 'var(--bg-elevated)', color: chooseSubdomain.trim().length >= 2 ? '#fff' : 'var(--text-muted)', fontWeight: 700, fontSize: 13, cursor: chooseSubdomain.trim().length >= 2 ? 'pointer' : 'default', whiteSpace: 'nowrap' }} onClick={handleRenameSubdomain} disabled={chooseSubdomain.trim().length < 2 || renamingSubdomain}>{renamingSubdomain ? '⏳...' : '✅ Confirm'}</button>
-            </div>
-            {renameError && <div style={{ marginTop: 6, fontSize: 12, color: '#ef4444', fontWeight: 600 }}>❌ {renameError}</div>}
-            <div style={{ marginTop: 6, fontSize: 11, color: 'var(--text-muted)' }}>Letters, numbers, and hyphens only. At least 2 characters.</div>
-          </div>
-        )}
-        {claimResult && claimResult.success && claimResult.renamed && (
-          <div style={{ marginTop: 10, padding: '10px 14px', borderRadius: 8, background: 'rgba(34,197,94,0.1)', border: '1px solid rgba(34,197,94,0.2)', fontSize: 13, color: '#22c55e', fontWeight: 600 }}>
-            ✅ {claimResult.message} — <a href={claimResult.url} target="_blank" rel="noreferrer" style={{ color: '#22c55e' }}>Visit your site ↗</a> or <a href="/projects" style={{ color: '#6366f1' }}>My Projects</a>
-          </div>
-        )}
         {claimResult && !claimResult.success && (
           <div style={{ marginTop: 10, padding: '10px 14px', borderRadius: 8, background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.2)', fontSize: 13, color: '#ef4444', fontWeight: 600 }}>
             ❌ {claimResult.message}
           </div>
         )}
       </div>
+      )}
+
+      {/* ══ RENAME SUBDOMAIN UI — rendered independently, stays visible until user picks or skips ══ */}
+      {pendingRename && claimedOldSub && (
+        <div style={{ background: 'linear-gradient(135deg, rgba(34,197,94,0.08), rgba(99,102,241,0.06))', border: '1px solid rgba(34,197,94,0.25)', borderRadius: 16, padding: '18px 20px', marginBottom: 20 }}>
+          <div style={{ fontSize: 15, fontWeight: 700, color: '#22c55e', marginBottom: 4 }}>✅ Site claimed successfully!</div>
+          <div style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 14 }}>Choose a custom subdomain for your site, or keep the default.</div>
+          <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+            <input style={{ flex: 1, padding: '10px 12px', borderRadius: 10, border: renameError ? '1px solid #ef4444' : '1px solid var(--border)', background: 'var(--bg-elevated)', color: 'var(--text-primary)', fontSize: 14, fontWeight: 600, minWidth: 120 }} placeholder="mybusiness" value={chooseSubdomain} onChange={e => { setChooseSubdomain(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, '')); setRenameError(''); }} onKeyDown={e => { if (e.key === 'Enter') handleRenameSubdomain(); }} maxLength={30} />
+            <span style={{ color: 'var(--text-muted)', fontSize: 13, fontWeight: 600, whiteSpace: 'nowrap' }}>.zapcodes.net</span>
+            <button style={{ padding: '10px 16px', borderRadius: 10, border: 'none', background: chooseSubdomain.trim().length >= 2 ? '#22c55e' : 'var(--bg-elevated)', color: chooseSubdomain.trim().length >= 2 ? '#fff' : 'var(--text-muted)', fontWeight: 700, fontSize: 13, cursor: chooseSubdomain.trim().length >= 2 ? 'pointer' : 'default', whiteSpace: 'nowrap' }} onClick={handleRenameSubdomain} disabled={chooseSubdomain.trim().length < 2 || renamingSubdomain}>{renamingSubdomain ? '⏳...' : '✅ Confirm'}</button>
+          </div>
+          {renameError && <div style={{ marginTop: 6, fontSize: 12, color: '#ef4444', fontWeight: 600 }}>❌ {renameError}</div>}
+          <div style={{ marginTop: 8, display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+            <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Letters, numbers, and hyphens only. At least 2 characters.</div>
+            <button style={{ padding: '6px 14px', borderRadius: 8, border: '1px solid var(--border)', background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer', fontSize: 12, fontWeight: 600 }} onClick={handleSkipRename}>Skip — keep {claimedOldSub}</button>
+          </div>
+        </div>
+      )}
+
+      {/* ══ RENAME SUCCESS BANNER — shown after rename or skip is complete ══ */}
+      {claimResult && claimResult.success && claimResult.renamed && !pendingRename && (
+        <div style={{ marginBottom: 20, padding: '12px 16px', borderRadius: 12, background: 'rgba(34,197,94,0.08)', border: '1px solid rgba(34,197,94,0.2)', fontSize: 13, color: '#22c55e', fontWeight: 600 }}>
+          ✅ {claimResult.message} — <a href={claimResult.url || `https://${claimResult.subdomain}.zapcodes.net`} target="_blank" rel="noreferrer" style={{ color: '#22c55e' }}>Visit your site ↗</a> or <a href="/projects" style={{ color: '#6366f1' }}>My Projects</a>
+        </div>
       )}
 
       <div style={s.grid}>
