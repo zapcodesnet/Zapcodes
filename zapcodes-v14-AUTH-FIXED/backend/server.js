@@ -131,11 +131,19 @@ io.on('connection', (socket) => {
   socket.on('disconnect', () => console.log(`Client disconnected: ${socket.id}`));
 });
 
-// ── MongoDB + server start ────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════
+// MongoDB + server start
+// CRITICAL: httpServer.listen MUST complete and Render MUST
+// detect the port BEFORE any background tasks (knowledge scanner,
+// cron jobs, etc.) are started. This prevents deploy timeouts.
+// ══════════════════════════════════════════════════════════════
 const PORT = process.env.PORT || 10000;
 
 httpServer.listen(PORT, '0.0.0.0', () => {
   console.log('ZapCodes API running on port ' + PORT);
+
+  // ── Start DB connection AFTER port is confirmed open ──
+  connectDB();
 });
 
 const connectDB = async () => {
@@ -163,11 +171,22 @@ const connectDB = async () => {
       await ensureSuperAdmin();
     } catch (e) { console.error('[BOOTSTRAP] ensureSuperAdmin failed:', e.message); }
 
-    // ── NEW: Start nightly guest cleanup cron (runs at 2AM UTC) ───────────
+    // ── Start nightly guest cleanup cron (runs at 2AM UTC) ────────────────
     try {
       const { startGuestCleanupCron } = require('./jobs/cleanupGuest');
       startGuestCleanupCron();
     } catch (e) { console.error('[BOOTSTRAP] Guest cleanup cron failed to start:', e.message); }
+
+    // ══════════════════════════════════════════════════════════
+    // START KNOWLEDGE SCANNER — ONLY after DB is connected and
+    // port is confirmed open. This prevents fetch() calls from
+    // interfering with Render's port detection during deploy.
+    // ══════════════════════════════════════════════════════════
+    try {
+      const { initKnowledgeScanner } = require('./routes/help');
+      initKnowledgeScanner();
+      console.log('[BOOTSTRAP] Knowledge scanner initialized');
+    } catch (e) { console.error('[BOOTSTRAP] Knowledge scanner init failed:', e.message); }
 
   } catch (err) {
     console.error('MongoDB connection failed:', err.message);
@@ -175,7 +194,5 @@ const connectDB = async () => {
     setTimeout(connectDB, 10000);
   }
 };
-
-connectDB();
 
 module.exports = app;
