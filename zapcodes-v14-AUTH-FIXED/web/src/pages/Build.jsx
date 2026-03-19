@@ -367,7 +367,7 @@ export default function Build() {
     try {
       const token = localStorage.getItem('token');
       const requestBody = { prompt, model: effectiveModel, template, projectName: projectName || 'My Website', projectId: currentProjectId || undefined };
-      if (editFiles) { requestBody.existingFiles = editFiles; requestBody.isEditing = true; }
+      if (editFiles) { requestBody.existingFiles = editFiles.map(f => { if (!f.name.endsWith('.html')) return f; return { ...f, content: f.content.replace(/data:(image|video)\/[^;]+;base64,[A-Za-z0-9+/=]{500,}/g, 'BASE64_IMAGE_PRESERVED') }; }); requestBody.isEditing = true; }
       else { if (autoAttachPrompt && systemPromptText && systemPromptText.trim().length > 50) requestBody.customSystemPrompt = systemPromptText; }
 
       // ── User uploaded photo: ALWAYS inject when photo exists (both new + edit) ──
@@ -445,6 +445,26 @@ export default function Build() {
             else if (data.type === 'complete') {
               let completedFiles = data.files || [];
               let completedPreview = data.preview || '';
+
+              // Restore base64 images that were stripped before sending to AI
+              if (editFiles && completedFiles.length > 0) {
+                const oldHtml = editFiles.find(f => f.name.endsWith('.html'))?.content || '';
+                const base64Images = oldHtml.match(/data:(?:image|video)\/[^;]+;base64,[A-Za-z0-9+/=]{500,}/g) || [];
+                if (base64Images.length > 0) {
+                  completedFiles = completedFiles.map(f => {
+                    if (!f.name.endsWith('.html')) return f;
+                    let html = f.content;
+                    let idx = 0;
+                    while (html.includes('BASE64_IMAGE_PRESERVED') && idx < base64Images.length) {
+                      html = html.replace('BASE64_IMAGE_PRESERVED', base64Images[idx]);
+                      idx++;
+                    }
+                    return { ...f, content: html };
+                  });
+                  const htmlFile = completedFiles.find(f => f.name.endsWith('.html'));
+                  if (htmlFile) completedPreview = htmlFile.content;
+                }
+              }
 
               // ── Replace USER_PHOTO_PLACEHOLDER with actual uploaded photo ──
               if (uploadedPhoto && completedFiles.length > 0) {
