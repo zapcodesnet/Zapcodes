@@ -426,7 +426,7 @@ export default function Build() {
 
       // ── GLOBAL RULE: never delete existing content without explicit user request ──
       if (editFiles?.length > 0) {
-        requestBody.prompt = requestBody.prompt + '\n\n[STRICT RULE: Do NOT delete, remove, replace, or modify any existing images, videos, text, or sections on the site unless the user EXPLICITLY asks you to delete or replace something. Only ADD or MODIFY what the user specifically requested.]';
+        requestBody.prompt = requestBody.prompt + '\n\n[STRICT RULE: Do NOT delete, remove, replace, or modify any existing images, videos, text, or sections on the site unless the user EXPLICITLY asks you to delete or replace something. Only ADD or MODIFY what the user specifically requested. Any src attributes containing "EXISTING_MEDIA" are real images — you MUST keep them exactly as they are. Never remove or change any img tag or video tag that already exists.]';
       }
 
       const mediaPrompts = getActiveMediaPrompts();
