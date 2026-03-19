@@ -1465,7 +1465,7 @@ router.post('/redeploy-from-project', auth, async (req, res) => {
     let deployFiles = sourceFiles.map(f => ({ ...f })); // Deep copy
     if (shouldBadge) deployFiles = deployFiles.map(f => f.name.endsWith('.html') ? { ...f, content: f.content.replace('</body>', `${BADGE_SCRIPT}</body>`) } : f);
 
-    site.files = sanitizeFilesForSave(deployFiles); // Strip base64 for MongoDB storage
+    site.files = deployFiles; // Keep base64 images so live site visitors can see them
     site.title = proj.name || site.title;
     site.lastUpdated = new Date();
     site.hasBadge = shouldBadge;
