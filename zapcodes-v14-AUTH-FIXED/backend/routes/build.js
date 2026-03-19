@@ -296,6 +296,12 @@ STEP BY STEP:
 
 NEVER: remove sections, change colors, rewrite text, remove JS functions, change image URLs, reorganize HTML, change class names, change fonts, remove animations — unless user asked.
 
+MEDIA PRESERVATION — CRITICAL:
+- NEVER delete, remove, or modify any existing <video>, <iframe>, or <img> tags UNLESS the user EXPLICITLY asks to remove them
+- If a video embed exists in the HTML, it MUST remain in the exact same position with the exact same URL
+- If an image has a broken src (placeholder URL or "Image removed to save space"), and the user uploaded a replacement photo, replace ONLY that specific broken image src — do not touch any other images or videos
+- Count all <video>, <iframe>, and <img> tags BEFORE editing. The count must be the same or higher AFTER editing (never lower, unless user asked to remove something)
+
 AUTO-FIX: broken links, missing CSS, unclosed tags, missing input names, broken forms, missing smooth scroll, non-responsive sections, missing alt attrs, missing hover effects.
 
 OUTPUT: \`\`\`filepath:index.html\n(COMPLETE updated file — every line)\n\`\`\``;
