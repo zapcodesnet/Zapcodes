@@ -455,9 +455,8 @@ export default function Build() {
                     if (!f.name.endsWith('.html')) return f;
                     let html = f.content;
                     let idx = 0;
-                    while (html.includes('BASE64_IMAGE_PRESERVED') && idx < base64Images.length) {
-                      html = html.replace('BASE64_IMAGE_PRESERVED', base64Images[idx]);
-                      idx++;
+                    while (html.match(/EXISTING_MEDIA_\d+_DO_NOT_REMOVE/) && idx < base64Images.length) {
+                      html = html.replace(/EXISTING_MEDIA_\d+_DO_NOT_REMOVE/, base64Images[idx]);
                     }
                     return { ...f, content: html };
                   });
