@@ -99,7 +99,7 @@ const PLATFORM_PAGES = [
 
 const OWNER_INFO = `
 PLATFORM OWNER & CONTACT:
-- Owner: Vincent Andal — Founder and owner of both ZapCodes.net and BlendLink.net
+- Owner: Vincent Andal from California USA — Founder and owner of both ZapCodes.net and BlendLink.net
 - Email: zapcodesnet@gmail.com
 - Phone: +1(951) 374-7808 (Call or Text)
 If a user asks who owns ZapCodes or BlendLink, or how to contact the owner/support, provide this information.
