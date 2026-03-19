@@ -516,10 +516,16 @@ export default function Build() {
               saveMessageToMemory('ai', `Built with ${MODEL_LABELS[data.model] || data.model}. ${data.fileCount} file(s) generated.`);
               // ── Auto-save after every successful generation ──
               autoSaveProject(completedFiles, completedPreview);
-              // Clear used media AFTER insertion
+              // Clear ALL media AFTER insertion to prevent re-insertion
               if (imgResults.length > 0) setImgResults([]);
-              if (vibeResult) setVibeResult(null);
+              if (vibeResult) { setVibeResult(null); setUploadedPhoto(null); }
               if (currentPendingMedia.length > 0) setPendingMedia([]);
+              if (uploadedPhoto) setUploadedPhoto(null);
+              if (videoResult) setVideoResult(null);
+              if (youtubeUrl) setYoutubeUrl('');
+              setImgPrompt('');
+              setVideoPrompt('');
+              setVibeCustomPrompt('');
               api.get('/api/build/available-models').then(r => setAvailableModels(r.data.models || [])).catch(() => {});
               if (isMobile) setTimeout(() => setMobileView('preview'), 1500);
             }
