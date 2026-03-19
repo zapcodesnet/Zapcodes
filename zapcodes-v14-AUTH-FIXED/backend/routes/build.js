@@ -1458,8 +1458,9 @@ router.post('/redeploy-from-project', auth, async (req, res) => {
       }
     });
 
-    // Create new Clone 1 from current state
-    const newClone = createCloneSnapshot(proj, 1);
+    // Create new Clone 1 from current state — use unsanitized files so editor shows images
+    const cloneSource = { ...proj, files: sourceFiles };
+    const newClone = createCloneSnapshot(cloneSource, 1);
     if (!user.saved_projects) user.saved_projects = [];
     user.saved_projects.push(newClone);
 
