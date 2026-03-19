@@ -367,7 +367,7 @@ export default function Build() {
     try {
       const token = localStorage.getItem('token');
       const requestBody = { prompt, model: effectiveModel, template, projectName: projectName || 'My Website', projectId: currentProjectId || undefined };
-      if (editFiles) { requestBody.existingFiles = editFiles.map(f => { if (!f.name.endsWith('.html')) return f; return { ...f, content: f.content.replace(/data:(image|video)\/[^;]+;base64,[A-Za-z0-9+/=]{500,}/g, 'BASE64_IMAGE_PRESERVED') }; }); requestBody.isEditing = true; }
+      if (editFiles) { let imgIdx = 0; requestBody.existingFiles = editFiles.map(f => { if (!f.name.endsWith('.html')) return f; return { ...f, content: f.content.replace(/data:(image|video)\/[^;]+;base64,[A-Za-z0-9+/=]{500,}/g, () => `EXISTING_MEDIA_${++imgIdx}_DO_NOT_REMOVE`) }; }); requestBody.isEditing = true; }
       else { if (autoAttachPrompt && systemPromptText && systemPromptText.trim().length > 50) requestBody.customSystemPrompt = systemPromptText; }
 
       // ── User uploaded photo: ALWAYS inject when photo exists (both new + edit) ──
