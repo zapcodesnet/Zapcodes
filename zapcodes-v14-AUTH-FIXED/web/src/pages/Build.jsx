@@ -465,6 +465,56 @@ export default function Build() {
                 }
               }
 
+              // ── Replace MEDIA_SLOT comments AND new placeholder images with actual media ──
+              if (currentPendingMedia.length > 0 && completedFiles.length > 0) {
+                completedFiles = completedFiles.map(f => {
+                  if (!f.name.endsWith('.html')) return f;
+                  let html = f.content;
+                  let unusedMedia = [];
+                  currentPendingMedia.forEach((m, i) => {
+                    const marker = `<!-- MEDIA_SLOT_${i + 1} -->`;
+                    let replacement = '';
+                    if (m.type === 'image') {
+                      replacement = `<img src="data:${m.mimeType};base64,${m.base64}" alt="User image" style="width:100%;max-height:600px;object-fit:cover;display:block;margin:0 auto;border-radius:8px;" />`;
+                    } else if (m.type === 'video-url') {
+                      replacement = m.embedHtml;
+                    } else if (m.type === 'veo-video') {
+                      replacement = m.embedHtml;
+                    }
+                    if (html.includes(marker)) {
+                      html = html.replace(marker, replacement);
+                    } else {
+                      unusedMedia.push({ ...m, replacement });
+                    }
+                  });
+                  if (unusedMedia.length > 0) {
+                    const oldHtmlSrc = editFiles ? (editFiles.find(ef => ef.name.endsWith('.html'))?.content || '') : '';
+                    unusedMedia.forEach(m => {
+                      if (m.type === 'image') {
+                        const placeholderPatterns = [
+                          /(<img\s[^>]*src=["'])(https?:\/\/placehold\.co\/[^"']+)(["'][^>]*>)/g,
+                          /(<img\s[^>]*src=["'])(https?:\/\/via\.placeholder\.com\/[^"']+)(["'][^>]*>)/g,
+                          /(<img\s[^>]*src=["'])(https?:\/\/placehold\.it\/[^"']+)(["'][^>]*>)/g,
+                          /(<img\s[^>]*src=["'])(https?:\/\/dummyimage\.com\/[^"']+)(["'][^>]*>)/g,
+                          /(<img\s[^>]*src=["'])([^"']*(?:placeholder|Placeholder|PLACEHOLDER)[^"']*)(["'][^>]*>)/g,
+                        ];
+                        for (const pattern of placeholderPatterns) {
+                          const match = pattern.exec(html);
+                          if (match && !oldHtmlSrc.includes(match[2])) {
+                            html = html.replace(match[0], m.replacement);
+                            break;
+                          }
+                          pattern.lastIndex = 0;
+                        }
+                      }
+                    });
+                  }
+                  return { ...f, content: html };
+                });
+                const htmlFile = completedFiles.find(f => f.name.endsWith('.html'));
+                if (htmlFile) completedPreview = htmlFile.content;
+              }
+
               // ── Replace USER_PHOTO_PLACEHOLDER with actual uploaded photo ──
               if (uploadedPhoto && completedFiles.length > 0) {
                 const photoDataUrl = `data:${uploadedPhoto.mimeType};base64,${uploadedPhoto.base64}`;
