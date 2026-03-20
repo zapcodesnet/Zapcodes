@@ -524,6 +524,7 @@ function trimUserDocumentSize(user) {
   // Do NOT strip Clone 1 — that's the active editable copy the user sees in the editor
   (user.saved_projects || []).forEach(p => {
     if (p.cloneVersion === 1) return; // Skip active editor clone — needs its images
+    if (p.linkedSubdomain && !p.cloneOf) return; // Skip root projects of deployed sites — editor loads these
     p.files = sanitizeFilesForSave(p.files || []);
     p.preview = '';
   });
