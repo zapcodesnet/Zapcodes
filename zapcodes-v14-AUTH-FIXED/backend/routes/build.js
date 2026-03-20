@@ -654,8 +654,8 @@ router.post('/deploy', auth, async (req, res) => {
     else user.deployed_sites.push({ subdomain: sub, title: title || sub, files: deployFiles, hasBadge: shouldBadge, fileSize: JSON.stringify(files).length });
     if (!user.saved_projects) user.saved_projects = [];
     const linkedProject = user.saved_projects.find(p => p.linkedSubdomain === sub);
-    if (linkedProject) { linkedProject.name = title || sub; linkedProject.files = sanitizeFilesForSave(files); linkedProject.updatedAt = new Date(); linkedProject.version = (linkedProject.version || 1) + 1; }
-    else { user.saved_projects.push({ projectId: `proj-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, name: title || sub, files: sanitizeFilesForSave(files), preview: '', template: 'custom', description: `Deployed: ${sub}.zapcodes.net`, linkedSubdomain: sub, version: 1, createdAt: new Date(), updatedAt: new Date() }); }
+    if (linkedProject) { linkedProject.name = title || sub; linkedProject.files = files; linkedProject.updatedAt = new Date(); linkedProject.version = (linkedProject.version || 1) + 1; } // Keep images — editor loads this
+    else { user.saved_projects.push({ projectId: `proj-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, name: title || sub, files: files, preview: '', template: 'custom', description: `Deployed: ${sub}.zapcodes.net`, linkedSubdomain: sub, version: 1, createdAt: new Date(), updatedAt: new Date() }); }
     const deployedProj = user.saved_projects.find(p => p.linkedSubdomain === sub);
     if (deployedProj) {
       const rootId = deployedProj.cloneOf || deployedProj.projectId;
@@ -990,7 +990,7 @@ router.post('/redeploy-from-project', auth, async (req, res) => {
     if (!proj.linkedSubdomain) return res.status(400).json({ error: 'Project not linked to a subdomain' });
     const sourceFiles = (currentFiles && currentFiles.length > 0) ? currentFiles : proj.files;
     if (!sourceFiles || !sourceFiles.length) return res.status(400).json({ error: 'No files to deploy' });
-    if (currentFiles && currentFiles.length > 0) { proj.files = sanitizeFilesForSave(currentFiles); if (name) proj.name = name; }
+    if (currentFiles && currentFiles.length > 0) { proj.files = currentFiles; if (name) proj.name = name; } // Keep images — editor loads this
     const sub = proj.linkedSubdomain;
     let site = user.deployed_sites.find(s => s.subdomain === sub);
     if (!site) {
