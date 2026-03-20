@@ -9,9 +9,6 @@ const path = require('path');
 
 // ══════════════════════════════════════════════════════════════════
 // PREBUILT TEMPLATE AUTO-LOADER
-// Reads all .html files from /backend/prebuilt-templates/ at startup.
-// To add new templates: just drop a .html file in that folder.
-// Naming: NN-keyword-keyword.html (e.g. 11-candy-crush-game.html)
 // ══════════════════════════════════════════════════════════════════
 const TEMPLATE_DIR = path.join(__dirname, '..', 'prebuilt-templates');
 const prebuiltTemplates = [];
@@ -22,9 +19,7 @@ function loadPrebuiltTemplates() {
     const files = fs.readdirSync(TEMPLATE_DIR).filter(f => f.endsWith('.html')).sort();
     files.forEach(filename => {
       const html = fs.readFileSync(path.join(TEMPLATE_DIR, filename), 'utf-8');
-      // Extract keywords from filename: "11-candy-crush-game.html" → ["candy", "crush", "game"]
       const keywords = filename.replace(/^\d+-/, '').replace('.html', '').split('-').filter(Boolean);
-      // Extract title from <title> tag if present
       const titleMatch = html.match(/<title>([^<]+)<\/title>/i);
       const title = titleMatch ? titleMatch[1].trim() : keywords.join(' ');
       prebuiltTemplates.push({ filename, keywords, title, html, size: html.length });
@@ -36,10 +31,7 @@ function loadPrebuiltTemplates() {
 }
 loadPrebuiltTemplates();
 
-// ── Template keyword matching ──
-// Scores each template against the user's prompt and returns the best match (or null)
 const TEMPLATE_KEYWORD_MAP = {
-  // Websites
   'restaurant':   ['restaurant','food','menu','dining','cafe','bistro','pizza','sushi','bar','grill','bakery','coffee','diner','kitchen','chef','catering'],
   'ecommerce':    ['ecommerce','store','shop','product','buy','sell','cart','checkout','marketplace','retail','merchandise','clothing','fashion'],
   'portfolio':    ['portfolio','agency','freelance','creative','designer','photographer','artist','resume','cv','personal site','showcase'],
@@ -50,9 +42,7 @@ const TEMPLATE_KEYWORD_MAP = {
   'salon':        ['salon','beauty','hair','spa','nail','makeup','barber','skincare','facial','massage','cosmetic','stylist'],
   'construction': ['construction','building','contractor','architecture','renovation','plumbing','electric','roofing','engineering','home improvement'],
   'blog':         ['blog','article','post','write','journal','news','magazine','content','author','editorial','story','publish'],
-  // Games
   'candy-crush':  ['candy','crush','match 3','match-3','puzzle game','gem','jewel','swap','tile','match three','bejeweled','sweet'],
-  // Future templates will auto-match via filename keywords too
 };
 
 function matchPrebuiltTemplate(prompt) {
@@ -60,48 +50,26 @@ function matchPrebuiltTemplate(prompt) {
   const promptLower = prompt.toLowerCase();
   let bestMatch = null;
   let bestScore = 0;
-
   for (const tmpl of prebuiltTemplates) {
     let score = 0;
-
-    // Score from keyword map
     for (const [category, keywords] of Object.entries(TEMPLATE_KEYWORD_MAP)) {
-      // Check if this template's filename contains the category
       if (tmpl.filename.toLowerCase().includes(category.replace('-', ''))) {
         for (const kw of keywords) {
-          if (promptLower.includes(kw)) score += kw.includes(' ') ? 3 : 2; // Multi-word matches score higher
+          if (promptLower.includes(kw)) score += kw.includes(' ') ? 3 : 2;
         }
       }
     }
-
-    // Score from filename keywords (catches new templates without manual keyword map)
     for (const kw of tmpl.keywords) {
       if (promptLower.includes(kw)) score += 2;
     }
-
-    // Bonus: exact title match
     if (promptLower.includes(tmpl.title.toLowerCase())) score += 5;
-
-    if (score > bestScore) {
-      bestScore = score;
-      bestMatch = tmpl;
-    }
+    if (score > bestScore) { bestScore = score; bestMatch = tmpl; }
   }
-
-  // Minimum score threshold to avoid false matches
   return bestScore >= 3 ? bestMatch : null;
 }
 
-// ── API endpoint to list available templates ──
 router.get('/prebuilt-templates', (req, res) => {
-  res.json({
-    templates: prebuiltTemplates.map(t => ({
-      filename: t.filename,
-      title: t.title,
-      keywords: t.keywords,
-      size: t.size,
-    }))
-  });
+  res.json({ templates: prebuiltTemplates.map(t => ({ filename: t.filename, title: t.title, keywords: t.keywords, size: t.size })) });
 });
 
 // ══════════ BL COIN COSTS ══════════
@@ -140,46 +108,20 @@ const MODEL_DISPLAY = { 'gemini-3.1-pro': 'Gemini 3.1 Pro', 'gemini-2.5-flash': 
 const NORMALIZE_MODEL_KEY = { 'gemini-pro': 'gemini-3.1-pro', 'gemini-flash': 'gemini-2.5-flash', 'haiku': 'haiku-4.5', 'sonnet': 'sonnet-4.6', 'groq': 'groq', 'gemini-3.1-pro': 'gemini-3.1-pro', 'gemini-2.5-flash': 'gemini-2.5-flash', 'haiku-4.5': 'haiku-4.5', 'sonnet-4.6': 'sonnet-4.6' };
 function normalizeModelKey(key) { return NORMALIZE_MODEL_KEY[key] || key; }
 
-// ── Per-tier fallback chains ─────────────────────────────────────────────
 const TIER_FALLBACK_CHAINS = {
-  free: {
-    new_website: ['gemini-2.5-flash'],
-    edit:        ['gemini-2.5-flash', 'groq'],
-    fix:         ['gemini-2.5-flash', 'groq'],
-  },
-  bronze: {
-    new_website: ['gemini-3.1-pro', 'gemini-2.5-flash'],
-    edit:        ['gemini-3.1-pro', 'gemini-2.5-flash', 'groq'],
-    fix:         ['gemini-3.1-pro', 'gemini-2.5-flash', 'groq'],
-  },
-  silver: {
-    new_website: ['gemini-3.1-pro', 'gemini-2.5-flash', 'haiku-4.5'],
-    edit:        ['gemini-3.1-pro', 'gemini-2.5-flash', 'haiku-4.5', 'groq'],
-    fix:         ['gemini-3.1-pro', 'gemini-2.5-flash', 'haiku-4.5', 'groq'],
-  },
-  gold: {
-    new_website: ['gemini-3.1-pro', 'sonnet-4.6', 'gemini-2.5-flash', 'haiku-4.5'],
-    edit:        ['gemini-3.1-pro', 'sonnet-4.6', 'gemini-2.5-flash', 'haiku-4.5', 'groq'],
-    fix:         ['gemini-3.1-pro', 'sonnet-4.6', 'gemini-2.5-flash', 'haiku-4.5', 'groq'],
-  },
-  diamond: {
-    new_website: ['gemini-3.1-pro', 'sonnet-4.6', 'gemini-2.5-flash', 'haiku-4.5'],
-    edit:        ['gemini-3.1-pro', 'sonnet-4.6', 'gemini-2.5-flash', 'haiku-4.5', 'groq'],
-    fix:         ['gemini-3.1-pro', 'sonnet-4.6', 'gemini-2.5-flash', 'haiku-4.5', 'groq'],
-  },
+  free:    { new_website: ['gemini-2.5-flash'], edit: ['gemini-2.5-flash', 'groq'], fix: ['gemini-2.5-flash', 'groq'] },
+  bronze:  { new_website: ['gemini-3.1-pro', 'gemini-2.5-flash'], edit: ['gemini-3.1-pro', 'gemini-2.5-flash', 'groq'], fix: ['gemini-3.1-pro', 'gemini-2.5-flash', 'groq'] },
+  silver:  { new_website: ['gemini-3.1-pro', 'gemini-2.5-flash', 'haiku-4.5'], edit: ['gemini-3.1-pro', 'gemini-2.5-flash', 'haiku-4.5', 'groq'], fix: ['gemini-3.1-pro', 'gemini-2.5-flash', 'haiku-4.5', 'groq'] },
+  gold:    { new_website: ['gemini-3.1-pro', 'sonnet-4.6', 'gemini-2.5-flash', 'haiku-4.5'], edit: ['gemini-3.1-pro', 'sonnet-4.6', 'gemini-2.5-flash', 'haiku-4.5', 'groq'], fix: ['gemini-3.1-pro', 'sonnet-4.6', 'gemini-2.5-flash', 'haiku-4.5', 'groq'] },
+  diamond: { new_website: ['gemini-3.1-pro', 'sonnet-4.6', 'gemini-2.5-flash', 'haiku-4.5'], edit: ['gemini-3.1-pro', 'sonnet-4.6', 'gemini-2.5-flash', 'haiku-4.5', 'groq'], fix: ['gemini-3.1-pro', 'sonnet-4.6', 'gemini-2.5-flash', 'haiku-4.5', 'groq'] },
 };
 function getTierFallbackChain(tier, operationType) {
   const t = (tier || 'free').toLowerCase();
   const op = operationType || 'new_website';
   return (TIER_FALLBACK_CHAINS[t] || TIER_FALLBACK_CHAINS.free)[op] || ['groq'];
 }
-function isGroqFallback(tier, model, operationType) {
-  return model === 'groq' && operationType !== 'new_website';
-}
-function isLastFallback(tier, model, operationType) {
-  const chain = getTierFallbackChain(tier, operationType);
-  return chain[chain.length - 1] === model;
-}
+function isGroqFallback(tier, model, operationType) { return model === 'groq' && operationType !== 'new_website'; }
+function isLastFallback(tier, model, operationType) { const chain = getTierFallbackChain(tier, operationType); return chain[chain.length - 1] === model; }
 
 const RESERVED = ['www', 'api', 'app', 'admin', 'mail', 'ftp', 'cdn', 'dev', 'staging', 'test', 'blog', 'docs', 'status', 'support', 'help', 'zapcodes', 'blendlink'];
 
@@ -312,9 +254,7 @@ function getEffectiveModel(user, requestedModel, isBuildOperation = false, opera
   if (user.role === 'super-admin') { if (requestedModel) return normalizeModelKey(requestedModel); return 'gemini-3.1-pro'; }
   const tier = user.subscription_tier || 'free';
   const normalized = requestedModel ? normalizeModelKey(requestedModel) : null;
-
   const chain = getTierFallbackChain(tier, operationType);
-
   if (normalized && normalized !== 'auto' && chain.includes(normalized)) {
     const config = user.getTierConfig();
     const limit = config.monthlyLimits?.[normalized];
@@ -322,7 +262,6 @@ function getEffectiveModel(user, requestedModel, isBuildOperation = false, opera
     if (isTrial) { if (!user.isTrialExhausted(normalized, limit)) return normalized; }
     else { const used = user.getModelUsageCount(normalized); if (limit === Infinity || used < limit) return normalized; }
   }
-
   const config = user.getTierConfig();
   for (const model of chain) {
     const limit = config.monthlyLimits?.[model];
@@ -453,24 +392,16 @@ router.post('/generate-with-progress', auth, async (req, res) => {
           files = result ? parseFilesFromResponse(result) : [];
         }
       } else {
-        // ── Check for prebuilt template match BEFORE generating from scratch ──
         const matchedTemplate = matchPrebuiltTemplate(prompt || description || projectName || '');
-        
         if (matchedTemplate) {
-          // ── PREBUILT TEMPLATE PATH: Use matched template as base, AI customizes it ──
           sendProgress('generating_html', `Found "${matchedTemplate.title}" template — customizing with ${modelLabel}...`);
           console.log(`[Templates] Matched "${matchedTemplate.filename}" (prompt: "${(prompt || '').slice(0, 60)}")`);
           systemPrompt = (customSystemPrompt?.trim().length > 50) ? customSystemPrompt : GEN_PROMPT;
           userPrompt = `You have a PREBUILT HTML template below. The user wants to build: "${prompt}"\n\nYour job:\n1. Use this template as a STARTING BASE — keep its structure, animations, and functionality\n2. CUSTOMIZE it based on the user's specific request (change text, colors, branding, features as needed)\n3. Keep ALL working JavaScript functionality intact\n4. Keep ALL CSS animations and transitions\n5. Update text content, colors, and branding to match what the user described\n6. If the user's request is very different from the template, still use the template's layout/structure as inspiration\n\nProject name: ${projectName || 'My Project'}\nColors: ${colorScheme || 'keep template colors or modern dark theme'}\n${features ? `Extra features: ${features.join(', ')}` : ''}\n\nIMPORTANT: Return a COMPLETE self-contained index.html. Do NOT strip any working JS or CSS.\n\n<prebuilt_template>\n${matchedTemplate.html}\n</prebuilt_template>`;
           const result = await callAISmart(systemPrompt, userPrompt, model, undefined, visionImages, aiOpts);
           files = result ? parseFilesFromResponse(result) : [];
-          // If AI failed to customize, use template as-is
-          if (!files?.length) {
-            sendProgress('generating', 'Using template directly...');
-            files = [{ name: 'index.html', content: matchedTemplate.html }];
-          }
+          if (!files?.length) { sendProgress('generating', 'Using template directly...'); files = [{ name: 'index.html', content: matchedTemplate.html }]; }
         } else {
-          // ── FROM SCRATCH PATH: No matching template, AI generates everything ──
           sendProgress('generating_html', `Generating website using ${modelLabel}...`);
           systemPrompt = (customSystemPrompt?.trim().length > 50) ? customSystemPrompt : GEN_PROMPT;
           userPrompt = `Create a complete, production-ready website: ${prompt}\n\nProject: ${projectName || 'My Website'}\nColors: ${colorScheme || 'modern dark theme'}\n${features ? `Features: ${features.join(', ')}` : ''}\n${visionImages.length > 0 ? 'REFERENCE IMAGES ATTACHED: Study them carefully. Recreate the design, layout, colors, and structure as closely as possible.' : ''}\n\nIMPORTANT: Self-contained index.html with ALL CSS in <style> and ALL JS in <script>.`;
@@ -486,16 +417,8 @@ router.post('/generate-with-progress', auth, async (req, res) => {
     }
     if (!files?.length) {
       sendProgress('generating', `${modelLabel} had an issue — retrying once...`);
-      try {
-        const retryResult = await callAISmart(systemPrompt, userPrompt, model, undefined, visionImages, aiOpts);
-        const retryFiles = retryResult ? parseFilesFromResponse(retryResult) : [];
-        if (retryFiles?.length) {
-          files = retryFiles;
-          sendProgress('generating', `${modelLabel} retry succeeded!`);
-        }
-      } catch (retryErr) { console.warn(`[Retry] ${model}: ${retryErr.message}`); }
+      try { const retryResult = await callAISmart(systemPrompt, userPrompt, model, undefined, visionImages, aiOpts); const retryFiles = retryResult ? parseFilesFromResponse(retryResult) : []; if (retryFiles?.length) { files = retryFiles; sendProgress('generating', `${modelLabel} retry succeeded!`); } } catch (retryErr) { console.warn(`[Retry] ${model}: ${retryErr.message}`); }
     }
-
     if (!files?.length) {
       const opType = existingFiles?.length > 0 ? 'edit' : 'new_website';
       const fallbackChain = getTierFallbackChain(user.subscription_tier || 'free', opType);
@@ -503,25 +426,9 @@ router.post('/generate-with-progress', auth, async (req, res) => {
       const nextModel = fallbackChain[currentIdx + 1] || null;
       const isGroqWarn = nextModel === 'groq';
       const noMoreModels = !nextModel;
-
-      user.creditCoins(cost, 'generation', `Refund: ${modelLabel} failed`);
-      user.decrementMonthlyUsage(model, 'generation');
-      await user.save();
-
-      if (keepaliveInterval) clearInterval(keepaliveInterval);
-      clearInterval(progressTicker);
-
-      safeSend(res, {
-        type: 'fallback_needed',
-        currentModel: modelLabel,
-        nextModel: nextModel ? getModelDisplayName(nextModel) : null,
-        nextModelId: nextModel,
-        nextCost: nextModel ? (BL_COSTS.generation[nextModel] || 5000) : 0,
-        balance: user.bl_coins,
-        isGroqWarn,
-        noMoreModels,
-        error: noMoreModels ? 'All AI models are currently unresponsive.' : null,
-      });
+      user.creditCoins(cost, 'generation', `Refund: ${modelLabel} failed`); user.decrementMonthlyUsage(model, 'generation'); await user.save();
+      if (keepaliveInterval) clearInterval(keepaliveInterval); clearInterval(progressTicker);
+      safeSend(res, { type: 'fallback_needed', currentModel: modelLabel, nextModel: nextModel ? getModelDisplayName(nextModel) : null, nextModelId: nextModel, nextCost: nextModel ? (BL_COSTS.generation[nextModel] || 5000) : 0, balance: user.bl_coins, isGroqWarn, noMoreModels, error: noMoreModels ? 'All AI models are currently unresponsive.' : null });
       return res.end();
     }
     sendProgress('preview', 'Building live preview...');
@@ -574,6 +481,7 @@ router.post('/generate', auth, async (req, res) => {
 });
 
 // ── Helper: strip huge base64 data URLs from HTML before saving to MongoDB ──
+// ONLY used for saved_projects — NEVER for deployed_sites (visitors need images)
 function sanitizeFilesForSave(files) {
   if (!files?.length) return files;
   return files.map(f => {
@@ -592,9 +500,8 @@ function sanitizeFilesForSave(files) {
 }
 
 // ── Trim user document when approaching MongoDB 16MB limit ──
-// RULE: NEVER touch rollback clone files — they are the user's safety net
 function trimUserDocumentSize(user) {
-  const MAX_SIZE = 12 * 1024 * 1024; // 12MB target
+  const MAX_SIZE = 12 * 1024 * 1024;
   const estimateSize = () => {
     let size = 0;
     (user.deployed_sites || []).forEach(s => {
@@ -612,8 +519,8 @@ function trimUserDocumentSize(user) {
 
   console.log(`[TrimDoc] User document content ~${(currentSize / 1024 / 1024).toFixed(1)}MB — trimming...`);
 
-  // Step 1: Strip base64 from ALL projects and sites (safe — just removes embedded images)
-  (user.deployed_sites || []).forEach(s => { s.files = sanitizeFilesForSave(s.files || []); });
+  // Step 1: Strip base64 from saved projects ONLY (deployed sites keep images for visitors)
+  // Do NOT strip deployed site images — live visitors must see them
   (user.saved_projects || []).forEach(p => {
     p.files = sanitizeFilesForSave(p.files || []);
     p.preview = '';
@@ -624,7 +531,7 @@ function trimUserDocumentSize(user) {
   currentSize = estimateSize();
   if (currentSize <= MAX_SIZE) { console.log(`[TrimDoc] After base64 strip: ~${(currentSize / 1024 / 1024).toFixed(1)}MB — OK`); return; }
 
-  // Step 2: Enforce max 2 clones per project (fully delete old ones)
+  // Step 2: Enforce max 2 clones per project
   const rootIds = new Set();
   (user.saved_projects || []).forEach(p => { if (p.cloneOf) rootIds.add(p.cloneOf); });
   rootIds.forEach(rootId => enforceMaxClones(user, rootId));
@@ -633,7 +540,6 @@ function trimUserDocumentSize(user) {
   if (currentSize <= MAX_SIZE) { console.log(`[TrimDoc] After clone cleanup: ~${(currentSize / 1024 / 1024).toFixed(1)}MB — OK`); return; }
 
   // Step 3: Trim deployed sites — keep full content only for 2 most recent
-  // (deployed content can always be redeployed from project)
   const sites = [...(user.deployed_sites || [])];
   sites.sort((a, b) => new Date(b.lastUpdated || 0) - new Date(a.lastUpdated || 0));
   sites.forEach((s, i) => {
@@ -646,9 +552,8 @@ function trimUserDocumentSize(user) {
   if (currentSize <= MAX_SIZE) { console.log(`[TrimDoc] After site trim: ~${(currentSize / 1024 / 1024).toFixed(1)}MB — OK`); return; }
 
   // Step 4: Truncate large root project HTML files (keep first 80KB)
-  // NEVER truncate clones — they are rollback safety
   (user.saved_projects || []).forEach(p => {
-    if (!p.cloneOf && p.cloneVersion == null) { // Root projects only
+    if (!p.cloneOf && p.cloneVersion == null) {
       (p.files || []).forEach(f => {
         if (f.content && f.content.length > 80000) {
           f.content = f.content.slice(0, 80000) + '\n<!-- Truncated to save space --></body></html>';
@@ -660,8 +565,7 @@ function trimUserDocumentSize(user) {
   currentSize = estimateSize();
   if (currentSize <= MAX_SIZE) { console.log(`[TrimDoc] After root truncate: ~${(currentSize / 1024 / 1024).toFixed(1)}MB — OK`); return; }
 
-  // Step 5: Last resort — trim oldest root projects (keep newest 3 with content)
-  // STILL never touch clones
+  // Step 5: Last resort — trim oldest root projects (keep newest 3)
   const roots = (user.saved_projects || []).filter(p => !p.cloneOf && p.cloneVersion == null);
   roots.sort((a, b) => new Date(b.updatedAt || 0) - new Date(a.updatedAt || 0));
   roots.forEach((p, i) => {
@@ -676,13 +580,10 @@ function trimUserDocumentSize(user) {
 
 router.post('/save-project', auth, async (req, res) => {
   const doSave = async (attempt = 0) => {
-    // Re-fetch user on retry to get latest version
     const user = attempt === 0 ? req.user : await User.findById(req.user._id);
     if (!user) return res.status(404).json({ error: 'User not found' });
-
     const { projectId, name, files: rawFiles, preview, template, description, subdomain, skipSanitize } = req.body;
     if (!rawFiles?.length) return res.status(400).json({ error: 'No files' });
-    // Only sanitize on manual save/deploy — auto-save during editing preserves base64 images
     const files = skipSanitize ? rawFiles : sanitizeFilesForSave(rawFiles);
     if (projectId) { const idx = (user.saved_projects || []).findIndex(p => p.projectId === projectId); if (idx >= 0) { user.saved_projects[idx].name = name || user.saved_projects[idx].name; user.saved_projects[idx].files = files; user.saved_projects[idx].preview = (preview || '').slice(0, 500000); user.saved_projects[idx].updatedAt = new Date(); user.saved_projects[idx].version = (user.saved_projects[idx].version || 1) + 1; user.saved_projects[idx].description = description || user.saved_projects[idx].description; if (subdomain && !user.saved_projects[idx].linkedSubdomain) user.saved_projects[idx].linkedSubdomain = subdomain; } else return res.status(404).json({ error: 'Not found' }); }
     else { if (!user.saved_projects) user.saved_projects = []; user.saved_projects.push({ projectId: `proj-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, name: name || 'Untitled', files, preview: (preview || '').slice(0, 500000), template: template || 'custom', description: description || '', linkedSubdomain: subdomain || null, version: 1, createdAt: new Date(), updatedAt: new Date() }); }
@@ -692,45 +593,16 @@ router.post('/save-project', auth, async (req, res) => {
     const proj = projectId ? user.saved_projects.find(p => p.projectId === projectId) : user.saved_projects[user.saved_projects.length - 1];
     res.json({ project: { projectId: proj.projectId, name: proj.name, version: proj.version, fileCount: proj.files.length, linkedSubdomain: proj.linkedSubdomain, updatedAt: proj.updatedAt }, message: 'Saved!' });
   };
-
-  try {
-    await doSave(0);
-  } catch (err) {
-    // Retry once on version conflict (concurrent auto-save)
+  try { await doSave(0); } catch (err) {
     if (err.name === 'VersionError' || err.message?.includes('No matching document')) {
       console.log('[SaveProject] Version conflict, retrying with fresh user...');
-      try { await doSave(1); } catch (retryErr) {
-        console.error('[SaveProject] Retry failed:', retryErr.message);
-        res.status(500).json({ error: 'Save failed: ' + (retryErr.message || '').slice(0, 100) });
-      }
-    } else {
-      console.error('[SaveProject]', err.message);
-      res.status(500).json({ error: 'Save failed: ' + (err.message || '').slice(0, 100) });
-    }
+      try { await doSave(1); } catch (retryErr) { console.error('[SaveProject] Retry failed:', retryErr.message); res.status(500).json({ error: 'Save failed: ' + (retryErr.message || '').slice(0, 100) }); }
+    } else { console.error('[SaveProject]', err.message); res.status(500).json({ error: 'Save failed: ' + (err.message || '').slice(0, 100) }); }
   }
 });
 
-// ══════════════════════════════════════════════════════════════════
-// FIX #1: /projects now returns cloneVersion, cloneOf, deployedAt, hasMemory
-// ══════════════════════════════════════════════════════════════════
 router.get('/projects', auth, (req, res) => {
-  res.json({
-    projects: (req.user.saved_projects || []).map(p => ({
-      projectId:       p.projectId,
-      name:            p.name,
-      template:        p.template,
-      description:     p.description,
-      fileCount:       (p.files || []).length,
-      version:         p.version || 1,
-      linkedSubdomain: p.linkedSubdomain || null,
-      cloneOf:         p.cloneOf || null,
-      cloneVersion:    p.cloneVersion != null ? p.cloneVersion : null,
-      deployedAt:      p.deployedAt || null,
-      hasMemory:       ((p.projectMemory?.rawMessages?.length || 0) + (p.projectMemory?.summaries?.length || 0)) > 0,
-      createdAt:       p.createdAt,
-      updatedAt:       p.updatedAt,
-    })).reverse()
-  });
+  res.json({ projects: (req.user.saved_projects || []).map(p => ({ projectId: p.projectId, name: p.name, template: p.template, description: p.description, fileCount: (p.files || []).length, version: p.version || 1, linkedSubdomain: p.linkedSubdomain || null, cloneOf: p.cloneOf || null, cloneVersion: p.cloneVersion != null ? p.cloneVersion : null, deployedAt: p.deployedAt || null, hasMemory: ((p.projectMemory?.rawMessages?.length || 0) + (p.projectMemory?.summaries?.length || 0)) > 0, createdAt: p.createdAt, updatedAt: p.updatedAt })).reverse() });
 });
 
 router.get('/project/:projectId', auth, (req, res) => { const proj = (req.user.saved_projects || []).find(p => p.projectId === req.params.projectId); if (!proj) return res.status(404).json({ error: 'Not found' }); res.json({ project: proj }); });
@@ -741,50 +613,28 @@ router.delete('/project/:projectId', auth, async (req, res) => {
     const projectId = req.params.projectId;
     const project = (user.saved_projects || []).find(p => p.projectId === projectId);
     if (!project) return res.status(404).json({ error: 'Not found' });
-
-    // Determine the root project ID (whether deleting root or clone)
     const rootId = project.cloneOf || project.projectId;
     const rootProject = (user.saved_projects || []).find(p => p.projectId === rootId);
     const linkedSub = rootProject?.linkedSubdomain || project.linkedSubdomain;
-
-    // ── Collect ALL related project IDs (root + all clones) ──
     const relatedIds = new Set();
-    (user.saved_projects || []).forEach(p => {
-      if (p.projectId === rootId || p.cloneOf === rootId) {
-        relatedIds.add(p.projectId);
-      }
-    });
-
-    // ── Shutdown and remove deployed site ──
+    (user.saved_projects || []).forEach(p => { if (p.projectId === rootId || p.cloneOf === rootId) relatedIds.add(p.projectId); });
     let shutdownSite = null;
-    if (linkedSub) {
-      const siteIdx = user.deployed_sites.findIndex(s => s.subdomain === linkedSub);
-      if (siteIdx >= 0) {
-        shutdownSite = linkedSub;
-        user.deployed_sites.splice(siteIdx, 1);
-        user.markModified('deployed_sites');
-      }
-    }
-
-    // ── Remove ALL related projects (root + every clone) ──
+    if (linkedSub) { const siteIdx = user.deployed_sites.findIndex(s => s.subdomain === linkedSub); if (siteIdx >= 0) { shutdownSite = linkedSub; user.deployed_sites.splice(siteIdx, 1); user.markModified('deployed_sites'); } }
     const beforeCount = user.saved_projects.length;
     user.saved_projects = (user.saved_projects || []).filter(p => !relatedIds.has(p.projectId));
     user.markModified('saved_projects');
     const deletedCount = beforeCount - user.saved_projects.length;
-
     console.log(`[Delete] Removed ${deletedCount} project(s) for root ${rootId}${shutdownSite ? ` + shutdown site ${shutdownSite}` : ''}`);
-
     await user.save();
     res.json({ success: true, shutdownSite, deletedCount });
-  } catch (err) {
-    console.error('[Delete] Error:', err.message);
-    res.status(500).json({ error: 'Delete failed' });
-  }
+  } catch (err) { console.error('[Delete] Error:', err.message); res.status(500).json({ error: 'Delete failed' }); }
 });
 
+// ══════════════════════════════════════════════════════════════════
+// FIX: Deploy route — keep original files so live site visitors see images
+// ══════════════════════════════════════════════════════════════════
 router.post('/deploy', auth, async (req, res) => {
   try {
-    // Re-fetch user fresh to avoid version conflict with auto-save
     const user = await User.findById(req.user._id);
     if (!user) return res.status(404).json({ error: 'User not found' });
     const { subdomain, files: rawFiles, title } = req.body; const config = user.getTierConfig();
@@ -794,50 +644,34 @@ router.post('/deploy', auth, async (req, res) => {
     const existingSite = user.deployed_sites.find(s => s.subdomain === sub);
     if (!existingSite && user.deployed_sites.length >= config.maxSites) return res.status(403).json({ error: `Site limit (${config.maxSites})`, upgrade: true });
     if (!existingSite) { const taken = await User.findOne({ 'deployed_sites.subdomain': sub, _id: { $ne: user._id } }); if (taken) return res.status(409).json({ error: 'Subdomain taken' }); }
-    // ── Sanitize files: strip huge base64 to prevent MongoDB overflow ──
-    const files = sanitizeFilesForSave(rawFiles);
+    // ── Keep original files — live site visitors need to see images ──
+    const files = rawFiles;
     let deployFiles = files; const shouldBadge = !config.canRemoveBadge;
     if (shouldBadge && deployFiles) deployFiles = deployFiles.map(f => f.name.endsWith('.html') ? { ...f, content: f.content.replace('</body>', `${BADGE_SCRIPT}</body>`) } : f);
     if (existingSite) { existingSite.title = title || existingSite.title; existingSite.files = deployFiles; existingSite.lastUpdated = new Date(); existingSite.hasBadge = shouldBadge; existingSite.fileSize = JSON.stringify(files).length; }
     else user.deployed_sites.push({ subdomain: sub, title: title || sub, files: deployFiles, hasBadge: shouldBadge, fileSize: JSON.stringify(files).length });
     if (!user.saved_projects) user.saved_projects = [];
     const linkedProject = user.saved_projects.find(p => p.linkedSubdomain === sub);
-    if (linkedProject) { linkedProject.name = title || sub; linkedProject.files = files; linkedProject.updatedAt = new Date(); linkedProject.version = (linkedProject.version || 1) + 1; }
-    else { user.saved_projects.push({ projectId: `proj-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, name: title || sub, files, preview: '', template: 'custom', description: `Deployed: ${sub}.zapcodes.net`, linkedSubdomain: sub, version: 1, createdAt: new Date(), updatedAt: new Date() }); }
-    // ── Auto-create Clone 1 on deploy so Edit/Fix always happen on clone ──
+    if (linkedProject) { linkedProject.name = title || sub; linkedProject.files = sanitizeFilesForSave(files); linkedProject.updatedAt = new Date(); linkedProject.version = (linkedProject.version || 1) + 1; }
+    else { user.saved_projects.push({ projectId: `proj-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, name: title || sub, files: sanitizeFilesForSave(files), preview: '', template: 'custom', description: `Deployed: ${sub}.zapcodes.net`, linkedSubdomain: sub, version: 1, createdAt: new Date(), updatedAt: new Date() }); }
     const deployedProj = user.saved_projects.find(p => p.linkedSubdomain === sub);
     if (deployedProj) {
       const rootId = deployedProj.cloneOf || deployedProj.projectId;
-      const alreadyHasClone = (user.saved_projects || []).some(
-        p => (p.cloneOf === rootId || p.projectId === rootId) && p.cloneVersion != null
-      );
-      if (!alreadyHasClone) {
-        const clone1 = createCloneSnapshot(deployedProj, 1);
-        user.saved_projects.push(clone1);
-        enforceMaxClones(user, rootId);
-        user.markModified('saved_projects');
-      }
+      const alreadyHasClone = (user.saved_projects || []).some(p => (p.cloneOf === rootId || p.projectId === rootId) && p.cloneVersion != null);
+      if (!alreadyHasClone) { const clone1 = createCloneSnapshot(deployedProj, 1); user.saved_projects.push(clone1); enforceMaxClones(user, rootId); user.markModified('saved_projects'); }
     }
-
     user.markModified('deployed_sites');
-    trimUserDocumentSize(user); // Prevent 16MB MongoDB overflow
+    trimUserDocumentSize(user);
     await user.save();
     res.json({ url: `https://${sub}.zapcodes.net`, subdomain: sub, deployed: true, hasBadge: shouldBadge, sites: user.deployed_sites.length, maxSites: config.maxSites, linkedProjectId: deployedProj?.projectId });
-  } catch (err) {
-    console.error('[Deploy] Error:', err.message, err.stack?.split('\n')[1]);
-    res.status(500).json({ error: 'Deploy failed: ' + (err.message || '').slice(0, 100) });
-  }
+  } catch (err) { console.error('[Deploy] Error:', err.message, err.stack?.split('\n')[1]); res.status(500).json({ error: 'Deploy failed: ' + (err.message || '').slice(0, 100) }); }
 });
-
 
 router.post('/code-fix', auth, async (req, res) => {
   try {
     const user = req.user; const { files, description, model: requestedModel, referenceImages } = req.body;
     const config = user.getTierConfig(); const mu = user.getMonthlyUsage();
-    if (config.monthlyFixCap !== Infinity) {
-      if (config.monthlyFixType === 'one_time_trial') { if ((user.trials_used?.['fixes'] || 0) >= config.monthlyFixCap) return res.status(403).json({ error: 'Trial fix used.', upgrade: true }); }
-      else if ((mu.code_fixes || 0) >= config.monthlyFixCap) return res.status(403).json({ error: 'Fix limit reached', upgrade: true });
-    }
+    if (config.monthlyFixCap !== Infinity) { if (config.monthlyFixType === 'one_time_trial') { if ((user.trials_used?.['fixes'] || 0) >= config.monthlyFixCap) return res.status(403).json({ error: 'Trial fix used.', upgrade: true }); } else if ((mu.code_fixes || 0) >= config.monthlyFixCap) return res.status(403).json({ error: 'Fix limit reached', upgrade: true }); }
     const model = getEffectiveModel(user, requestedModel, true) || 'gemini-2.5-flash';
     const cost = BL_COSTS.codeFix[model] || 5000;
     if (user.role !== 'super-admin' && user.bl_coins < cost) return res.status(402).json({ error: 'Insufficient BL coins' });
@@ -880,10 +714,6 @@ router.post('/clone-analyze', auth, async (req, res) => { try { let content = re
 
 router.post('/clone-rebuild', auth, async (req, res) => { try { const user = req.user; const model = getEffectiveModel(user, req.body.model, true) || 'gemini-2.5-flash'; const cost = BL_COSTS.generation[model] || 5000; if (user.role !== 'super-admin' && user.bl_coins < cost) return res.status(402).json({ error: 'Insufficient' }); user.spendCoins(cost, 'generation', `Clone (${getModelDisplayName(model)})`, model); user.incrementMonthlyUsage(model, 'generation'); if (user.getTierConfig().trialModels?.includes(model)) user.incrementTrial(model); await user.save(); const result = await callAI(GEN_PROMPT, `Rebuild:\n${JSON.stringify(req.body.analysis)}\n\nMods: ${req.body.modifications || 'Keep faithful'}`, model); let files = result ? parseFilesFromResponse(result) : []; if (!files.length) { user.creditCoins(cost, 'generation', 'Refund'); user.decrementMonthlyUsage(model, 'generation'); await user.save(); return res.status(500).json({ error: 'Failed. Refunded.' }); } res.json({ files, preview: generatePreviewHTML(files), model, blSpent: cost, balanceRemaining: user.bl_coins, fileCount: files.length }); } catch { res.status(500).json({ error: 'Clone failed' }); } });
 
-// ══════════════════════════════════════════════════════════════════
-// CLAIM GUEST SITE BY CODE — manual entry for users who lost auto-claim
-// Super admin can claim any code for testing
-// ══════════════════════════════════════════════════════════════════
 router.post('/claim-guest-site', auth, async (req, res) => {
   try {
     const user = await User.findById(req.user._id);
@@ -892,146 +722,52 @@ router.post('/claim-guest-site', auth, async (req, res) => {
     if (!rawCode?.trim()) return res.status(400).json({ error: 'Claim code required' });
     const code = rawCode.trim().toUpperCase();
     console.log(`[Claim] User ${user.email} attempting code: ${code}`);
-
     let GuestSite;
-    try { GuestSite = require('../models/GuestSite'); } catch (e) {
-      console.error('[Claim] GuestSite model not found:', e.message);
-      return res.status(500).json({ error: 'Guest site system not available' });
-    }
-
-    // Find the guest site by claim code (any status for super admin, active only for regular users)
+    try { GuestSite = require('../models/GuestSite'); } catch (e) { console.error('[Claim] GuestSite model not found:', e.message); return res.status(500).json({ error: 'Guest site system not available' }); }
     const isSuperAdmin = user.role === 'super-admin';
-    let site = isSuperAdmin
-      ? await GuestSite.findOne({ claimCode: code })
-      : await GuestSite.findOne({ claimCode: code, status: 'active', expiresAt: { $gt: new Date() } });
-
-    if (!site) {
-      console.log(`[Claim] Code "${code}" not found`);
-      return res.status(404).json({ error: `Code "${code}" not found. Check the code and try again.` });
-    }
-
-    // Check if already claimed by someone else
-    if (site.status === 'claimed' && site.claimedBy && !isSuperAdmin) {
-      if (site.claimedBy.toString() !== user._id.toString()) {
-        return res.status(409).json({ error: 'This site was already claimed by another user.' });
-      }
-    }
-
-    // Update guest site status — use 'zapcodes' (valid enum value)
-    site.status = 'claimed';
-    site.claimedBy = user._id;
-    site.claimedAt = new Date();
-    site.claimedVia = 'zapcodes'; // Must be 'zapcodes' or 'blendlink' — enum enforced
-    await site.save();
-
-    // Import into user's account
-    // Guest sites store HTML in 'generatedHtml', not 'files' array
-    const html = site.generatedHtml || '';
-    const siteSub = site.subdomain || '';
-    const siteName = site.projectName || site.title || siteSub || 'Guest Build';
-
+    let site = isSuperAdmin ? await GuestSite.findOne({ claimCode: code }) : await GuestSite.findOne({ claimCode: code, status: 'active', expiresAt: { $gt: new Date() } });
+    if (!site) { console.log(`[Claim] Code "${code}" not found`); return res.status(404).json({ error: `Code "${code}" not found. Check the code and try again.` }); }
+    if (site.status === 'claimed' && site.claimedBy && !isSuperAdmin) { if (site.claimedBy.toString() !== user._id.toString()) return res.status(409).json({ error: 'This site was already claimed by another user.' }); }
+    site.status = 'claimed'; site.claimedBy = user._id; site.claimedAt = new Date(); site.claimedVia = 'zapcodes'; await site.save();
+    const html = site.generatedHtml || ''; const siteSub = site.subdomain || ''; const siteName = site.projectName || site.title || siteSub || 'Guest Build';
     if (html && siteSub) {
       const siteFiles = [{ name: 'index.html', content: html }];
       const projectId = `proj-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       if (!user.saved_projects) user.saved_projects = [];
-
-      // Check if already imported (prevent duplicates on re-claim)
       const alreadyImported = user.saved_projects.some(p => p.linkedSubdomain === siteSub);
-      if (!alreadyImported) {
-        user.saved_projects.push({
-          projectId, name: siteName, files: siteFiles, preview: html.slice(0, 50000),
-          template: site.templateKey || 'custom',
-          description: site.description || `Claimed from guest build (code: ${code})`,
-          linkedSubdomain: siteSub, version: 1, createdAt: new Date(), updatedAt: new Date(),
-        });
-      }
-
-      if (!user.deployed_sites.some(s => s.subdomain === siteSub)) {
-        user.deployed_sites.push({
-          subdomain: siteSub, title: siteName, files: siteFiles,
-          hasBadge: true, fileSize: html.length, lastUpdated: new Date(),
-        });
-      }
-
-      user.markModified('saved_projects');
-      user.markModified('deployed_sites');
-      await user.save();
+      if (!alreadyImported) { user.saved_projects.push({ projectId, name: siteName, files: siteFiles, preview: html.slice(0, 50000), template: site.templateKey || 'custom', description: site.description || `Claimed from guest build (code: ${code})`, linkedSubdomain: siteSub, version: 1, createdAt: new Date(), updatedAt: new Date() }); }
+      if (!user.deployed_sites.some(s => s.subdomain === siteSub)) { user.deployed_sites.push({ subdomain: siteSub, title: siteName, files: siteFiles, hasBadge: true, fileSize: html.length, lastUpdated: new Date() }); }
+      user.markModified('saved_projects'); user.markModified('deployed_sites'); await user.save();
       console.log(`[Claim] SUCCESS — ${user.email} claimed ${siteSub} (${html.length} chars imported)`);
       return res.json({ success: true, subdomain: siteSub, url: `https://${siteSub}.zapcodes.net`, message: `Site claimed! Your site and project are now in your account.` });
     }
-
     console.log(`[Claim] ${user.email} claimed ${siteSub} but no HTML to import`);
     res.json({ success: true, subdomain: siteSub, url: siteSub ? `https://${siteSub}.zapcodes.net` : '', message: 'Site claimed but no content found.' });
-  } catch (err) {
-    console.error('[Claim] Error:', err.message);
-    res.status(500).json({ error: 'Claim failed: ' + (err.message || '').slice(0, 150) });
-  }
+  } catch (err) { console.error('[Claim] Error:', err.message); res.status(500).json({ error: 'Claim failed: ' + (err.message || '').slice(0, 150) }); }
 });
 
-// ══════════════════════════════════════════════════════════════════
-// POST /api/build/rename-subdomain — Let user choose their own subdomain
-// Changes preview-XXXXX to user's chosen subdomain everywhere
-// ══════════════════════════════════════════════════════════════════
 router.post('/rename-subdomain', auth, async (req, res) => {
   try {
     const user = await User.findById(req.user._id);
     if (!user) return res.status(404).json({ error: 'User not found' });
     const { oldSubdomain, newSubdomain } = req.body;
     if (!oldSubdomain || !newSubdomain) return res.status(400).json({ error: 'Both old and new subdomain required' });
-
-    // Sanitize new subdomain
     const clean = newSubdomain.toLowerCase().trim().replace(/[^a-z0-9-]/g, '').replace(/^-+|-+$/g, '').slice(0, 30);
     if (clean.length < 2) return res.status(400).json({ error: 'Subdomain must be at least 2 characters (letters, numbers, hyphens only)' });
-    if (/^(www|api|admin|mail|ftp|preview|test|zapcodes|blendlink)$/i.test(clean)) {
-      return res.status(400).json({ error: 'That subdomain is reserved. Please choose another.' });
-    }
-
-    // Check if new subdomain is already taken by another user
+    if (/^(www|api|admin|mail|ftp|preview|test|zapcodes|blendlink)$/i.test(clean)) return res.status(400).json({ error: 'That subdomain is reserved. Please choose another.' });
     const allUsers = await User.find({ 'deployed_sites.subdomain': clean, _id: { $ne: user._id } }).limit(1);
     if (allUsers.length > 0) return res.status(409).json({ error: `"${clean}.zapcodes.net" is already taken. Try another name.` });
-
-    // Also check GuestSite collection for active previews
-    try {
-      const GuestSite = require('../models/GuestSite');
-      const existingGuest = await GuestSite.findOne({ subdomain: clean, status: 'active' });
-      if (existingGuest) return res.status(409).json({ error: `"${clean}.zapcodes.net" is already taken. Try another name.` });
-    } catch {}
-
-    // Check if old subdomain exists in user's account
+    try { const GuestSite = require('../models/GuestSite'); const existingGuest = await GuestSite.findOne({ subdomain: clean, status: 'active' }); if (existingGuest) return res.status(409).json({ error: `"${clean}.zapcodes.net" is already taken. Try another name.` }); } catch {}
     const siteIdx = user.deployed_sites.findIndex(s => s.subdomain === oldSubdomain);
     const projIdx = (user.saved_projects || []).findIndex(p => p.linkedSubdomain === oldSubdomain);
-
-    if (siteIdx < 0 && projIdx < 0) {
-      return res.status(404).json({ error: `Site "${oldSubdomain}" not found in your account.` });
-    }
-
-    // Rename in deployed_sites
-    if (siteIdx >= 0) {
-      user.deployed_sites[siteIdx].subdomain = clean;
-      user.deployed_sites[siteIdx].title = user.deployed_sites[siteIdx].title?.replace(oldSubdomain, clean) || clean;
-    }
-
-    // Rename in saved_projects
-    (user.saved_projects || []).forEach(p => {
-      if (p.linkedSubdomain === oldSubdomain) p.linkedSubdomain = clean;
-    });
-
-    // Also update GuestSite record if it exists
-    try {
-      const GuestSite = require('../models/GuestSite');
-      await GuestSite.findOneAndUpdate({ subdomain: oldSubdomain }, { subdomain: clean });
-    } catch {}
-
-    user.markModified('deployed_sites');
-    user.markModified('saved_projects');
-    await user.save();
-
+    if (siteIdx < 0 && projIdx < 0) return res.status(404).json({ error: `Site "${oldSubdomain}" not found in your account.` });
+    if (siteIdx >= 0) { user.deployed_sites[siteIdx].subdomain = clean; user.deployed_sites[siteIdx].title = user.deployed_sites[siteIdx].title?.replace(oldSubdomain, clean) || clean; }
+    (user.saved_projects || []).forEach(p => { if (p.linkedSubdomain === oldSubdomain) p.linkedSubdomain = clean; });
+    try { const GuestSite = require('../models/GuestSite'); await GuestSite.findOneAndUpdate({ subdomain: oldSubdomain }, { subdomain: clean }); } catch {}
+    user.markModified('deployed_sites'); user.markModified('saved_projects'); await user.save();
     console.log(`[Rename] ${user.email}: ${oldSubdomain} → ${clean}`);
     res.json({ success: true, oldSubdomain, newSubdomain: clean, url: `https://${clean}.zapcodes.net`, message: `Your site is now live at ${clean}.zapcodes.net!` });
-  } catch (err) {
-    console.error('[Rename] Error:', err.message);
-    res.status(500).json({ error: 'Rename failed: ' + (err.message || '').slice(0, 100) });
-  }
+  } catch (err) { console.error('[Rename] Error:', err.message); res.status(500).json({ error: 'Rename failed: ' + (err.message || '').slice(0, 100) }); }
 });
 
 router.get('/sites', auth, (req, res) => { const sites = (req.user.deployed_sites || []).map(s => { const lp = (req.user.saved_projects || []).find(p => p.linkedSubdomain === s.subdomain); return { ...(s.toObject ? s.toObject() : s), linkedProjectId: lp?.projectId || null }; }); res.json({ sites }); });
@@ -1039,94 +775,36 @@ router.get('/sites', auth, (req, res) => { const sites = (req.user.deployed_site
 router.post('/site/shutdown', auth, async (req, res) => {
   try {
     const user = req.user;
-    const sub  = (req.body.subdomain || '').toLowerCase().trim();
+    const sub = (req.body.subdomain || '').toLowerCase().trim();
     const siteIdx = user.deployed_sites.findIndex(s => s.subdomain === sub);
     if (siteIdx === -1) return res.status(404).json({ error: 'Not found' });
-
     const site = user.deployed_sites[siteIdx];
-
-    // ── Auto-save live site content as Clone 2 before shutting down ──────
     const rootProj = (user.saved_projects || []).find(p => p.linkedSubdomain === sub && !p.cloneVersion);
     if (rootProj && site?.files?.length) {
       const rootId = rootProj.cloneOf || rootProj.projectId;
-
-      // Shift clones 2+ up by 1 (Clone 1 stays at 1 — it's the editable copy)
-      (user.saved_projects || []).forEach(p => {
-        if ((p.cloneOf === rootId || p.projectId === rootId) && p.cloneVersion != null && p.cloneVersion >= 2) {
-          p.cloneVersion += 1;
-        }
-      });
-
-      // Save live site files as Clone 2
-      const liveSnapshot = {
-        projectId:       `proj-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-        name:            rootProj.name,
-        files:           JSON.parse(JSON.stringify(site.files || [])),
-        preview:         rootProj.preview || '',
-        template:        rootProj.template || 'custom',
-        description:     `Live snapshot before shutdown on ${new Date().toLocaleDateString()}`,
-        version:         rootProj.version || 1,
-        linkedSubdomain: sub,
-        cloneOf:         rootId,
-        cloneVersion:    2,
-        isLive:          false,
-        deployedAt:      site.lastUpdated || new Date(),
-        createdAt:       new Date(),
-        updatedAt:       new Date(),
-        projectMemory:   rootProj.projectMemory
-          ? JSON.parse(JSON.stringify(rootProj.projectMemory))
-          : { rawMessages: [], summaries: [], totalMessageCount: 0 },
-      };
+      (user.saved_projects || []).forEach(p => { if ((p.cloneOf === rootId || p.projectId === rootId) && p.cloneVersion != null && p.cloneVersion >= 2) p.cloneVersion += 1; });
+      const liveSnapshot = { projectId: `proj-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, name: rootProj.name, files: JSON.parse(JSON.stringify(site.files || [])), preview: rootProj.preview || '', template: rootProj.template || 'custom', description: `Live snapshot before shutdown on ${new Date().toLocaleDateString()}`, version: rootProj.version || 1, linkedSubdomain: sub, cloneOf: rootId, cloneVersion: 2, isLive: false, deployedAt: site.lastUpdated || new Date(), createdAt: new Date(), updatedAt: new Date(), projectMemory: rootProj.projectMemory ? JSON.parse(JSON.stringify(rootProj.projectMemory)) : { rawMessages: [], summaries: [], totalMessageCount: 0 } };
       user.saved_projects.push(liveSnapshot);
-
-      // Enforce max 5 clones
       enforceMaxClones(user, rootId);
       user.markModified('saved_projects');
     }
-
-    // Remove from live sites
     user.deployed_sites.splice(siteIdx, 1);
     await user.save();
-
     res.json({ success: true, message: `${sub}.zapcodes.net offline. Live snapshot saved to version history.` });
-  } catch (err) {
-    console.error('[Shutdown]', err.message);
-    res.status(500).json({ error: 'Shutdown failed' });
-  }
+  } catch (err) { console.error('[Shutdown]', err.message); res.status(500).json({ error: 'Shutdown failed' }); }
 });
 
 router.delete('/site/:subdomain', auth, async (req, res) => {
   try {
-    const user = req.user;
-    const sub = req.params.subdomain;
-
-    // Remove deployed site
+    const user = req.user; const sub = req.params.subdomain;
     const si = user.deployed_sites.findIndex(s => s.subdomain === sub);
     if (si >= 0) { user.deployed_sites.splice(si, 1); user.markModified('deployed_sites'); }
-
-    // Find root project linked to this subdomain
     const rootProject = (user.saved_projects || []).find(p => p.linkedSubdomain === sub && !p.cloneOf);
-    if (rootProject) {
-      const rootId = rootProject.projectId;
-      // Remove root + ALL its clones
-      const before = user.saved_projects.length;
-      user.saved_projects = (user.saved_projects || []).filter(p =>
-        p.projectId !== rootId && p.cloneOf !== rootId
-      );
-      const removed = before - user.saved_projects.length;
-      console.log(`[DeleteSite] Removed site ${sub} + ${removed} project(s)/clone(s)`);
-    } else {
-      // No root found, just remove any project linked to this subdomain
-      user.saved_projects = (user.saved_projects || []).filter(p => p.linkedSubdomain !== sub);
-    }
-
-    user.markModified('saved_projects');
-    await user.save();
+    if (rootProject) { const rootId = rootProject.projectId; const before = user.saved_projects.length; user.saved_projects = (user.saved_projects || []).filter(p => p.projectId !== rootId && p.cloneOf !== rootId); const removed = before - user.saved_projects.length; console.log(`[DeleteSite] Removed site ${sub} + ${removed} project(s)/clone(s)`); }
+    else { user.saved_projects = (user.saved_projects || []).filter(p => p.linkedSubdomain !== sub); }
+    user.markModified('saved_projects'); await user.save();
     res.json({ success: true });
-  } catch (err) {
-    console.error('[DeleteSite] Error:', err.message);
-    res.status(500).json({ error: 'Failed' });
-  }
+  } catch (err) { console.error('[DeleteSite] Error:', err.message); res.status(500).json({ error: 'Failed' }); }
 });
 
 router.get('/templates', (req, res) => res.json({ templates: [{ id: 'custom', name: 'Custom (AI Chat)', icon: '💬', desc: 'Describe anything' }, { id: 'portfolio', name: 'Portfolio', icon: '👤', desc: 'Personal portfolio' }, { id: 'landing', name: 'Landing Page', icon: '🚀', desc: 'Product landing' }, { id: 'blog', name: 'Blog', icon: '📝', desc: 'Blog template' }, { id: 'ecommerce', name: 'E-Commerce', icon: '🛒', desc: 'Online store' }, { id: 'dashboard', name: 'Dashboard', icon: '📊', desc: 'Admin dashboard' }, { id: 'webapp', name: 'Full-Stack App', icon: '⚡', desc: 'Frontend + backend' }, { id: 'saas', name: 'SaaS', icon: '💎', desc: 'SaaS with auth' }, { id: 'mobile', name: 'Mobile App', icon: '📱', desc: 'React Native' }, { id: 'game', name: 'Mobile Game', icon: '🎮', desc: 'PWA game' }] }));
@@ -1145,23 +823,13 @@ router.post('/generate-image', auth, async (req, res) => {
     if (!prompt?.trim()) return res.status(400).json({ error: 'Image prompt required' });
     const cost = 5000;
     if (user.role !== 'super-admin' && user.bl_coins < cost) return res.status(402).json({ error: 'Insufficient BL coins', required: cost, balance: user.bl_coins });
-    const styleMap = {
-      photorealistic: 'photorealistic, ultra detailed, 8K resolution, professional photography',
-      illustration: 'digital illustration, vibrant colors, clean lines, modern design',
-      minimalist: 'minimalist design, clean, simple, white background, elegant',
-      luxury: 'luxury aesthetic, gold accents, sophisticated, high-end editorial photography',
-      cyberpunk: 'cyberpunk style, neon colors, dark futuristic aesthetic, glowing effects',
-      watercolor: 'watercolor painting style, soft brushstrokes, artistic, beautiful colors',
-    };
+    const styleMap = { photorealistic: 'photorealistic, ultra detailed, 8K resolution, professional photography', illustration: 'digital illustration, vibrant colors, clean lines, modern design', minimalist: 'minimalist design, clean, simple, white background, elegant', luxury: 'luxury aesthetic, gold accents, sophisticated, high-end editorial photography', cyberpunk: 'cyberpunk style, neon colors, dark futuristic aesthetic, glowing effects', watercolor: 'watercolor painting style, soft brushstrokes, artistic, beautiful colors' };
     const enhancedPrompt = style && styleMap[style] ? `${prompt}. Style: ${styleMap[style]}` : prompt;
     const images = await generateImageImagen4(enhancedPrompt, { aspectRatio: aspectRatio || '1:1', numberOfImages: Math.min(count || 1, 4) });
     if (!images?.length) return res.status(500).json({ error: 'Image generation failed. Please try again.' });
     if (user.role !== 'super-admin') { user.spendCoins(cost, 'generation', `AI Image (Imagen 4): ${prompt.slice(0, 50)}`); await user.save(); }
     res.json({ images, blSpent: user.role === 'super-admin' ? 0 : cost, balanceRemaining: user.bl_coins });
-  } catch (err) {
-    console.error('[Build/generate-image]', err.message);
-    res.status(500).json({ error: err.message || 'Image generation failed' });
-  }
+  } catch (err) { console.error('[Build/generate-image]', err.message); res.status(500).json({ error: err.message || 'Image generation failed' }); }
 });
 
 // ══════════════════════════════════════════════════════════════════
@@ -1179,10 +847,7 @@ router.post('/edit-photo', auth, async (req, res) => {
     if (!results?.length) return res.status(500).json({ error: 'Photo transformation failed. Please try again.' });
     if (user.role !== 'super-admin') { user.spendCoins(cost, 'generation', `AI Photo Edit: ${preset || customPrompt?.slice(0, 30)}`); await user.save(); }
     res.json({ images: results, blSpent: user.role === 'super-admin' ? 0 : cost, balanceRemaining: user.bl_coins });
-  } catch (err) {
-    console.error('[Build/edit-photo]', err.message);
-    res.status(500).json({ error: err.message || 'Photo edit failed' });
-  }
+  } catch (err) { console.error('[Build/edit-photo]', err.message); res.status(500).json({ error: err.message || 'Photo edit failed' }); }
 });
 
 // ══════════════════════════════════════════════════════════════════
@@ -1194,79 +859,43 @@ router.post('/generate-video', auth, async (req, res) => {
     const { prompt, durationSeconds, aspectRatio, referenceImage, injectIntoSite, existingHtml } = req.body;
     if (!prompt?.trim()) return res.status(400).json({ error: 'Video prompt required' });
     const cost = 50000;
-    if (user.role !== 'super-admin' && user.bl_coins < cost) {
-      return res.status(402).json({ error: 'Insufficient BL coins', required: cost, balance: user.bl_coins });
-    }
-    const result = await generateVideoVeo(prompt, {
-      durationSeconds: durationSeconds || 8,
-      aspectRatio: aspectRatio || '16:9',
-      referenceImage: referenceImage || null,
-    });
-    if (!result) {
-      return res.status(500).json({ error: 'Video generation failed. All Veo models were unavailable. Try again in a few minutes.' });
-    }
-    // Handle safety-filtered responses
-    if (result.error && result.filtered) {
-      return res.status(400).json({ error: result.message || 'Video was blocked by safety filters. Try a different prompt without people or faces.' });
-    }
-    if (user.role !== 'super-admin') {
-      user.spendCoins(cost, 'generation', `AI Video (Veo): ${prompt.slice(0, 50)}`);
-      await user.save();
-    }
+    if (user.role !== 'super-admin' && user.bl_coins < cost) return res.status(402).json({ error: 'Insufficient BL coins', required: cost, balance: user.bl_coins });
+    const result = await generateVideoVeo(prompt, { durationSeconds: durationSeconds || 8, aspectRatio: aspectRatio || '16:9', referenceImage: referenceImage || null });
+    if (!result) return res.status(500).json({ error: 'Video generation failed. All Veo models were unavailable. Try again in a few minutes.' });
+    if (result.error && result.filtered) return res.status(400).json({ error: result.message || 'Video was blocked by safety filters. Try a different prompt without people or faces.' });
+    if (user.role !== 'super-admin') { user.spendCoins(cost, 'generation', `AI Video (Veo): ${prompt.slice(0, 50)}`); await user.save(); }
     let updatedHtml = null;
-    if (injectIntoSite && existingHtml && result.publicUrl) {
-      updatedHtml = injectVideoIntoHTML(existingHtml, result.publicUrl);
-    }
+    if (injectIntoSite && existingHtml && result.publicUrl) { updatedHtml = injectVideoIntoHTML(existingHtml, result.publicUrl); }
     res.json({ video: result, publicUrl: result.publicUrl, updatedHtml, blSpent: user.role === 'super-admin' ? 0 : cost, balanceRemaining: user.bl_coins });
-  } catch (err) {
-    console.error('[Build/generate-video]', err.message);
-    res.status(500).json({ error: err.message || 'Video generation failed' });
-  }
+  } catch (err) { console.error('[Build/generate-video]', err.message); res.status(500).json({ error: err.message || 'Video generation failed' }); }
 });
 
 function injectVideoIntoHTML(html, videoUrl) {
   const videoTag = `\n<div id="zc-video-hero" style="position:relative;width:100%;overflow:hidden;max-height:600px;"><video autoplay loop muted playsinline style="width:100%;height:100%;object-fit:cover;display:block;" src="${videoUrl}"><source src="${videoUrl}" type="video/mp4"></video></div>`;
-  if (/<video[^>]*>/i.test(html)) {
-    return html.replace(/<video[^>]*src=["'][^"']*["'][^>]*>/i, `<video autoplay loop muted playsinline style="width:100%;height:100%;object-fit:cover;display:block;" src="${videoUrl}">`);
-  }
-  if (/<body[^>]*>/i.test(html)) {
-    return html.replace(/(<body[^>]*>)/i, '$1' + videoTag);
-  }
+  if (/<video[^>]*>/i.test(html)) return html.replace(/<video[^>]*src=["'][^"']*["'][^>]*>/i, `<video autoplay loop muted playsinline style="width:100%;height:100%;object-fit:cover;display:block;" src="${videoUrl}">`);
+  if (/<body[^>]*>/i.test(html)) return html.replace(/(<body[^>]*>)/i, '$1' + videoTag);
   return html;
 }
-
 
 // ══════════════════════════════════════════════════════════════════
 // MEMORY ENDPOINTS
 // ══════════════════════════════════════════════════════════════════
-
 router.post('/save-message', auth, async (req, res) => {
   try {
     const user = req.user;
     const { projectId, message } = req.body;
     if (!projectId || !message) return res.status(400).json({ error: 'projectId and message required' });
-
     const projIdx = (user.saved_projects || []).findIndex(p => p.projectId === projectId);
     if (projIdx === -1) return res.status(404).json({ error: 'Project not found' });
-
     const proj = user.saved_projects[projIdx];
     if (!proj.projectMemory) proj.projectMemory = { rawMessages: [], summaries: [], totalMessageCount: 0 };
-
     const mem = proj.projectMemory;
     if (message.role === 'system') return res.json({ ok: true, skipped: true });
-
-    mem.rawMessages.push({
-      role: message.role || 'user',
-      content: (message.content || '').slice(0, 2000),
-      mediaPrompts: message.mediaPrompts || {},
-      timestamp: message.timestamp || new Date().toISOString(),
-    });
+    mem.rawMessages.push({ role: message.role || 'user', content: (message.content || '').slice(0, 2000), mediaPrompts: message.mediaPrompts || {}, timestamp: message.timestamp || new Date().toISOString() });
     mem.totalMessageCount = (mem.totalMessageCount || 0) + 1;
-
     if (mem.rawMessages.length >= 20) {
       const messagesToSummarize = [...mem.rawMessages];
       const messageRange = `${Math.max(1, mem.totalMessageCount - 19)}-${mem.totalMessageCount}`;
-
       summarizeProjectMessages(messagesToSummarize).then(async (summary) => {
         if (!summary) return;
         try {
@@ -1275,123 +904,71 @@ router.post('/save-message', auth, async (req, res) => {
           if (pi === -1) return;
           const m = freshUser.saved_projects[pi].projectMemory;
           if (!m) return;
-
           m.summaries.push({ content: summary, messageRange, createdAt: new Date() });
           if (m.summaries.length > 5) m.summaries = m.summaries.slice(-5);
           m.rawMessages = m.rawMessages.slice(messagesToSummarize.length);
-
-          freshUser.markModified('saved_projects');
-          await freshUser.save();
+          freshUser.markModified('saved_projects'); await freshUser.save();
           console.log(`[Memory] Summarized ${messagesToSummarize.length} messages for project ${projectId}`);
-        } catch (err) {
-          console.warn('[Memory] Summarize save failed:', err.message);
-        }
+        } catch (err) { console.warn('[Memory] Summarize save failed:', err.message); }
       }).catch(err => console.warn('[Memory] Summarize failed:', err.message));
-
       mem.rawMessages = mem.rawMessages.slice(-20);
     }
-
-    user.markModified('saved_projects');
-    await user.save();
+    user.markModified('saved_projects'); await user.save();
     res.json({ ok: true, rawCount: mem.rawMessages.length, summaryCount: mem.summaries.length });
-  } catch (err) {
-    console.error('[Memory/save-message]', err.message);
-    res.status(500).json({ error: 'Failed to save message' });
-  }
+  } catch (err) { console.error('[Memory/save-message]', err.message); res.status(500).json({ error: 'Failed to save message' }); }
 });
 
-// ══════════════════════════════════════════════════════════════════
-// Groq Pre-Read: cheap/fast check if user's prompt is missing media placement instructions
-// Called automatically after 10s of no typing when media is active
-// ══════════════════════════════════════════════════════════════════
 router.post('/groq-pre-check', auth, async (req, res) => {
   try {
     const { prompt, activeMedia } = req.body;
     if (!prompt?.trim() || !activeMedia?.length) return res.json({ suggestion: null });
-
     const mediaList = activeMedia.join(', ');
-    const checkPrompt = `You are a helpful assistant for a website builder. The user is about to send this prompt to the AI builder:
-
-"${prompt.slice(0, 500)}"
-
-The user currently has these media items ready to insert: ${mediaList}
-
-Your job: Does the user's prompt include clear instructions about WHERE to place the media on their website and HOW to style it (size, position, etc)?
-
-Rules:
-- If the prompt clearly says where to put the media (e.g. "hero section", "replace the banner", "in the gallery", "make it full width background"), respond with ONLY: OK
-- If the prompt does NOT mention placement or location for the media, respond with a SHORT friendly suggestion (1-2 sentences max) asking where they want the media placed. Be specific about what media they have.
-- If the prompt is about something unrelated to the media (e.g. "change the font color"), respond with ONLY: OK
-- Never respond with more than 2 sentences.`;
-
-    // Use Groq — cheapest and fastest
+    const checkPrompt = `You are a helpful assistant for a website builder. The user is about to send this prompt to the AI builder:\n\n"${prompt.slice(0, 500)}"\n\nThe user currently has these media items ready to insert: ${mediaList}\n\nYour job: Does the user's prompt include clear instructions about WHERE to place the media on their website and HOW to style it (size, position, etc)?\n\nRules:\n- If the prompt clearly says where to put the media (e.g. "hero section", "replace the banner", "in the gallery", "make it full width background"), respond with ONLY: OK\n- If the prompt does NOT mention placement or location for the media, respond with a SHORT friendly suggestion (1-2 sentences max) asking where they want the media placed. Be specific about what media they have.\n- If the prompt is about something unrelated to the media (e.g. "change the font color"), respond with ONLY: OK\n- Never respond with more than 2 sentences.`;
     const { callGroq } = require('../services/ai');
     const response = await callGroq('You are a helpful assistant for a website builder. Keep responses under 2 sentences.', checkPrompt, { maxTokens: 100, temperature: 0.3 });
     const answer = (response || '').trim();
-
-    if (answer === 'OK' || answer.toUpperCase() === 'OK' || answer.length < 5) {
-      return res.json({ suggestion: null });
-    }
+    if (answer === 'OK' || answer.toUpperCase() === 'OK' || answer.length < 5) return res.json({ suggestion: null });
     res.json({ suggestion: answer });
-  } catch (err) {
-    // Silent fail — this is a nice-to-have optimization, not critical
-    res.json({ suggestion: null });
-  }
+  } catch (err) { res.json({ suggestion: null }); }
 });
 
 router.post('/check-clarity', auth, async (req, res) => {
   try {
     const { prompt, projectId, isEditMode } = req.body;
     if (!prompt) return res.json({ needsClarification: false });
-
     let recentMessages = [];
-    if (projectId) {
-      const proj = (req.user.saved_projects || []).find(p => p.projectId === projectId);
-      recentMessages = proj?.projectMemory?.rawMessages?.slice(-3) || [];
-    }
-
+    if (projectId) { const proj = (req.user.saved_projects || []).find(p => p.projectId === projectId); recentMessages = proj?.projectMemory?.rawMessages?.slice(-3) || []; }
     const result = await checkPromptClarity(prompt, isEditMode, recentMessages);
-    res.json({
-      needsClarification: !result.clear,
-      question: result.question || null,
-    });
-  } catch (err) {
-    res.json({ needsClarification: false });
-  }
+    res.json({ needsClarification: !result.clear, question: result.question || null });
+  } catch (err) { res.json({ needsClarification: false }); }
 });
 
 // ══════════════════════════════════════════════════════════════════
 // CLONE / ROLLBACK ENDPOINTS
 // ══════════════════════════════════════════════════════════════════
-
 function createCloneSnapshot(sourceProject, cloneVersion) {
   return {
-    projectId:   `proj-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-    name:        sourceProject.name,
-    files:       JSON.parse(JSON.stringify(sourceProject.files || [])),
-    preview:     sourceProject.preview || '',
-    template:    sourceProject.template || 'custom',
+    projectId: `proj-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    name: sourceProject.name,
+    files: JSON.parse(JSON.stringify(sourceProject.files || [])),
+    preview: sourceProject.preview || '',
+    template: sourceProject.template || 'custom',
     description: sourceProject.description || '',
-    version:     sourceProject.version || 1,
+    version: sourceProject.version || 1,
     linkedSubdomain: sourceProject.linkedSubdomain || null,
-    cloneOf:     sourceProject.cloneOf || sourceProject.projectId,
+    cloneOf: sourceProject.cloneOf || sourceProject.projectId,
     cloneVersion,
-    isLive:      false,
-    deployedAt:  null,
-    createdAt:   new Date(),
-    updatedAt:   new Date(),
-    projectMemory: sourceProject.projectMemory
-      ? JSON.parse(JSON.stringify(sourceProject.projectMemory))
-      : { rawMessages: [], summaries: [], totalMessageCount: 0 },
+    isLive: false,
+    deployedAt: null,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+    projectMemory: sourceProject.projectMemory ? JSON.parse(JSON.stringify(sourceProject.projectMemory)) : { rawMessages: [], summaries: [], totalMessageCount: 0 },
   };
 }
 
 function enforceMaxClones(user, rootProjectId) {
-  const MAX_CLONES = 2; // Only keep 2 newest clones for rollback
-  const clones = (user.saved_projects || [])
-    .filter(p => (p.cloneOf === rootProjectId || p.projectId === rootProjectId) && p.cloneVersion != null)
-    .sort((a, b) => (b.cloneVersion || 0) - (a.cloneVersion || 0));
-
+  const MAX_CLONES = 2;
+  const clones = (user.saved_projects || []).filter(p => (p.cloneOf === rootProjectId || p.projectId === rootProjectId) && p.cloneVersion != null).sort((a, b) => (b.cloneVersion || 0) - (a.cloneVersion || 0));
   if (clones.length > MAX_CLONES) {
     const toDelete = clones.slice(MAX_CLONES).map(c => c.projectId);
     user.saved_projects = user.saved_projects.filter(p => !toDelete.includes(p.projectId));
@@ -1400,232 +977,120 @@ function enforceMaxClones(user, rootProjectId) {
   }
 }
 
-// ══════════════════════════════════════════════════════════════════
-// FIX #2: redeploy-from-project — create site entry if it was shut down
-// ══════════════════════════════════════════════════════════════════
 router.post('/redeploy-from-project', auth, async (req, res) => {
   try {
-    // Re-fetch user fresh to avoid version conflict with auto-save
     const user = await User.findById(req.user._id);
     if (!user) return res.status(404).json({ error: 'User not found' });
-
     const { projectId, currentFiles, name } = req.body;
     if (!projectId) return res.status(400).json({ error: 'Missing projectId' });
-
     const proj = (user.saved_projects || []).find(p => p.projectId === projectId);
     if (!proj) return res.status(404).json({ error: 'Project not found' });
     if (!proj.linkedSubdomain) return res.status(400).json({ error: 'Project not linked to a subdomain' });
-
-    // Use browser files if provided (most up-to-date), otherwise fall back to MongoDB
     const sourceFiles = (currentFiles && currentFiles.length > 0) ? currentFiles : proj.files;
     if (!sourceFiles || !sourceFiles.length) return res.status(400).json({ error: 'No files to deploy' });
-
-    // Update project in MongoDB with current files
-    if (currentFiles && currentFiles.length > 0) {
-      proj.files = sanitizeFilesForSave(currentFiles);
-      if (name) proj.name = name;
-    }
-
+    if (currentFiles && currentFiles.length > 0) { proj.files = sanitizeFilesForSave(currentFiles); if (name) proj.name = name; }
     const sub = proj.linkedSubdomain;
     let site = user.deployed_sites.find(s => s.subdomain === sub);
-
-    // ── If site was shut down, re-create the deployed_sites entry ──
     if (!site) {
       const config = user.getTierConfig();
-      if (user.deployed_sites.length >= config.maxSites) {
-        return res.status(403).json({ error: `Site limit (${config.maxSites})`, upgrade: true });
-      }
+      if (user.deployed_sites.length >= config.maxSites) return res.status(403).json({ error: `Site limit (${config.maxSites})`, upgrade: true });
       const taken = await User.findOne({ 'deployed_sites.subdomain': sub, _id: { $ne: user._id } });
       if (taken) return res.status(409).json({ error: 'Subdomain taken by another user' });
-
-      user.deployed_sites.push({
-        subdomain: sub, title: proj.name || sub, files: [],
-        hasBadge: !user.getTierConfig().canRemoveBadge, fileSize: 0,
-      });
+      user.deployed_sites.push({ subdomain: sub, title: proj.name || sub, files: [], hasBadge: !user.getTierConfig().canRemoveBadge, fileSize: 0 });
       site = user.deployed_sites.find(s => s.subdomain === sub);
     }
-
     const config = user.getTierConfig();
     const shouldBadge = !config.canRemoveBadge;
-
-    // ── Create rollback clone BEFORE deploying ──
     const rootId = proj.cloneOf || proj.projectId;
-
-    // Shift existing clone versions up by 1
-    (user.saved_projects || []).forEach(p => {
-      if ((p.cloneOf === rootId || p.projectId === rootId) && p.cloneVersion != null) {
-        p.cloneVersion += 1;
-      }
-    });
-
-    // Create new Clone 1 from current state — use unsanitized files so editor shows images
+    (user.saved_projects || []).forEach(p => { if ((p.cloneOf === rootId || p.projectId === rootId) && p.cloneVersion != null) p.cloneVersion += 1; });
+    // Create clone from unsanitized source files so editor shows images
     const cloneSource = { ...proj, files: sourceFiles };
     const newClone = createCloneSnapshot(cloneSource, 1);
     if (!user.saved_projects) user.saved_projects = [];
     user.saved_projects.push(newClone);
-
-    // Enforce max 2 clones (delete oldest, keep 2 newest for rollback)
     enforceMaxClones(user, rootId);
-
-    // Deploy: use sourceFiles for live site (preserves images for visitors)
-    // Save sanitized version to project storage (saves MongoDB space)
-    let deployFiles = sourceFiles.map(f => ({ ...f })); // Deep copy
+    // Deploy with original files — keep images for live site visitors
+    let deployFiles = sourceFiles.map(f => ({ ...f }));
     if (shouldBadge) deployFiles = deployFiles.map(f => f.name.endsWith('.html') ? { ...f, content: f.content.replace('</body>', `${BADGE_SCRIPT}</body>`) } : f);
-
     site.files = deployFiles; // Keep base64 images so live site visitors can see them
     site.title = proj.name || site.title;
     site.lastUpdated = new Date();
     site.hasBadge = shouldBadge;
     site.fileSize = JSON.stringify(site.files).length;
-
     proj.updatedAt = new Date();
     proj.version = (proj.version || 1) + 1;
     proj.deployedAt = new Date();
-
     user.markModified('saved_projects');
     user.markModified('deployed_sites');
     trimUserDocumentSize(user);
     await user.save();
-
-    res.json({
-      success: true,
-      url: `https://${sub}.zapcodes.net`,
-      subdomain: sub,
-      version: proj.version,
-      cloneId: newClone.projectId,
-    });
-  } catch (err) {
-    console.error('[Redeploy] Error:', err.message, err.stack?.split('\n')[1]);
-    res.status(500).json({ error: err.message || 'Re-deploy failed' });
-  }
+    res.json({ success: true, url: `https://${sub}.zapcodes.net`, subdomain: sub, version: proj.version, cloneId: newClone.projectId });
+  } catch (err) { console.error('[Redeploy] Error:', err.message, err.stack?.split('\n')[1]); res.status(500).json({ error: err.message || 'Re-deploy failed' }); }
 });
 
 // ══════════════════════════════════════════════════════════════════
-// FIX #2b: rollback — create site entry if it was shut down
+// FIX: Rollback route — keep images for live site visitors
 // ══════════════════════════════════════════════════════════════════
 router.post('/rollback', auth, async (req, res) => {
   try {
-    // Re-fetch user fresh to avoid version conflict with auto-save
     const user = await User.findById(req.user._id);
     if (!user) return res.status(404).json({ error: 'User not found' });
     const { cloneProjectId } = req.body;
     if (!cloneProjectId) return res.status(400).json({ error: 'cloneProjectId required' });
-
     const clone = (user.saved_projects || []).find(p => p.projectId === cloneProjectId);
     if (!clone) return res.status(404).json({ error: 'Clone not found' });
-    if (!clone.files?.length || clone.files[0]?.content?.includes('<!-- Clone trimmed')) {
-      return res.status(400).json({ error: 'This rollback version has no content. It may have been trimmed to save space.' });
-    }
-
+    if (!clone.files?.length || clone.files[0]?.content?.includes('<!-- Clone trimmed')) return res.status(400).json({ error: 'This rollback version has no content. It may have been trimmed to save space.' });
     const sub = clone.linkedSubdomain;
     if (!sub) return res.status(400).json({ error: 'Clone has no linked subdomain' });
-
     const rootId = clone.cloneOf || clone.projectId;
     const config = user.getTierConfig();
     const shouldBadge = !config.canRemoveBadge;
-
-    // ── Step 1: Find or re-create the deployed site ──
     let site = user.deployed_sites.find(s => s.subdomain === sub);
     if (!site) {
-      if (user.deployed_sites.length >= config.maxSites) {
-        return res.status(403).json({ error: `Site limit (${config.maxSites})`, upgrade: true });
-      }
+      if (user.deployed_sites.length >= config.maxSites) return res.status(403).json({ error: `Site limit (${config.maxSites})`, upgrade: true });
       const taken = await User.findOne({ 'deployed_sites.subdomain': sub, _id: { $ne: user._id } });
       if (taken) return res.status(409).json({ error: 'Subdomain taken by another user' });
       user.deployed_sites.push({ subdomain: sub, title: clone.name || sub, files: [], hasBadge: shouldBadge, fileSize: 0 });
       site = user.deployed_sites.find(s => s.subdomain === sub);
     }
-
-    // ── Step 2: Deploy the rollback clone's files to the live site ──
-    let deployFiles = sanitizeFilesForSave(clone.files || []);
+    // Keep images for live site — don't sanitize
+    let deployFiles = (clone.files || []).map(f => ({ ...f }));
     if (shouldBadge) deployFiles = deployFiles.map(f => f.name.endsWith('.html') ? { ...f, content: f.content.replace('</body>', `${BADGE_SCRIPT}</body>`) } : f);
     site.files = deployFiles;
     site.title = clone.name || site.title;
     site.lastUpdated = new Date();
     site.hasBadge = shouldBadge;
     site.fileSize = JSON.stringify(deployFiles).length;
-
-    // ── Step 3: Update the root project with rollback content ──
     const rootProj = (user.saved_projects || []).find(p => p.projectId === rootId);
-    if (rootProj) {
-      rootProj.files = clone.files.map(f => ({ ...f })); // Deep copy
-      rootProj.updatedAt = new Date();
-      rootProj.version = (rootProj.version || 1) + 1;
-      rootProj.deployedAt = new Date();
-    }
-
-    // ── Step 4: Delete ALL old clones for this project ──
-    user.saved_projects = (user.saved_projects || []).filter(p => {
-      // Keep: root project, non-clones, clones of OTHER projects
-      if (p.projectId === rootId) return true; // keep root
-      if (p.cloneOf === rootId && p.cloneVersion != null) return false; // delete all clones of this project
-      return true; // keep everything else
-    });
-
-    // ── Step 5: Create one fresh clone (latest version) from rollback content ──
+    if (rootProj) { rootProj.files = clone.files.map(f => ({ ...f })); rootProj.updatedAt = new Date(); rootProj.version = (rootProj.version || 1) + 1; rootProj.deployedAt = new Date(); }
+    user.saved_projects = (user.saved_projects || []).filter(p => { if (p.projectId === rootId) return true; if (p.cloneOf === rootId && p.cloneVersion != null) return false; return true; });
     const newClone = createCloneSnapshot(rootProj || clone, 1);
     newClone.name = `${clone.name || sub} (Rollback)`;
     user.saved_projects.push(newClone);
-
     user.markModified('saved_projects');
     user.markModified('deployed_sites');
     trimUserDocumentSize(user);
     await user.save();
-
     console.log(`[Rollback] Rolled back ${sub} to clone ${cloneProjectId} → new live site + fresh clone ${newClone.projectId}`);
-
-    res.json({
-      success: true,
-      url: `https://${sub}.zapcodes.net`,
-      subdomain: sub,
-      cloneId: newClone.projectId,
-      message: `Rolled back successfully! The site is now live and a fresh editable version has been created.`,
-    });
-  } catch (err) {
-    console.error('[Rollback] Error:', err.message, err.stack?.split('\n')[1]);
-    res.status(500).json({ error: err.message || 'Rollback failed' });
-  }
+    res.json({ success: true, url: `https://${sub}.zapcodes.net`, subdomain: sub, cloneId: newClone.projectId, message: `Rolled back successfully! The site is now live and a fresh editable version has been created.` });
+  } catch (err) { console.error('[Rollback] Error:', err.message, err.stack?.split('\n')[1]); res.status(500).json({ error: err.message || 'Rollback failed' }); }
 });
 
 router.get('/project-clones/:rootId', auth, (req, res) => {
   try {
     const rootId = req.params.rootId;
     const allProjects = req.user.saved_projects || [];
-    const clones = allProjects
-      .filter(p => (p.cloneOf === rootId || p.projectId === rootId) && p.cloneVersion != null)
-      .sort((a, b) => (a.cloneVersion || 0) - (b.cloneVersion || 0))
-      .map(p => ({
-        projectId:    p.projectId,
-        cloneVersion: p.cloneVersion,
-        name:         p.name,
-        createdAt:    p.createdAt,
-        updatedAt:    p.updatedAt,
-        deployedAt:   p.deployedAt,
-        fileCount:    (p.files || []).length,
-        hasMemory:    (p.projectMemory?.rawMessages?.length || 0) + (p.projectMemory?.summaries?.length || 0) > 0,
-      }));
+    const clones = allProjects.filter(p => (p.cloneOf === rootId || p.projectId === rootId) && p.cloneVersion != null).sort((a, b) => (a.cloneVersion || 0) - (b.cloneVersion || 0)).map(p => ({ projectId: p.projectId, cloneVersion: p.cloneVersion, name: p.name, createdAt: p.createdAt, updatedAt: p.updatedAt, deployedAt: p.deployedAt, fileCount: (p.files || []).length, hasMemory: (p.projectMemory?.rawMessages?.length || 0) + (p.projectMemory?.summaries?.length || 0) > 0 }));
     res.json({ clones });
-  } catch (err) {
-    res.status(500).json({ error: 'Failed to get clones' });
-  }
+  } catch (err) { res.status(500).json({ error: 'Failed to get clones' }); }
 });
-
 
 function stripFakeChatFromHTML(html) {
   if (!html) return html;
   let cleaned = html;
-  cleaned = cleaned.replace(
-    /<div[^>]*(?:id|class)=["'][^"']*(?:chatbot|chat-bot|chat-widget|ai-chat|live-chat|livechat|chat-box|chatbox)[^"']*["'][^>]*>[\s\S]*?<\/div>/gi,
-    '<!-- AI widget injected separately -->'
-  );
-  cleaned = cleaned.replace(
-    /<script[^>]*>[\s\S]*?(?:chatInput|chat-input|sendMessage|chatResponse|greetingMessage)[\s\S]*?<\/script>/gi,
-    ''
-  );
-  cleaned = cleaned.replace(
-    /<(?:section|article|aside)[^>]*(?:id|class)=["'][^"']*(?:chat|chatbot|ai-assistant)[^"']*["'][^>]*>[\s\S]*?<\/(?:section|article|aside)>/gi,
-    ''
-  );
+  cleaned = cleaned.replace(/<div[^>]*(?:id|class)=["'][^"']*(?:chatbot|chat-bot|chat-widget|ai-chat|live-chat|livechat|chat-box|chatbox)[^"']*["'][^>]*>[\s\S]*?<\/div>/gi, '<!-- AI widget injected separately -->');
+  cleaned = cleaned.replace(/<script[^>]*>[\s\S]*?(?:chatInput|chat-input|sendMessage|chatResponse|greetingMessage)[\s\S]*?<\/script>/gi, '');
+  cleaned = cleaned.replace(/<(?:section|article|aside)[^>]*(?:id|class)=["'][^"']*(?:chat|chatbot|ai-assistant)[^"']*["'][^>]*>[\s\S]*?<\/(?:section|article|aside)>/gi, '');
   return cleaned;
 }
 
