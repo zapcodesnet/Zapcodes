@@ -408,19 +408,15 @@ export default function Build() {
         }
       }
 
-      // ── Auto-queue vibeResult if user has transformed photo but didn't click Insert ──
-      if (vibeResult && !pendingMedia.some(m => m.type === 'image' && m.fromVibe)) {
+      // ── Auto-queue vibeResult ONLY if not already in pendingMedia ──
+      if (vibeResult && pendingMedia.length === 0) {
         const b64 = vibeResult.split(',')[1];
         const mime = vibeResult.split(':')[1]?.split(';')[0] || 'image/png';
-        if (b64) {
-          setPendingMedia(prev => [...prev, { type: 'image', base64: b64, mimeType: mime, slot: prev.filter(m => m.type === 'image').length + 1, label: 'transformed photo', fromVibe: true }]);
-          pendingMedia.push({ type: 'image', base64: b64, mimeType: mime, slot: pendingMedia.filter(m => m.type === 'image').length + 1, label: 'transformed photo', fromVibe: true });
-        }
+        if (b64) pendingMedia.push({ type: 'image', base64: b64, mimeType: mime, slot: 1, label: 'transformed photo', fromVibe: true });
       }
-      // ── Auto-queue uploadedPhoto if user uploaded but didn't transform or click Insert ──
-      if (uploadedPhoto && !vibeResult && !pendingMedia.some(m => m.type === 'image')) {
-        setPendingMedia(prev => [...prev, { type: 'image', base64: uploadedPhoto.base64, mimeType: uploadedPhoto.mimeType, slot: prev.filter(m => m.type === 'image').length + 1, label: 'uploaded photo' }]);
-        pendingMedia.push({ type: 'image', base64: uploadedPhoto.base64, mimeType: uploadedPhoto.mimeType, slot: pendingMedia.filter(m => m.type === 'image').length + 1, label: 'uploaded photo' });
+      // ── Auto-queue uploadedPhoto ONLY if nothing else queued ──
+      if (uploadedPhoto && !vibeResult && pendingMedia.length === 0) {
+        pendingMedia.push({ type: 'image', base64: uploadedPhoto.base64, mimeType: uploadedPhoto.mimeType, slot: 1, label: 'uploaded photo' });
       }
       // ── Pending media: queued by Insert buttons, user provides placement instructions ──
       const currentPendingMedia = [...pendingMedia];
@@ -603,7 +599,7 @@ export default function Build() {
   useEffect(() => { if (pendingChatSubmit && !generating) { setPendingChatSubmit(false); handleGenerate(); } }, [pendingChatSubmit, generating]); // eslint-disable-line react-hooks/exhaustive-deps
   const handleStop = async () => { if (abortControllerRef.current) abortControllerRef.current.abort(); try { await api.post('/api/build/stop', { sessionId }); } catch {} setProgressStep('stopped'); setGenResult('stopped'); setProgressMessages(p => [...p, { step: 'stopped', message: 'Stopped. Coins refunded.', time: new Date() }]); setGenerating(false); };
   const handleDismissProgress = () => { setGenResult(null); setProgressMessages([]); setProgressStep(''); };
-  const handleSaveProject = async () => { if (!files.length) return alert('No files'); try { const payload = { projectId: currentProjectId, name: projectName || 'Untitled', files, preview, template, description: prompt }; if (editingDeployedSite) payload.subdomain = editingDeployedSite; const { data } = await api.post('/api/build/save-project', payload); setCurrentProjectId(data.project.projectId); alert(`Saved! (v${data.project.version})`); } catch (e) { alert(e.response?.data?.error || 'Save failed'); } };
+  const handleSaveProject = async () => { if (!files.length) return alert('No files'); try { const payload = { projectId: currentProjectId, name: projectName || 'Untitled', files, preview, template, description: prompt, skipSanitize: true }; if (editingDeployedSite) payload.subdomain = editingDeployedSite; const { data } = await api.post('/api/build/save-project', payload); setCurrentProjectId(data.project.projectId); alert(`Saved! (v${data.project.version})`); } catch (e) { alert(e.response?.data?.error || 'Save failed'); } };
 
   // ── Auto-save: silently saves current files to the project after every generation ──
   // skipSanitize=true so base64 images are preserved during editing
