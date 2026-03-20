@@ -408,6 +408,20 @@ export default function Build() {
         }
       }
 
+      // ── Auto-queue vibeResult if user has transformed photo but didn't click Insert ──
+      if (vibeResult && !pendingMedia.some(m => m.type === 'image' && m.fromVibe)) {
+        const b64 = vibeResult.split(',')[1];
+        const mime = vibeResult.split(':')[1]?.split(';')[0] || 'image/png';
+        if (b64) {
+          setPendingMedia(prev => [...prev, { type: 'image', base64: b64, mimeType: mime, slot: prev.filter(m => m.type === 'image').length + 1, label: 'transformed photo', fromVibe: true }]);
+          pendingMedia.push({ type: 'image', base64: b64, mimeType: mime, slot: pendingMedia.filter(m => m.type === 'image').length + 1, label: 'transformed photo', fromVibe: true });
+        }
+      }
+      // ── Auto-queue uploadedPhoto if user uploaded but didn't transform or click Insert ──
+      if (uploadedPhoto && !vibeResult && !pendingMedia.some(m => m.type === 'image')) {
+        setPendingMedia(prev => [...prev, { type: 'image', base64: uploadedPhoto.base64, mimeType: uploadedPhoto.mimeType, slot: prev.filter(m => m.type === 'image').length + 1, label: 'uploaded photo' }]);
+        pendingMedia.push({ type: 'image', base64: uploadedPhoto.base64, mimeType: uploadedPhoto.mimeType, slot: pendingMedia.filter(m => m.type === 'image').length + 1, label: 'uploaded photo' });
+      }
       // ── Pending media: queued by Insert buttons, user provides placement instructions ──
       const currentPendingMedia = [...pendingMedia];
       if (currentPendingMedia.length > 0) {
