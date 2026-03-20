@@ -519,9 +519,11 @@ function trimUserDocumentSize(user) {
 
   console.log(`[TrimDoc] User document content ~${(currentSize / 1024 / 1024).toFixed(1)}MB — trimming...`);
 
-  // Step 1: Strip base64 from saved projects ONLY (deployed sites keep images for visitors)
+  // Step 1: Strip base64 from saved projects — but KEEP Clone 1 images (active editor copy)
   // Do NOT strip deployed site images — live visitors must see them
+  // Do NOT strip Clone 1 — that's the active editable copy the user sees in the editor
   (user.saved_projects || []).forEach(p => {
+    if (p.cloneVersion === 1) return; // Skip active editor clone — needs its images
     p.files = sanitizeFilesForSave(p.files || []);
     p.preview = '';
   });
