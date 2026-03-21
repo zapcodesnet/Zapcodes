@@ -6,6 +6,10 @@ const AdminLog = require('../models/AdminLog');
 const SecurityFlag = require('../models/SecurityFlag');
 const Repo = require('../models/Repo');
 const PromoCode = require('../models/PromoCode');
+
+// Stripe — used to sync promo codes as Stripe Promotion Codes
+let stripe;
+try { stripe = require('stripe')(process.env.STRIPE_SECRET_KEY); } catch (e) { stripe = null; }
 const {
   requireAdmin, requireSuperAdmin, requirePermission, require2FA,
   checkAdminAccess, sendVerificationCode, verifyAdminCode,
@@ -924,14 +928,55 @@ router.post('/promos', requireSuperAdmin, async (req, res) => {
       createdByEmail: req.user.email,
     });
 
+    // ══════════ STRIPE SYNC ══════════
+    // For percentage and fixed discount types, create a matching
+    // Stripe Coupon + Promotion Code so the code works at checkout.
+    let stripeSynced = false;
+    if (stripe && (discountType === 'percentage' || discountType === 'fixed')) {
+      try {
+        // Build coupon params
+        const couponParams = {
+          id: `promo_${code.toUpperCase()}_${Date.now()}`,
+          name: `${code.toUpperCase()} — ${description || (discountType === 'percentage' ? `${discountValue}% off` : `$${discountValue} off`)}`,
+          duration: 'repeating',
+          duration_in_months: Math.max(1, Math.ceil((durationDays || 30) / 30)),
+          max_redemptions: maxUses > 0 ? maxUses : undefined,
+          redeem_by: Math.floor(new Date(expiresAt).getTime() / 1000),
+        };
+
+        if (discountType === 'percentage') {
+          couponParams.percent_off = Number(discountValue);
+        } else if (discountType === 'fixed') {
+          couponParams.amount_off = Math.round(Number(discountValue) * 100); // cents
+          couponParams.currency = 'usd';
+        }
+
+        const stripeCoupon = await stripe.coupons.create(couponParams);
+
+        // Create a Promotion Code with the exact code string so users can type it at checkout
+        await stripe.promotionCodes.create({
+          coupon: stripeCoupon.id,
+          code: code.toUpperCase(),
+          max_redemptions: maxUses > 0 ? maxUses : undefined,
+          expires_at: Math.floor(new Date(expiresAt).getTime() / 1000),
+        });
+
+        stripeSynced = true;
+        console.log(`[Promo] Stripe synced: ${code.toUpperCase()} → coupon ${stripeCoupon.id}`);
+      } catch (stripeErr) {
+        // Don't fail the whole operation if Stripe sync fails
+        console.error(`[Promo] Stripe sync failed for ${code}:`, stripeErr.message);
+      }
+    }
+
     await logAdminAction({
       actor: req.user, action: 'promo_create',
-      description: `Created promo code ${promo.code}: ${discountType} ${discountValue}${discountType === 'percentage' ? '%' : ''}, expires ${promo.expiresAt.toISOString().split('T')[0]}`,
-      metadata: { promoId: promo._id, code: promo.code },
+      description: `Created promo code ${promo.code}: ${discountType} ${discountValue}${discountType === 'percentage' ? '%' : ''}, expires ${promo.expiresAt.toISOString().split('T')[0]}${stripeSynced ? ' (Stripe synced)' : ''}`,
+      metadata: { promoId: promo._id, code: promo.code, stripeSynced },
       ip: req.ip, userAgent: req.headers['user-agent'],
     });
 
-    res.json({ success: true, promo });
+    res.json({ success: true, promo, stripeSynced });
   } catch (err) {
     res.status(500).json({ error: 'Failed to create promo code', details: err.message });
   }
