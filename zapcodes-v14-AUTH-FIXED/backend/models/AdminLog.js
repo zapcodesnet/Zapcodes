@@ -14,6 +14,9 @@ const adminLogSchema = new mongoose.Schema({
       'user_delete', 'user_force_logout', 'password_reset', 'price_override',
       'ai_command', 'ai_response', 'ai_action', '2fa_setup', '2fa_verify',
       'admin_login', 'admin_logout', 'security_flag_ack', 'setting_change',
+      // New action types
+      'bl_adjustment', 'tier_change', 'promo_create', 'promo_update', 'promo_delete',
+      'promo_redeem', 'site_takedown', 'visitor_note',
     ],
   },
 
