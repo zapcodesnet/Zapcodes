@@ -1,6 +1,7 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
+import api from '../api';
 
 const TIER_COLORS = { free: '#888', bronze: '#cd7f32', silver: '#c0c0c0', gold: '#ffd700', diamond: '#b9f2ff' };
 
@@ -25,6 +26,14 @@ export default function Navbar() {
   const location = useLocation();
   const navigate = useNavigate();
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [activePromo, setActivePromo] = useState(null);
+
+  // Fetch active promo for banner
+  useEffect(() => {
+    api.get('/api/pricing/active-promo')
+      .then(({ data }) => { if (data.promo) setActivePromo(data.promo); })
+      .catch(() => {});
+  }, []);
 
   // Don't show navbar on landing, login, register
   const hidePaths = ['/', '/login', '/register', '/auth/callback', '/privacy', '/terms'];
@@ -37,6 +46,13 @@ export default function Navbar() {
   return (
     <>
       <nav style={s.nav}>
+        {/* Promo banner — shown on all logged-in pages */}
+        {activePromo && (
+          <Link to="/pricing" style={s.promoBanner}>
+            <span style={s.promoBannerText}>🎉 {activePromo.description || activePromo.discountText} — Code: <strong>{activePromo.code}</strong></span>
+            <span style={s.promoBannerCta}>Pricing →</span>
+          </Link>
+        )}
         <div style={s.inner}>
           {/* Logo */}
           <Link to="/dashboard" style={s.logo}>
@@ -127,12 +143,24 @@ export default function Navbar() {
         )}
       </nav>
       {/* Spacer so content isn't hidden behind fixed nav */}
-      <div style={{ height: 52 }} />
+      <div style={{ height: activePromo ? 84 : 52 }} />
     </>
   );
 }
 
 const s = {
+  promoBanner: {
+    display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10,
+    padding: '6px 16px', background: 'linear-gradient(135deg, #6366f1, #8b5cf6)',
+    textDecoration: 'none', flexWrap: 'wrap', textAlign: 'center',
+  },
+  promoBannerText: {
+    fontSize: '0.78rem', color: 'rgba(255,255,255,0.9)', fontWeight: 500,
+  },
+  promoBannerCta: {
+    fontSize: '0.72rem', color: '#fff', fontWeight: 700,
+    background: 'rgba(255,255,255,0.15)', padding: '2px 10px', borderRadius: 100,
+  },
   nav: {
     position: 'fixed', top: 0, left: 0, right: 0, zIndex: 100,
     background: 'var(--bg-card, #111)', borderBottom: '1px solid var(--border, #222)',
