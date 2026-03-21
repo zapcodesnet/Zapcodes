@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import api from '../api';
 
@@ -32,6 +32,20 @@ export default function Register() {
   const [resending, setResending] = useState(false);
   const { login, completeVerifiedLogin } = useAuth();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+
+  // ═══ Referral code from URL — locked once set ═══
+  const refFromUrl = searchParams.get('ref') || '';
+  const [referralCode, setReferralCode] = useState('');
+  const [refLocked, setRefLocked] = useState(false);
+
+  useEffect(() => {
+    // Auto-fill from URL and lock it
+    if (refFromUrl) {
+      setReferralCode(refFromUrl);
+      setRefLocked(true);
+    }
+  }, [refFromUrl]);
 
   useEffect(() => {
     api.get('/api/auth/providers').then(({ data }) => {
@@ -45,7 +59,15 @@ export default function Register() {
     if (password.length < 6) return setError('Password must be at least 6 characters');
     setLoading(true);
     try {
-      const { data } = await api.post('/api/auth/register', { name, email, password, deviceId: getDeviceId() });
+      const payload = {
+        name, email, password, deviceId: getDeviceId(),
+      };
+      // Include referral code if present
+      if (referralCode.trim()) {
+        payload.referralCode = referralCode.trim();
+      }
+
+      const { data } = await api.post('/api/auth/register', payload);
       if (data.needsVerification) {
         // Only super admin reaches this path
         setVerifyStep(true);
@@ -93,6 +115,15 @@ export default function Register() {
     setResending(false);
   };
 
+  // Build OAuth URLs with referral code included
+  const oauthUrl = (provider) => {
+    const base = `${API_URL}/auth/${provider}`;
+    if (referralCode.trim()) {
+      return `${base}?ref=${encodeURIComponent(referralCode.trim())}`;
+    }
+    return base;
+  };
+
   return (
     <div style={styles.page}>
       <div style={styles.card} className="animate-in">
@@ -101,7 +132,18 @@ export default function Register() {
           <span style={{ fontWeight: 800, fontSize: '1.2rem' }}>ZapCodes</span>
         </Link>
         <h1 style={styles.title}>Create your account</h1>
-        <p style={styles.sub}>Start fixing bugs with AI — free</p>
+        <p style={styles.sub}>Start building with AI — free</p>
+
+        {/* ═══ Referral banner when referred ═══ */}
+        {refLocked && referralCode && (
+          <div style={styles.refBanner}>
+            <span style={{ fontSize: 16 }}>🎁</span>
+            <div>
+              <div style={{ fontWeight: 700, fontSize: '0.9rem', color: '#22c55e' }}>You've been referred!</div>
+              <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>You'll both earn <strong style={{ color: '#f59e0b' }}>50,000 BL</strong> when you sign up</div>
+            </div>
+          </div>
+        )}
 
         {error && <div style={styles.error}>{error}</div>}
 
@@ -120,6 +162,33 @@ export default function Register() {
                 <label>Password</label>
                 <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Minimum 6 characters" required />
               </div>
+
+              {/* ═══ Referral Code field — locked when from URL ═══ */}
+              <div className="form-group">
+                <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  Referral Code
+                  {refLocked && <span style={{ fontSize: '0.7rem', color: '#22c55e', fontWeight: 600 }}>🔒 Auto-applied</span>}
+                  {!refLocked && <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>(optional)</span>}
+                </label>
+                <input
+                  value={referralCode}
+                  onChange={(e) => { if (!refLocked) setReferralCode(e.target.value); }}
+                  placeholder={refLocked ? '' : 'Enter referral code (optional)'}
+                  readOnly={refLocked}
+                  style={{
+                    ...(refLocked ? {
+                      background: 'rgba(34,197,94,0.06)',
+                      border: '1px solid rgba(34,197,94,0.3)',
+                      color: '#22c55e',
+                      fontWeight: 700,
+                      fontFamily: 'monospace',
+                      letterSpacing: 1,
+                      cursor: 'not-allowed',
+                    } : {}),
+                  }}
+                />
+              </div>
+
               <button type="submit" className="btn btn-primary" style={{ width: '100%', marginTop: 8 }} disabled={loading}>
                 {loading ? <span className="spinner" /> : 'Create Account'}
               </button>
@@ -130,10 +199,10 @@ export default function Register() {
                 <div style={styles.divider}><span>or continue with</span></div>
                 <div className="flex gap-2">
                   {providers.github && (
-                    <a href={`${API_URL}/auth/github`} className="btn btn-secondary" style={{ flex: 1 }}>GitHub</a>
+                    <a href={oauthUrl('github')} className="btn btn-secondary" style={{ flex: 1 }}>GitHub</a>
                   )}
                   {providers.google && (
-                    <a href={`${API_URL}/auth/google`} className="btn btn-secondary" style={{ flex: 1 }}>Google</a>
+                    <a href={oauthUrl('google')} className="btn btn-secondary" style={{ flex: 1 }}>Google</a>
                   )}
                 </div>
               </>
@@ -185,6 +254,11 @@ const styles = {
     background: 'rgba(255, 68, 102, 0.1)', border: '1px solid rgba(255, 68, 102, 0.3)',
     borderRadius: 'var(--radius-sm)', padding: 12, color: 'var(--danger)',
     fontSize: '0.9rem', marginBottom: 16,
+  },
+  refBanner: {
+    display: 'flex', alignItems: 'center', gap: 10,
+    padding: '12px 16px', marginBottom: 20, borderRadius: 12,
+    background: 'rgba(34,197,94,0.06)', border: '1px solid rgba(34,197,94,0.2)',
   },
   divider: {
     textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.85rem',
