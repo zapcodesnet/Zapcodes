@@ -3,12 +3,17 @@
 // Serves tier definitions and BL coin data for the frontend pricing page
 //
 // Route: GET /api/pricing/tiers
+// Route: GET /api/pricing/active-promo  (NEW — returns current public promo)
 
 const express = require('express');
 const router = express.Router();
 const { SUBSCRIPTION_TIERS, TIER_ORDER } = require('../config/tiers');
 const { BL_COIN_COSTS, BL_TOPUP_PACKS, SIGNUP_BONUS_BL } = require('../config/blCoins');
 const { AI_MODELS } = require('../config/aiModels');
+
+// Try to load PromoCode model (non-fatal if not yet deployed)
+let PromoCode;
+try { PromoCode = require('../models/PromoCode'); } catch (e) { PromoCode = null; }
 
 router.get('/tiers', (req, res) => {
   // Build public-safe tier data (strips Stripe price IDs and internal config)
@@ -71,6 +76,56 @@ router.get('/tiers', (req, res) => {
     })),
     signup_bonus: SIGNUP_BONUS_BL
   });
+});
+
+// ══════════════════════════════════════════════════════════════
+// GET /api/pricing/active-promo
+// PUBLIC — no auth. Returns the latest active "all users" promo
+// code for display on landing page and pricing page.
+// Only returns promos with empty specificUsers (= available to all).
+// ══════════════════════════════════════════════════════════════
+router.get('/active-promo', async (req, res) => {
+  try {
+    if (!PromoCode) return res.json({ promo: null });
+
+    const now = new Date();
+    const promo = await PromoCode.findOne({
+      isActive: true,
+      startsAt: { $lte: now },
+      expiresAt: { $gt: now },
+      specificUsers: { $size: 0 },  // Only "for all users" promos
+      $or: [
+        { maxUses: 0 },                              // Unlimited uses
+        { $expr: { $lt: ['$usedCount', '$maxUses'] } } // Still has uses left
+      ],
+    })
+    .sort({ createdAt: -1 }) // Latest one wins
+    .select('code description discountType discountValue tierUpgradeTo durationDays expiresAt');
+
+    if (!promo) return res.json({ promo: null });
+
+    // Build a user-friendly description
+    let discountText = '';
+    if (promo.discountType === 'percentage') discountText = `${promo.discountValue}% off`;
+    else if (promo.discountType === 'fixed') discountText = `$${promo.discountValue} off`;
+    else if (promo.discountType === 'bl_coins') discountText = `${promo.discountValue.toLocaleString()} free BL coins`;
+    else if (promo.discountType === 'tier_upgrade') discountText = `Free upgrade to ${promo.tierUpgradeTo}`;
+
+    res.json({
+      promo: {
+        code: promo.code,
+        description: promo.description,
+        discountText,
+        discountType: promo.discountType,
+        discountValue: promo.discountValue,
+        durationDays: promo.durationDays,
+        expiresAt: promo.expiresAt,
+      },
+    });
+  } catch (err) {
+    console.error('[Pricing] Active promo fetch failed:', err.message);
+    res.json({ promo: null });
+  }
 });
 
 module.exports = router;
