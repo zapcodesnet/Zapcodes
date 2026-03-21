@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import api from '../api';
+import VisitorWorldMap from '../components/VisitorWorldMap';
 
 const SECTIONS = [
   { id: 'dashboard', label: 'Dashboard', icon: '📊' },
@@ -558,12 +559,32 @@ function SecuritySection({ api: a }) {
 // ═══════════════════════════════════════════════════════════
 function AnalyticsSection({ api: a }) {
   const [data, setData] = useState(null);
-  useEffect(() => { a.get('/admin/analytics').then(r => setData(r.data)).catch(() => {}); }, []);
+  const [visitorData, setVisitorData] = useState(null);
+  useEffect(() => {
+    a.get('/admin/analytics').then(r => setData(r.data)).catch(() => {});
+    a.get('/admin/visitors').then(r => setVisitorData(r.data)).catch(() => {});
+  }, []);
   if (!data) return <Loading />;
 
   return (
     <div>
       <h1 style={s.pageTitle}>Analytics</h1>
+
+      {/* ═══ INTERACTIVE WORLD MAP ═══ */}
+      <div style={{ ...s.card, marginBottom: 20 }}>
+        <h3 style={s.cardTitle}>🌍 Global Visitor Map</h3>
+        <VisitorWorldMap
+          visitorData={visitorData?.byCountry || data?.visitorData?.byCountry || []}
+          style={{ marginTop: 12 }}
+        />
+        {visitorData && (
+          <div style={{ display: 'flex', gap: 16, marginTop: 12, fontSize: '0.8rem', color: '#888', flexWrap: 'wrap' }}>
+            <span>Total visitors: <strong style={{ color: '#e8e8f0' }}>{visitorData.total?.toLocaleString() || 0}</strong></span>
+            <span>Registered: <strong style={{ color: '#00e5a0' }}>{visitorData.byCountry?.reduce((s, c) => s + c.count, 0) || 0}</strong></span>
+            <span>Countries: <strong style={{ color: '#6366f1' }}>{visitorData.byCountry?.length || 0}</strong></span>
+          </div>
+        )}
+      </div>
 
       <div style={s.cardGrid}>
         <div style={s.card}>
@@ -825,8 +846,37 @@ function PromosSection({ api: a }) {
 // ═══════════════════════════════════════════════════════════
 function ReferralsSection({ api: a }) {
   const [data, setData] = useState(null);
+  const [selectedUser, setSelectedUser] = useState(null);
+  const [treeData, setTreeData] = useState(null);
+  const [treeLoading, setTreeLoading] = useState(false);
+
   useEffect(() => { a.get('/admin/referrals').then(r => setData(r.data)).catch(() => {}); }, []);
+
+  const viewTree = async (user) => {
+    setSelectedUser(user);
+    setTreeLoading(true);
+    try {
+      const { data } = await a.get(`/admin/users/${user._id}`);
+      // Use the referralTree endpoint via admin API
+      const treeRes = await a.get(`/admin/users/${user._id}`);
+      // Build tree from direct downlines
+      const downlines = treeRes.data.directDownlines || [];
+      setTreeData({ user: treeRes.data.user, downlines, stats: { l1: downlines.length } });
+    } catch (e) { console.error('Tree load failed'); }
+    finally { setTreeLoading(false); }
+  };
+
+  const loadL2Children = async (referralCode) => {
+    try {
+      const { data } = await a.get(`/admin/referrals`); // reuse existing endpoint
+      return (data.referredUsers || []).filter(u => u.referred_by === referralCode);
+    } catch { return []; }
+  };
+
   if (!data) return <Loading />;
+
+  const TIER_COLORS_MAP = { free: '#888', bronze: '#cd7f32', silver: '#c0c0c0', gold: '#ffd700', diamond: '#b9f2ff' };
+  const TIER_COMM = { free: { l1: 2, l2: 1 }, bronze: { l1: 3, l2: 2 }, silver: { l1: 3, l2: 2 }, gold: { l1: 3, l2: 2 }, diamond: { l1: 4, l2: 3 } };
 
   return (
     <div>
@@ -838,35 +888,91 @@ function ReferralsSection({ api: a }) {
         <StatCard label="Top Referrers" value={data.topReferrers?.length || 0} icon="🏆" color="#f59e0b" />
       </div>
 
+      {/* ═══ TOP REFERRERS with View Tree button ═══ */}
       <div style={s.card}>
-        <h3 style={s.cardTitle}>Top Referrers (Leaderboard)</h3>
+        <h3 style={s.cardTitle}>Top Referrers — Leaderboard & Genealogy</h3>
         <div style={{ maxHeight: 400, overflowY: 'auto' }}>
-          {data.topReferrers?.map((u, i) => (
-            <div key={u._id} style={{ display: 'flex', justifyContent: 'space-between', padding: '10px 0', borderBottom: '1px solid #1a1a2a', fontSize: '0.85rem', alignItems: 'center' }}>
-              <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                <span style={{ width: 24, height: 24, borderRadius: '50%', background: i < 3 ? '#f59e0b' : '#2a2a3a', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.7rem', fontWeight: 700, color: i < 3 ? '#06060b' : '#888' }}>
-                  {i + 1}
+          {data.topReferrers?.map((u, i) => {
+            const tier = u.subscription_tier || 'free';
+            const comm = TIER_COMM[tier] || TIER_COMM.free;
+            return (
+              <div key={u._id} style={{ display: 'flex', justifyContent: 'space-between', padding: '10px 0', borderBottom: '1px solid #1a1a2a', fontSize: '0.85rem', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+                <span style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 1, minWidth: 200 }}>
+                  <span style={{ width: 24, height: 24, borderRadius: '50%', background: i < 3 ? '#f59e0b' : '#2a2a3a', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.7rem', fontWeight: 700, color: i < 3 ? '#06060b' : '#888', flexShrink: 0 }}>
+                    {i + 1}
+                  </span>
+                  <div>
+                    <strong>{u.name}</strong> <span style={{ color: '#888', fontSize: '0.8rem' }}>({u.email})</span>
+                    <div style={{ fontSize: '0.7rem', color: '#666', marginTop: 2 }}>
+                      <span style={{ padding: '1px 6px', borderRadius: 6, background: TIER_COLORS_MAP[tier], color: tier === 'free' ? '#fff' : '#000', fontWeight: 700, fontSize: '0.65rem', marginRight: 6 }}>{tier.toUpperCase()}</span>
+                      L1: {comm.l1}% · L2: {comm.l2}% · Code: <span style={{ color: '#a855f7', fontWeight: 600 }}>{u.referral_code}</span>
+                    </div>
+                  </div>
                 </span>
-                <strong>{u.name}</strong> <span style={{ color: '#888' }}>({u.email})</span>
-              </span>
-              <span style={{ display: 'flex', gap: 16, fontSize: '0.8rem' }}>
-                <span>Code: <strong style={{ color: '#a855f7' }}>{u.referral_code}</strong></span>
-                <span>Referrals: <strong style={{ color: '#00e5a0' }}>{u.referral_count}</strong></span>
-                <span>Direct: <strong>{u.direct_referrals || 0}</strong></span>
-                <span>Indirect: <strong>{u.indirect_referrals || 0}</strong></span>
-                <span>Bonuses: <strong>{(u.referral_bonuses_paid || 0).toLocaleString()} BL</strong></span>
-              </span>
-            </div>
-          ))}
+                <span style={{ display: 'flex', gap: 10, fontSize: '0.75rem', alignItems: 'center', flexWrap: 'wrap' }}>
+                  <span>Direct: <strong style={{ color: '#00e5a0' }}>{u.direct_referrals || u.referral_count || 0}</strong></span>
+                  <span>Indirect: <strong style={{ color: '#6366f1' }}>{u.indirect_referrals || 0}</strong></span>
+                  <span>Bonuses: <strong style={{ color: '#f59e0b' }}>{(u.referral_bonuses_paid || 0).toLocaleString()} BL</strong></span>
+                  <button onClick={() => viewTree(u)} style={{ padding: '3px 10px', borderRadius: 6, border: '1px solid #a855f733', background: 'none', color: '#a855f7', fontSize: '0.7rem', fontWeight: 600, cursor: 'pointer' }}>
+                    🌳 View Tree
+                  </button>
+                </span>
+              </div>
+            );
+          })}
           {(!data.topReferrers || data.topReferrers.length === 0) && <p style={{ color: '#666' }}>No referrers yet</p>}
         </div>
       </div>
 
+      {/* ═══ GENEALOGY TREE MODAL ═══ */}
+      {selectedUser && (
+        <div style={{ ...s.card, marginBottom: 16, border: '1px solid rgba(168,85,247,0.3)' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+            <h3 style={{ ...s.cardTitle, marginBottom: 0, color: '#a855f7' }}>
+              🌳 Genealogy Tree — {selectedUser.name}
+            </h3>
+            <button onClick={() => { setSelectedUser(null); setTreeData(null); }} style={{ padding: '4px 12px', borderRadius: 6, border: '1px solid #2a2a3a', background: 'none', color: '#888', cursor: 'pointer', fontSize: '0.75rem' }}>✕ Close</button>
+          </div>
+
+          {treeLoading ? (
+            <div style={{ padding: 30, textAlign: 'center', color: '#888' }}>Loading genealogy tree...</div>
+          ) : treeData ? (
+            <div>
+              {/* Root user card */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 16px', background: 'rgba(168,85,247,0.08)', border: '1px solid rgba(168,85,247,0.2)', borderRadius: 12, marginBottom: 16 }}>
+                <div style={{ width: 40, height: 40, borderRadius: '50%', background: '#a855f7', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 800, color: '#fff', fontSize: 16 }}>
+                  {selectedUser.name?.[0] || '?'}
+                </div>
+                <div>
+                  <div style={{ fontWeight: 700, fontSize: '0.95rem' }}>{selectedUser.name} <span style={{ color: '#888', fontWeight: 400 }}>({selectedUser.email})</span></div>
+                  <div style={{ fontSize: '0.75rem', color: '#888' }}>
+                    Code: <span style={{ color: '#a855f7' }}>{selectedUser.referral_code}</span> · {treeData.downlines?.length || 0} direct referrals
+                  </div>
+                </div>
+              </div>
+
+              {/* Tree nodes */}
+              <div style={{ maxHeight: 500, overflowY: 'auto' }}>
+                {treeData.downlines?.length > 0 ? treeData.downlines.map((node, i) => (
+                  <AdminTreeNode key={node._id} node={node} api={a} depth={0} isLast={i === treeData.downlines.length - 1} />
+                )) : (
+                  <div style={{ padding: 30, textAlign: 'center', color: '#666' }}>
+                    <span style={{ fontSize: 30, display: 'block', marginBottom: 8 }}>🌱</span>
+                    No referrals yet for this user.
+                  </div>
+                )}
+              </div>
+            </div>
+          ) : null}
+        </div>
+      )}
+
+      {/* ═══ ALL REFERRED USERS ═══ */}
       <div style={s.card}>
-        <h3 style={s.cardTitle}>Referred Users (who was referred by whom)</h3>
+        <h3 style={s.cardTitle}>All Referred Users</h3>
         <div style={{ maxHeight: 400, overflowY: 'auto' }}>
           {data.referredUsers?.map((u, i) => (
-            <div key={u._id || i} style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0', borderBottom: '1px solid #1a1a2a', fontSize: '0.85rem' }}>
+            <div key={u._id || i} style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0', borderBottom: '1px solid #1a1a2a', fontSize: '0.85rem', flexWrap: 'wrap', gap: 4 }}>
               <span><strong>{u.name}</strong> <span style={{ color: '#888' }}>({u.email})</span></span>
               <span style={{ display: 'flex', gap: 12, fontSize: '0.8rem', color: '#888' }}>
                 <span>Referred by: <strong style={{ color: '#a855f7' }}>{u.referred_by}</strong></span>
@@ -878,6 +984,75 @@ function ReferralsSection({ api: a }) {
           {(!data.referredUsers || data.referredUsers.length === 0) && <p style={{ color: '#666' }}>No referred users yet</p>}
         </div>
       </div>
+    </div>
+  );
+}
+
+// Admin Tree Node with lazy-loading children
+function AdminTreeNode({ node, api: a, depth, isLast }) {
+  const [expanded, setExpanded] = useState(false);
+  const [children, setChildren] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [childCount, setChildCount] = useState(0);
+
+  const tierColor = { free: '#888', bronze: '#cd7f32', silver: '#c0c0c0', gold: '#ffd700', diamond: '#b9f2ff' }[node.subscription_tier || 'free'] || '#888';
+
+  useEffect(() => {
+    // Check if this user has referrals
+    if (node.referral_code) {
+      a.get(`/admin/users?search=${encodeURIComponent(node.referral_code)}&limit=0`).catch(() => {});
+    }
+  }, []);
+
+  const toggle = async () => {
+    if (expanded) { setExpanded(false); return; }
+    if (children.length > 0) { setExpanded(true); return; }
+    if (!node.referral_code) return;
+    setLoading(true);
+    try {
+      // Fetch users referred by this node
+      const { data } = await a.get(`/admin/users?limit=100`);
+      const myDownlines = (data.users || []).filter(u => u.referred_by === node.referral_code);
+      setChildren(myDownlines);
+      setChildCount(myDownlines.length);
+      setExpanded(true);
+    } catch (e) { console.error('Failed to load children'); }
+    finally { setLoading(false); }
+  };
+
+  const indent = depth * 28;
+
+  return (
+    <div>
+      <div style={{ marginLeft: indent, display: 'flex', alignItems: 'center', gap: 6, padding: '6px 10px', borderRadius: 8, marginBottom: 2, transition: 'background .15s' }}>
+        {/* Tree connector lines */}
+        <span style={{ color: '#2a2a3a', fontSize: 12, width: 16, textAlign: 'center', flexShrink: 0 }}>
+          {isLast ? '└' : '├'}
+        </span>
+        {/* Expand button */}
+        {node.referral_code ? (
+          <button onClick={toggle} style={{ width: 20, height: 20, borderRadius: 4, border: 'none', background: '#1a1a2a', color: '#888', cursor: 'pointer', fontSize: 10, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+            {loading ? '⏳' : expanded ? '▼' : '▶'}
+          </button>
+        ) : (
+          <span style={{ width: 20, textAlign: 'center', color: '#333', fontSize: 8 }}>●</span>
+        )}
+        {/* Tier dot */}
+        <span style={{ width: 8, height: 8, borderRadius: '50%', background: tierColor, flexShrink: 0 }} />
+        {/* User info */}
+        <span style={{ fontSize: '0.8rem', fontWeight: 600 }}>{node.name}</span>
+        <span style={{ fontSize: '0.7rem', color: '#666' }}>{node.email}</span>
+        <span style={{ fontSize: '0.6rem', padding: '1px 6px', borderRadius: 6, background: tierColor, color: (node.subscription_tier === 'free') ? '#fff' : '#000', fontWeight: 700, marginLeft: 4 }}>
+          {(node.subscription_tier || 'free').toUpperCase()}
+        </span>
+        <span style={{ fontSize: '0.7rem', color: '#555', marginLeft: 'auto' }}>
+          {new Date(node.createdAt).toLocaleDateString()}
+        </span>
+        {childCount > 0 && <span style={{ fontSize: '0.65rem', color: '#a855f7' }}>({childCount})</span>}
+      </div>
+      {expanded && children.map((child, i) => (
+        <AdminTreeNode key={child._id} node={child} api={a} depth={depth + 1} isLast={i === children.length - 1} />
+      ))}
     </div>
   );
 }
