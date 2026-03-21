@@ -5,11 +5,16 @@ const User = require('../models/User');
 const AdminLog = require('../models/AdminLog');
 const SecurityFlag = require('../models/SecurityFlag');
 const Repo = require('../models/Repo');
+const PromoCode = require('../models/PromoCode');
 const {
   requireAdmin, requireSuperAdmin, requirePermission, require2FA,
   checkAdminAccess, sendVerificationCode, verifyAdminCode,
   logAdminAction, SUPER_ADMIN_EMAIL,
 } = require('../middleware/admin');
+
+// Try to load SiteVisitor model (non-fatal if not present yet)
+let SiteVisitor;
+try { SiteVisitor = require('../models/SiteVisitor'); } catch (e) { SiteVisitor = null; }
 
 const router = express.Router();
 
@@ -47,7 +52,7 @@ router.get('/dashboard', async (req, res) => {
       .populate('actor', 'name email').populate('targetUser', 'name email');
 
     // Revenue estimate
-    const monthlyRevenue = (bronzeUsers * 4.99) + (silverUsers * 14.99) + (goldUsers * 29.99) + (diamondUsers * 99.99);
+    const monthlyRevenue = (bronzeUsers * 4.99) + (silverUsers * 14.99) + (goldUsers * 39.99) + (diamondUsers * 99.99);
 
     // Users registered in last 7 days
     const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
@@ -61,14 +66,51 @@ router.get('/dashboard', async (req, res) => {
       { $sort: { _id: 1 } },
     ]);
 
+    // Total referrals
+    const referralStats = await User.aggregate([
+      { $group: { _id: null, totalReferrals: { $sum: '$referral_count' }, totalBonuses: { $sum: '$referral_bonuses_paid' } } },
+    ]);
+
+    // Active promo codes
+    let activePromos = 0;
+    try { activePromos = await PromoCode.countDocuments({ isActive: true, expiresAt: { $gt: new Date() } }); } catch (e) {}
+
+    // BL Coins economy
+    const blStats = await User.aggregate([
+      { $group: { _id: null, totalBL: { $sum: '$bl_coins' }, avgBL: { $avg: '$bl_coins' }, usersWithCoins: { $sum: { $cond: [{ $gt: ['$bl_coins', 0] }, 1, 0] } } } },
+    ]);
+
+    // Visitor stats
+    let visitorStats = { total: 0, registered: 0, guests: 0, guestBuilders: 0 };
+    if (SiteVisitor) {
+      try {
+        const [totalVisitors, registeredVisitors, guestBuilders] = await Promise.all([
+          SiteVisitor.countDocuments(),
+          SiteVisitor.countDocuments({ didRegister: true }),
+          SiteVisitor.countDocuments({ usedGuestBuilder: true }),
+        ]);
+        visitorStats = { total: totalVisitors, registered: registeredVisitors, guests: totalVisitors - registeredVisitors, guestBuilders };
+      } catch (e) {}
+    }
+
     res.json({
       users: { total: totalUsers, active: activeUsers, banned: bannedUsers, suspended: suspendedUsers, newThisWeek: newUsersThisWeek },
       plans: { free: freeUsers, bronze: bronzeUsers, silver: silverUsers, gold: goldUsers, diamond: diamondUsers },
       repos: totalRepos,
-      revenue: { monthly: monthlyRevenue, bronze: (bronzeUsers * 4.99).toFixed(2), silver: (silverUsers * 14.99).toFixed(2), gold: (goldUsers * 29.99).toFixed(2), diamond: (diamondUsers * 99.99).toFixed(2) },
+      revenue: {
+        monthly: parseFloat(monthlyRevenue.toFixed(2)),
+        bronze: (bronzeUsers * 4.99).toFixed(2),
+        silver: (silverUsers * 14.99).toFixed(2),
+        gold: (goldUsers * 39.99).toFixed(2),
+        diamond: (diamondUsers * 99.99).toFixed(2),
+      },
       securityFlags: recentFlags,
       recentLogs,
       dailySignups,
+      referralStats: referralStats[0] || { totalReferrals: 0, totalBonuses: 0 },
+      activePromos,
+      blEconomy: blStats[0] || { totalBL: 0, avgBL: 0, usersWithCoins: 0 },
+      visitorStats,
     });
   } catch (err) {
     res.status(500).json({ error: 'Dashboard fetch failed', details: err.message });
@@ -204,7 +246,13 @@ router.get('/users/:id', requirePermission('moderateUsers'), async (req, res) =>
     const logs = await AdminLog.find({ targetUser: user._id })
       .sort({ timestamp: -1 }).limit(20).populate('actor', 'name email');
 
-    res.json({ user, logs });
+    // Get referral downlines
+    const directDownlines = await User.find({ referred_by: user.referral_code })
+      .select('name email subscription_tier createdAt bl_coins')
+      .sort({ createdAt: -1 })
+      .limit(50);
+
+    res.json({ user, logs, directDownlines });
   } catch (err) {
     res.status(500).json({ error: 'User fetch failed' });
   }
@@ -480,6 +528,68 @@ router.post('/users/:id/subscription', requirePermission('adjustPricing'), async
 });
 
 // =============================================
+// BL COIN MANAGEMENT
+// =============================================
+router.put('/users/:id/bl', requireSuperAdmin, async (req, res) => {
+  try {
+    const { amount, reason } = req.body;
+    if (amount === undefined || !reason) return res.status(400).json({ error: 'Amount and reason required' });
+    const numAmount = Number(amount);
+    if (isNaN(numAmount) || numAmount === 0) return res.status(400).json({ error: 'Invalid amount' });
+
+    const user = await User.findById(req.params.id);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+
+    const oldBalance = user.bl_coins;
+
+    if (numAmount > 0) {
+      user.creditCoins(numAmount, 'admin_adjustment', `Admin: ${reason}`);
+    } else {
+      user.bl_coins = Math.max(0, user.bl_coins + numAmount);
+      user.bl_transactions.push({ type: 'admin_adjustment', amount: numAmount, balance: user.bl_coins, description: `Admin: ${reason}` });
+    }
+    await user.save();
+
+    await logAdminAction({
+      actor: req.user, action: 'bl_adjustment', targetUser: user._id, targetEmail: user.email,
+      description: `BL adjustment: ${numAmount > 0 ? '+' : ''}${numAmount} for ${user.email} — ${reason}`,
+      beforeState: { bl_coins: oldBalance },
+      afterState: { bl_coins: user.bl_coins },
+      ip: req.ip, userAgent: req.headers['user-agent'],
+    });
+
+    res.json({ success: true, oldBalance, newBalance: user.bl_coins, adjustment: numAmount });
+  } catch (err) {
+    res.status(500).json({ error: 'BL adjustment failed', details: err.message });
+  }
+});
+
+router.put('/users/:id/tier', requireSuperAdmin, async (req, res) => {
+  try {
+    const { plan, reason } = req.body;
+    if (!['free', 'bronze', 'silver', 'gold', 'diamond'].includes(plan)) return res.status(400).json({ error: 'Invalid plan' });
+    const user = await User.findById(req.params.id);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+
+    const oldPlan = user.subscription_tier;
+    user.subscription_tier = plan;
+    await user.save();
+
+    await logAdminAction({
+      actor: req.user, action: 'tier_change', targetUser: user._id, targetEmail: user.email,
+      description: `Tier: ${oldPlan} → ${plan} for ${user.email}${reason ? ` — ${reason}` : ''}`,
+      beforeState: { subscription_tier: oldPlan },
+      afterState: { subscription_tier: plan },
+      ip: req.ip, userAgent: req.headers['user-agent'],
+    });
+
+    res.json({ success: true, oldPlan, newPlan: plan });
+  } catch (err) {
+    res.status(500).json({ error: 'Tier change failed' });
+  }
+});
+
+// =============================================
 // SECURITY FLAGS
 // =============================================
 router.get('/security', requirePermission('viewSecurityLogs'), async (req, res) => {
@@ -643,8 +753,8 @@ async function processAICommand(command, admin, app) {
     const silver = await User.countDocuments({ subscription_tier: 'silver' });
     const gold = await User.countDocuments({ subscription_tier: 'gold' });
     const diamond = await User.countDocuments({ subscription_tier: 'diamond' });
-    const monthly = (bronze * 4.99) + (silver * 14.99) + (gold * 29.99) + (diamond * 99.99);
-    return { message: `💰 Revenue:\n• Bronze: ${bronze} × $4.99 = $${(bronze * 4.99).toFixed(2)}\n• Silver: ${silver} × $14.99 = $${(silver * 14.99).toFixed(2)}\n• Gold: ${gold} × $29.99 = $${(gold * 29.99).toFixed(2)}\n• Diamond: ${diamond} × $99.99 = $${(diamond * 99.99).toFixed(2)}\n• Monthly: $${monthly.toFixed(2)}\n• Annual: $${(monthly * 12).toFixed(2)}`, action: 'revenue' };
+    const monthly = (bronze * 4.99) + (silver * 14.99) + (gold * 39.99) + (diamond * 99.99);
+    return { message: `💰 Revenue:\n• Bronze: ${bronze} × $4.99 = $${(bronze * 4.99).toFixed(2)}\n• Silver: ${silver} × $14.99 = $${(silver * 14.99).toFixed(2)}\n• Gold: ${gold} × $39.99 = $${(gold * 39.99).toFixed(2)}\n• Diamond: ${diamond} × $99.99 = $${(diamond * 99.99).toFixed(2)}\n• Monthly: $${monthly.toFixed(2)}\n• Annual: $${(monthly * 12).toFixed(2)}`, action: 'revenue' };
   }
 
   if (cmd.includes('security') || cmd.includes('threats') || cmd.includes('flags')) {
@@ -682,7 +792,7 @@ async function processAICommand(command, admin, app) {
 }
 
 // =============================================
-// ANALYTICS
+// ANALYTICS (ENHANCED)
 // =============================================
 router.get('/analytics', requirePermission('viewAnalytics'), async (req, res) => {
   try {
@@ -700,9 +810,178 @@ router.get('/analytics', requirePermission('viewAnalytics'), async (req, res) =>
       User.find().sort({ bl_coins: -1 }).limit(10).select('name email subscription_tier bl_coins referral_count'),
     ]);
 
-    res.json({ dailySignups, planDistribution, topUsers });
+    // Registration details with location approximation (from lastLoginIP)
+    const recentRegistrations = await User.find({ createdAt: { $gte: thirtyDays } })
+      .select('name email subscription_tier createdAt lastLoginIP referred_by referral_code')
+      .sort({ createdAt: -1 })
+      .limit(100);
+
+    // Referral stats
+    const referralLeaderboard = await User.find({ referral_count: { $gt: 0 } })
+      .sort({ referral_count: -1 }).limit(20)
+      .select('name email referral_code referral_count referral_bonuses_paid subscription_tier direct_referrals indirect_referrals');
+
+    const totalReferrals = await User.aggregate([
+      { $group: { _id: null, total: { $sum: '$referral_count' }, totalBonuses: { $sum: '$referral_bonuses_paid' } } },
+    ]);
+
+    // Users referred (who was referred by whom)
+    const referredUsers = await User.find({ referred_by: { $exists: true, $ne: null, $ne: '' } })
+      .select('name email referred_by subscription_tier createdAt')
+      .sort({ createdAt: -1 })
+      .limit(100);
+
+    // Visitor stats (if model exists)
+    let visitorData = { byCountry: [], dailyVisitors: [], guestBuilderCount: 0, unregisteredCount: 0 };
+    if (SiteVisitor) {
+      try {
+        const [byCountry, dailyVisitors, guestBuilderCount, unregisteredCount] = await Promise.all([
+          SiteVisitor.aggregate([
+            { $group: { _id: { country: '$country', countryCode: '$countryCode', latitude: { $first: '$latitude' }, longitude: { $first: '$longitude' } }, count: { $sum: 1 } } },
+            { $sort: { count: -1 } },
+            { $limit: 50 },
+          ]),
+          SiteVisitor.aggregate([
+            { $match: { createdAt: { $gte: thirtyDays } } },
+            { $group: { _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } }, count: { $sum: 1 }, registered: { $sum: { $cond: ['$didRegister', 1, 0] } } } },
+            { $sort: { _id: 1 } },
+          ]),
+          SiteVisitor.countDocuments({ usedGuestBuilder: true }),
+          SiteVisitor.countDocuments({ didRegister: false }),
+        ]);
+        visitorData = { byCountry, dailyVisitors, guestBuilderCount, unregisteredCount };
+      } catch (e) {}
+    }
+
+    res.json({
+      dailySignups,
+      planDistribution,
+      topUsers,
+      recentRegistrations,
+      referralLeaderboard,
+      referralStats: totalReferrals[0] || { total: 0, totalBonuses: 0 },
+      referredUsers,
+      visitorData,
+    });
   } catch (err) {
-    res.status(500).json({ error: 'Analytics fetch failed' });
+    res.status(500).json({ error: 'Analytics fetch failed', details: err.message });
+  }
+});
+
+// =============================================
+// PROMO CODE MANAGEMENT
+// =============================================
+router.get('/promos', requirePermission('adjustPricing'), async (req, res) => {
+  try {
+    const { status, page = 1, limit = 50 } = req.query;
+    const query = {};
+    if (status === 'active') { query.isActive = true; query.expiresAt = { $gt: new Date() }; }
+    else if (status === 'expired') { query.expiresAt = { $lte: new Date() }; }
+    else if (status === 'inactive') { query.isActive = false; }
+
+    const total = await PromoCode.countDocuments(query);
+    const promos = await PromoCode.find(query)
+      .sort({ createdAt: -1 })
+      .skip((page - 1) * limit)
+      .limit(parseInt(limit))
+      .populate('createdBy', 'name email');
+
+    res.json({ promos, total, page: parseInt(page), pages: Math.ceil(total / limit) });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch promo codes', details: err.message });
+  }
+});
+
+router.post('/promos', requireSuperAdmin, async (req, res) => {
+  try {
+    const {
+      code, description, discountType, discountValue,
+      tierUpgradeTo, durationDays, startsAt, expiresAt,
+      maxUses, applicableTiers, specificUsers,
+    } = req.body;
+
+    if (!code || !discountType || discountValue === undefined || !expiresAt) {
+      return res.status(400).json({ error: 'Code, discountType, discountValue, and expiresAt are required' });
+    }
+
+    // Check for duplicate
+    const existing = await PromoCode.findOne({ code: code.toUpperCase() });
+    if (existing) return res.status(409).json({ error: 'Promo code already exists' });
+
+    const promo = await PromoCode.create({
+      code: code.toUpperCase(),
+      description: description || '',
+      discountType,
+      discountValue: Number(discountValue),
+      tierUpgradeTo: tierUpgradeTo || null,
+      durationDays: durationDays || 30,
+      startsAt: startsAt ? new Date(startsAt) : new Date(),
+      expiresAt: new Date(expiresAt),
+      maxUses: maxUses || 0,
+      applicableTiers: applicableTiers || [],
+      specificUsers: (specificUsers || []).map(e => e.toLowerCase().trim()).filter(Boolean),
+      createdBy: req.user._id,
+      createdByEmail: req.user.email,
+    });
+
+    await logAdminAction({
+      actor: req.user, action: 'promo_create',
+      description: `Created promo code ${promo.code}: ${discountType} ${discountValue}${discountType === 'percentage' ? '%' : ''}, expires ${promo.expiresAt.toISOString().split('T')[0]}`,
+      metadata: { promoId: promo._id, code: promo.code },
+      ip: req.ip, userAgent: req.headers['user-agent'],
+    });
+
+    res.json({ success: true, promo });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to create promo code', details: err.message });
+  }
+});
+
+router.put('/promos/:id', requireSuperAdmin, async (req, res) => {
+  try {
+    const promo = await PromoCode.findById(req.params.id);
+    if (!promo) return res.status(404).json({ error: 'Promo not found' });
+
+    const updates = req.body;
+    const allowed = ['description', 'discountValue', 'durationDays', 'expiresAt', 'maxUses', 'isActive', 'applicableTiers', 'specificUsers'];
+    allowed.forEach(field => {
+      if (updates[field] !== undefined) {
+        if (field === 'expiresAt') promo[field] = new Date(updates[field]);
+        else promo[field] = updates[field];
+      }
+    });
+    await promo.save();
+
+    await logAdminAction({
+      actor: req.user, action: 'promo_update',
+      description: `Updated promo code ${promo.code}`,
+      metadata: { promoId: promo._id, updates },
+      ip: req.ip, userAgent: req.headers['user-agent'],
+    });
+
+    res.json({ success: true, promo });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to update promo code', details: err.message });
+  }
+});
+
+router.delete('/promos/:id', requireSuperAdmin, async (req, res) => {
+  try {
+    const promo = await PromoCode.findById(req.params.id);
+    if (!promo) return res.status(404).json({ error: 'Promo not found' });
+
+    const code = promo.code;
+    await PromoCode.findByIdAndDelete(req.params.id);
+
+    await logAdminAction({
+      actor: req.user, action: 'promo_delete',
+      description: `Deleted promo code ${code}`,
+      ip: req.ip, userAgent: req.headers['user-agent'], severity: 'warning',
+    });
+
+    res.json({ success: true, message: `Promo ${code} deleted` });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to delete promo code' });
   }
 });
 
@@ -715,49 +994,6 @@ router.get('/me', (req, res) => {
     twoFactorEnabled: req.user.twoFactorEnabled,
     isSuperAdmin: req.user.isSuperAdmin(),
   });
-});
-
-// =============================================
-// BL COIN MANAGEMENT
-// =============================================
-router.put('/users/:id/bl', requireSuperAdmin, async (req, res) => {
-  try {
-    const { amount, reason } = req.body;
-    if (!amount || !reason) return res.status(400).json({ error: 'Amount and reason required' });
-    const user = await User.findById(req.params.id);
-    if (!user) return res.status(404).json({ error: 'User not found' });
-    
-    if (amount > 0) {
-      user.creditCoins(amount, 'admin_adjustment', `Admin: ${reason}`);
-    } else {
-      user.bl_coins = Math.max(0, user.bl_coins + amount);
-      user.bl_transactions.push({ type: 'admin_adjustment', amount, balance: user.bl_coins, description: `Admin: ${reason}` });
-    }
-    await user.save();
-    
-    await logAdminAction({ actor: req.user, action: 'bl_adjustment', targetUser: user, description: `BL adjustment: ${amount > 0 ? '+' : ''}${amount} — ${reason}`, ip: req.ip, userAgent: req.headers['user-agent'] });
-    res.json({ success: true, newBalance: user.bl_coins });
-  } catch (err) {
-    res.status(500).json({ error: 'BL adjustment failed' });
-  }
-});
-
-router.put('/users/:id/tier', requireSuperAdmin, async (req, res) => {
-  try {
-    const { plan, reason } = req.body;
-    if (!['free', 'bronze', 'silver', 'gold', 'diamond'].includes(plan)) return res.status(400).json({ error: 'Invalid plan' });
-    const user = await User.findById(req.params.id);
-    if (!user) return res.status(404).json({ error: 'User not found' });
-    
-    const oldPlan = user.subscription_tier;
-    user.subscription_tier = plan;
-    await user.save();
-    
-    await logAdminAction({ actor: req.user, action: 'tier_change', targetUser: user, description: `Tier: ${oldPlan} → ${plan}${reason ? ` — ${reason}` : ''}`, ip: req.ip, userAgent: req.headers['user-agent'] });
-    res.json({ success: true, oldPlan, newPlan: plan });
-  } catch (err) {
-    res.status(500).json({ error: 'Tier change failed' });
-  }
 });
 
 // =============================================
@@ -796,9 +1032,16 @@ router.delete('/sites/:subdomain', requireSuperAdmin, async (req, res) => {
 // =============================================
 router.get('/referrals', requireAdmin, async (req, res) => {
   try {
-    const topReferrers = await User.find({ referral_count: { $gt: 0 } }).sort({ referral_count: -1 }).limit(50).select('name email subscription_tier referral_code referral_count referral_bonuses_paid bl_coins');
+    const topReferrers = await User.find({ referral_count: { $gt: 0 } }).sort({ referral_count: -1 }).limit(50).select('name email subscription_tier referral_code referral_count referral_bonuses_paid bl_coins direct_referrals indirect_referrals level1_referrals level2_referrals');
     const totalReferrals = await User.aggregate([{ $group: { _id: null, total: { $sum: '$referral_count' }, totalBonuses: { $sum: '$referral_bonuses_paid' } } }]);
-    res.json({ topReferrers, stats: totalReferrals[0] || { total: 0, totalBonuses: 0 } });
+
+    // Get who referred whom
+    const referredUsers = await User.find({ referred_by: { $exists: true, $ne: null, $ne: '' } })
+      .select('name email referred_by subscription_tier createdAt bl_coins')
+      .sort({ createdAt: -1 })
+      .limit(200);
+
+    res.json({ topReferrers, stats: totalReferrals[0] || { total: 0, totalBonuses: 0 }, referredUsers });
   } catch (err) {
     res.status(500).json({ error: 'Failed to fetch referrals' });
   }
@@ -819,6 +1062,36 @@ router.get('/bl-stats', requireAdmin, async (req, res) => {
     res.json({ blStats: stats[0] || {}, deployedSites: deployedSitesCount[0]?.total || 0 });
   } catch (err) {
     res.status(500).json({ error: 'Failed to fetch BL stats' });
+  }
+});
+
+// =============================================
+// VISITOR TRACKING ENDPOINT (called from frontend)
+// =============================================
+router.get('/visitors', requirePermission('viewAnalytics'), async (req, res) => {
+  try {
+    if (!SiteVisitor) return res.json({ visitors: [], total: 0, byCountry: [], message: 'SiteVisitor model not loaded' });
+
+    const thirtyDays = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    const { page = 1, limit = 50 } = req.query;
+
+    const [total, visitors, byCountry, dailyStats] = await Promise.all([
+      SiteVisitor.countDocuments(),
+      SiteVisitor.find().sort({ lastVisit: -1 }).skip((page - 1) * limit).limit(parseInt(limit)),
+      SiteVisitor.aggregate([
+        { $group: { _id: { country: '$country', countryCode: '$countryCode' }, count: { $sum: 1 }, lat: { $first: '$latitude' }, lng: { $first: '$longitude' } } },
+        { $sort: { count: -1 } },
+      ]),
+      SiteVisitor.aggregate([
+        { $match: { createdAt: { $gte: thirtyDays } } },
+        { $group: { _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } }, total: { $sum: 1 }, registered: { $sum: { $cond: ['$didRegister', 1, 0] } }, guestBuilds: { $sum: { $cond: ['$usedGuestBuilder', 1, 0] } } } },
+        { $sort: { _id: 1 } },
+      ]),
+    ]);
+
+    res.json({ visitors, total, byCountry, dailyStats, page: parseInt(page), pages: Math.ceil(total / limit) });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch visitors', details: err.message });
   }
 });
 
