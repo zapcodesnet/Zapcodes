@@ -1,16 +1,34 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import GuestBuilder from '../components/GuestBuilder';
+import api from '../api';
 
 export default function Landing() {
   const { user } = useAuth();
+  const [activePromo, setActivePromo] = useState(null);
+
+  // Fetch active promo code for banner display
+  useEffect(() => {
+    api.get('/api/pricing/active-promo')
+      .then(({ data }) => { if (data.promo) setActivePromo(data.promo); })
+      .catch(() => {});
+  }, []);
 
   return (
     <div style={{ position: 'relative', zIndex: 1 }}>
 
       {/* ── Nav — mobile-safe, no overflow ───────────────────────────────── */}
       <nav style={styles.nav}>
+        {/* ── Promo Banner — auto-displays latest active promo ──────────── */}
+        {activePromo && (
+          <Link to="/pricing" style={styles.promoBanner}>
+            <span style={styles.promoBannerText}>
+              🎉 {activePromo.description || activePromo.discountText} — Use code <strong style={{ letterSpacing: 1, color: '#fff' }}>{activePromo.code}</strong>
+            </span>
+            <span style={styles.promoBannerCta}>View Pricing →</span>
+          </Link>
+        )}
         <div style={styles.navInner}>
           {/* Logo */}
           <Link to="/" style={styles.navLogo}>
@@ -47,7 +65,7 @@ export default function Landing() {
       </nav>
 
       {/* ── Hero ──────────────────────────────────────────────────────────── */}
-      <section style={styles.hero}>
+      <section style={{ ...styles.hero, paddingTop: activePromo ? 130 : 96 }}>
         <div className="container" style={{ textAlign: 'center' }}>
 
           {/* Badge */}
@@ -180,6 +198,18 @@ export default function Landing() {
 }
 
 const styles = {
+  promoBanner: {
+    display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 12,
+    padding: '8px 16px', background: 'linear-gradient(135deg, #6366f1, #8b5cf6)',
+    textDecoration: 'none', flexWrap: 'wrap', textAlign: 'center',
+  },
+  promoBannerText: {
+    fontSize: '0.82rem', color: 'rgba(255,255,255,0.9)', fontWeight: 500,
+  },
+  promoBannerCta: {
+    fontSize: '0.78rem', color: '#fff', fontWeight: 700,
+    background: 'rgba(255,255,255,0.15)', padding: '3px 12px', borderRadius: 100,
+  },
   nav: {
     position: 'fixed', top: 0, left: 0, right: 0, zIndex: 100,
     background: 'rgba(6,6,11,0.90)', backdropFilter: 'blur(16px)',
