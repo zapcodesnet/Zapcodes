@@ -34,6 +34,9 @@ const internalRoutes = require('./routes/internal');
 // ── NEW: Referral tree (user + admin genealogy) ───────────────────────────
 const referralTreeRoutes = require('./routes/referralTree');
 
+// ── NEW: Visitor tracking (page views + geolocation) ──────────────────────
+const trackRoutes = require('./routes/track');
+
 const app = express();
 app.set('trust proxy', 1);
 const httpServer = createServer(app);
@@ -104,6 +107,7 @@ app.use('/api/usage', usageRoutes);
 app.use('/api/guest', guestRoutes);
 app.use('/api/internal', internalRoutes);
 app.use('/api/referrals', referralTreeRoutes);
+app.use('/api/track', trackRoutes);
 
 // ── AI Widget — embeddable AI for user deployed sites ─────────────────────
 const widgetRoutes = require('./routes/widget');
