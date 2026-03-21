@@ -1,4 +1,4 @@
-import { useState, useContext } from 'react';
+import { useState, useContext, useEffect } from 'react';
 import { AuthContext } from '../context/AuthContext';
 import api from '../api';
 
@@ -153,6 +153,23 @@ export default function Pricing() {
   const [payProvider, setPayProvider] = useState('stripe');
   const [ultimateQty, setUltimateQty] = useState(1);
   const [showBLCosts, setShowBLCosts] = useState(false);
+  const [activePromo, setActivePromo] = useState(null);
+  const [promoCopied, setPromoCopied] = useState(false);
+
+  // Fetch active promo code for display
+  useEffect(() => {
+    api.get('/api/pricing/active-promo')
+      .then(({ data }) => { if (data.promo) setActivePromo(data.promo); })
+      .catch(() => {});
+  }, []);
+
+  const copyPromoCode = () => {
+    if (!activePromo) return;
+    navigator.clipboard.writeText(activePromo.code).then(() => {
+      setPromoCopied(true);
+      setTimeout(() => setPromoCopied(false), 2000);
+    }).catch(() => {});
+  };
 
   const handleSubscribe = async (plan) => {
     if (!user) return (window.location.href = '/register');
@@ -204,6 +221,27 @@ export default function Pricing() {
         <button style={st.payBtn(payProvider === 'stripe')} onClick={() => setPayProvider('stripe')}>💳 Stripe</button>
         <button style={st.payBtn(payProvider === 'xendit')} onClick={() => setPayProvider('xendit')}>🏦 Xendit</button>
       </div>
+
+      {/* ── Active Promo Code Display ── */}
+      {activePromo && (
+        <div style={st.promoDisplay}>
+          <div style={st.promoDisplayInner}>
+            <span style={{ fontSize: 18 }}>🎟️</span>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--text-primary)', marginBottom: 2 }}>
+                {activePromo.description || activePromo.discountText}
+              </div>
+              <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                Expires {new Date(activePromo.expiresAt).toLocaleDateString()} · Enter at checkout
+              </div>
+            </div>
+            <button onClick={copyPromoCode} style={st.promoCodeBtn}>
+              <span style={{ fontFamily: 'monospace', fontSize: 15, fontWeight: 800, letterSpacing: 2 }}>{activePromo.code}</span>
+              <span style={{ fontSize: 11, color: promoCopied ? '#22c55e' : 'var(--text-muted)' }}>{promoCopied ? '✓ Copied!' : '📋 Copy'}</span>
+            </button>
+          </div>
+        </div>
+      )}
 
       <div style={st.tiersScroll}>
         <div style={st.tiersRow}>
@@ -388,4 +426,18 @@ const st = {
   },
   topupCoins: { fontSize: 20, fontWeight: 800, color: '#f59e0b', marginBottom: 4 },
   topupPrice: { fontSize: 16, fontWeight: 700, color: 'var(--text-primary)', marginBottom: 2 },
+  promoDisplay: {
+    maxWidth: 680, margin: '0 auto 28px', padding: '0 4px',
+  },
+  promoDisplayInner: {
+    display: 'flex', alignItems: 'center', gap: 14, padding: '16px 20px',
+    background: 'linear-gradient(135deg, rgba(99,102,241,0.08), rgba(139,92,246,0.08))',
+    border: '1px solid rgba(99,102,241,0.25)', borderRadius: 16, flexWrap: 'wrap',
+  },
+  promoCodeBtn: {
+    display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2,
+    padding: '10px 20px', borderRadius: 12, cursor: 'pointer',
+    background: 'var(--bg-elevated, #1a1a2e)', border: '2px dashed rgba(99,102,241,0.4)',
+    color: '#6366f1', transition: 'all .2s',
+  },
 };
