@@ -107,6 +107,7 @@ const userSchema = new mongoose.Schema({
   // ══════════ Monthly Usage Tracking ══════════
   monthly_usage: {
     month: { type: String },
+    total_generations: { type: Number, default: 0 },
     gemini_pro_gens: { type: Number, default: 0 },
     gemini_flash_gens: { type: Number, default: 0 },
     haiku_gens: { type: Number, default: 0 },
@@ -232,6 +233,10 @@ const userSchema = new mongoose.Schema({
   fixesApplied: { type: Number, default: 0 },
 
   preferredAI: { type: String, enum: ['groq', 'gemini-flash', 'gemini-pro', 'haiku', 'sonnet', 'gemini-2.5-flash', 'gemini-3.1-pro', 'haiku-4.5', 'sonnet-4.6'], default: 'gemini-2.5-flash' },
+
+  // ══════════ AI Model Memory — remembers user's last selected model ══════════
+  lastSelectedBuildModel: { type: String, default: null },   // for New Website, Edit, Fix Bugs
+  lastSelectedMediaModel: { type: String, default: null },   // for AI Media (images/video)
   deployPlatform: { type: String, enum: ['cloudflare', 'vercel', 'render', 'netlify', 'railway', 'other', null], default: null },
 
   status: { type: String, enum: ['active', 'suspended', 'banned'], default: 'active' },
@@ -295,7 +300,9 @@ userSchema.methods.hasPermission = function (perm) {
   return this.permissions?.[perm] === true;
 };
 
-// ══════════ TIER CONFIG — 5-tier pricing ══════════
+// ══════════ TIER CONFIG — 5-tier pricing with shared generation deduction ══════════
+// Unified fallback order (same for ALL tiers that have the model):
+// Gemini 3.1 Pro → Sonnet 4.6 → Gemini 2.5 Flash → Haiku 4.5 → Groq
 userSchema.methods.getTierConfig = function () {
   const tiers = {
     free: {
@@ -304,8 +311,9 @@ userSchema.methods.getTierConfig = function () {
       canPWA: false, canRemoveBadge: false, canProDev: false,
       monthlyFixCap: 1, monthlyFixType: 'one_time_trial',
       monthlyPushCap: 1, monthlyPushType: 'one_time_trial',
+      maxGenerations: 10,
       modelChain: ['gemini-2.5-flash', 'groq'],
-      monthlyLimits: { 'gemini-2.5-flash': 3, 'groq': 20 },
+      monthlyLimits: { 'gemini-2.5-flash': 3, 'groq': 10 },
       trialModels: ['gemini-2.5-flash'],
       blCosts: { 'gemini-2.5-flash': 10000, 'groq': 5000 },
       dailyPhotoMinting: 5, memberPages: 1, monthlyListingLimit: 300,
@@ -315,39 +323,42 @@ userSchema.methods.getTierConfig = function () {
       price: 4.99,
       dailyClaim: 20000, maxChars: 3000, maxSites: 3, maxFileSize: 200 * 1024,
       canPWA: false, canRemoveBadge: false, canProDev: false,
-      monthlyFixCap: 90, monthlyFixType: 'monthly',
-      monthlyPushCap: 90, monthlyPushType: 'monthly',
+      monthlyFixCap: 50, monthlyFixType: 'monthly',
+      monthlyPushCap: 50, monthlyPushType: 'monthly',
+      maxGenerations: 400,
       modelChain: ['gemini-3.1-pro', 'gemini-2.5-flash', 'groq'],
-      monthlyLimits: { 'gemini-3.1-pro': 3, 'gemini-2.5-flash': 200, 'groq': 500 },
+      monthlyLimits: { 'gemini-3.1-pro': 3, 'gemini-2.5-flash': 120, 'groq': 400 },
       trialModels: ['gemini-3.1-pro'],
       blCosts: { 'gemini-3.1-pro': 50000, 'gemini-2.5-flash': 10000, 'groq': 5000 },
-      dailyPhotoMinting: 20, memberPages: 3, monthlyListingLimit: 2000,
+      dailyPhotoMinting: 15, memberPages: 3, monthlyListingLimit: 2000,
       referralL1: 3, referralL2: 2, xpMultiplier: 2,
     },
     silver: {
       price: 14.99,
       dailyClaim: 80000, maxChars: 4000, maxSites: 5, maxFileSize: 500 * 1024,
       canPWA: false, canRemoveBadge: true, canProDev: false,
-      monthlyFixCap: 300, monthlyFixType: 'monthly',
-      monthlyPushCap: 300, monthlyPushType: 'monthly',
+      monthlyFixCap: 200, monthlyFixType: 'monthly',
+      monthlyPushCap: 200, monthlyPushType: 'monthly',
+      maxGenerations: 1000,
       modelChain: ['gemini-3.1-pro', 'gemini-2.5-flash', 'haiku-4.5', 'groq'],
-      monthlyLimits: { 'gemini-3.1-pro': 50, 'gemini-2.5-flash': 500, 'haiku-4.5': 400, 'groq': 1000 },
+      monthlyLimits: { 'gemini-3.1-pro': 60, 'gemini-2.5-flash': 400, 'haiku-4.5': 200, 'groq': 1000 },
       trialModels: [],
       blCosts: { 'gemini-3.1-pro': 50000, 'gemini-2.5-flash': 10000, 'haiku-4.5': 20000, 'groq': 5000 },
-      dailyPhotoMinting: 50, memberPages: 10, monthlyListingLimit: 10000,
+      dailyPhotoMinting: 35, memberPages: 10, monthlyListingLimit: 10000,
       referralL1: 3, referralL2: 2, xpMultiplier: 3,
     },
     gold: {
       price: 39.99,
       dailyClaim: 200000, maxChars: 5000, maxSites: 15, maxFileSize: 1024 * 1024,
       canPWA: true, canRemoveBadge: true, canProDev: true,
-      monthlyFixCap: 1500, monthlyFixType: 'monthly',
-      monthlyPushCap: 1500, monthlyPushType: 'monthly',
-      modelChain: ['sonnet-4.6', 'gemini-3.1-pro', 'gemini-2.5-flash', 'haiku-4.5', 'groq'],
-      monthlyLimits: { 'gemini-3.1-pro': 120, 'sonnet-4.6': 100, 'gemini-2.5-flash': 1000, 'haiku-4.5': 800, 'groq': 2000 },
+      monthlyFixCap: 1000, monthlyFixType: 'monthly',
+      monthlyPushCap: 1000, monthlyPushType: 'monthly',
+      maxGenerations: 2000,
+      modelChain: ['gemini-3.1-pro', 'sonnet-4.6', 'gemini-2.5-flash', 'haiku-4.5', 'groq'],
+      monthlyLimits: { 'gemini-3.1-pro': 200, 'sonnet-4.6': 100, 'gemini-2.5-flash': 1000, 'haiku-4.5': 600, 'groq': 2000 },
       trialModels: [],
       blCosts: { 'sonnet-4.6': 60000, 'gemini-3.1-pro': 50000, 'gemini-2.5-flash': 10000, 'haiku-4.5': 20000, 'groq': 5000 },
-      dailyPhotoMinting: 150, memberPages: 25, monthlyListingLimit: 25000,
+      dailyPhotoMinting: 100, memberPages: 25, monthlyListingLimit: 25000,
       referralL1: 3, referralL2: 2, xpMultiplier: 4,
     },
     diamond: {
@@ -356,7 +367,8 @@ userSchema.methods.getTierConfig = function () {
       canPWA: true, canRemoveBadge: true, canProDev: true,
       monthlyFixCap: Infinity, monthlyFixType: 'unlimited',
       monthlyPushCap: Infinity, monthlyPushType: 'unlimited',
-      modelChain: ['sonnet-4.6', 'gemini-3.1-pro', 'gemini-2.5-flash', 'haiku-4.5', 'groq'],
+      maxGenerations: Infinity,
+      modelChain: ['gemini-3.1-pro', 'sonnet-4.6', 'gemini-2.5-flash', 'haiku-4.5', 'groq'],
       monthlyLimits: { 'gemini-3.1-pro': Infinity, 'sonnet-4.6': Infinity, 'gemini-2.5-flash': Infinity, 'haiku-4.5': Infinity, 'groq': Infinity },
       trialModels: [],
       blCosts: { 'sonnet-4.6': 60000, 'gemini-3.1-pro': 50000, 'gemini-2.5-flash': 10000, 'haiku-4.5': 20000, 'groq': 5000 },
@@ -371,8 +383,10 @@ userSchema.methods.getTierConfig = function () {
 userSchema.methods.getMonthlyUsage = function () {
   const currentMonth = new Date().toISOString().slice(0, 7);
   if (!this.monthly_usage || this.monthly_usage.month !== currentMonth) {
-    this.monthly_usage = { month: currentMonth, gemini_pro_gens: 0, gemini_flash_gens: 0, haiku_gens: 0, sonnet_gens: 0, groq_gens: 0, code_fixes: 0, github_pushes: 0 };
+    this.monthly_usage = { month: currentMonth, total_generations: 0, gemini_pro_gens: 0, gemini_flash_gens: 0, haiku_gens: 0, sonnet_gens: 0, groq_gens: 0, code_fixes: 0, github_pushes: 0 };
   }
+  // Backfill total_generations for existing users who don't have it
+  if (this.monthly_usage.total_generations == null) this.monthly_usage.total_generations = 0;
   return this.monthly_usage;
 };
 
@@ -386,7 +400,12 @@ const MODEL_TO_USAGE_FIELD = {
 
 userSchema.methods.incrementMonthlyUsage = function (model, actionType) {
   const mu = this.getMonthlyUsage();
-  if (actionType === 'generation' || actionType === 'gen') { const field = MODEL_TO_USAGE_FIELD[model]; if (field && mu[field] !== undefined) mu[field] += 1; }
+  if (actionType === 'generation' || actionType === 'gen') {
+    // Shared deduction: increment the specific model AND total
+    const field = MODEL_TO_USAGE_FIELD[model];
+    if (field && mu[field] !== undefined) mu[field] += 1;
+    mu.total_generations = (mu.total_generations || 0) + 1;
+  }
   else if (actionType === 'code_fix') { mu.code_fixes += 1; }
   else if (actionType === 'push') { mu.github_pushes += 1; }
   this.monthly_usage = mu;
@@ -395,7 +414,11 @@ userSchema.methods.incrementMonthlyUsage = function (model, actionType) {
 
 userSchema.methods.decrementMonthlyUsage = function (model, actionType) {
   const mu = this.getMonthlyUsage();
-  if (actionType === 'generation' || actionType === 'gen') { const field = MODEL_TO_USAGE_FIELD[model]; if (field && mu[field] !== undefined) mu[field] = Math.max(0, mu[field] - 1); }
+  if (actionType === 'generation' || actionType === 'gen') {
+    const field = MODEL_TO_USAGE_FIELD[model];
+    if (field && mu[field] !== undefined) mu[field] = Math.max(0, mu[field] - 1);
+    mu.total_generations = Math.max(0, (mu.total_generations || 0) - 1);
+  }
   else if (actionType === 'code_fix') { mu.code_fixes = Math.max(0, mu.code_fixes - 1); }
   else if (actionType === 'push') { mu.github_pushes = Math.max(0, mu.github_pushes - 1); }
   this.monthly_usage = mu;
@@ -459,6 +482,44 @@ userSchema.methods.getEffectiveAI = function (requestedModel) {
   const config = this.getTierConfig();
   if (requestedModel && config.modelChain.includes(requestedModel)) return requestedModel;
   return config.modelChain[0];
+};
+
+// ══════════ SHARED DEDUCTION HELPERS ══════════
+userSchema.methods.getTotalGenerationsUsed = function () {
+  const mu = this.getMonthlyUsage();
+  return mu.total_generations || 0;
+};
+
+userSchema.methods.getMaxGenerations = function () {
+  return this.getTierConfig().maxGenerations || 10;
+};
+
+userSchema.methods.hasGenerationsLeft = function () {
+  if (this.role === 'super-admin') return true;
+  const max = this.getMaxGenerations();
+  if (max === Infinity) return true;
+  return this.getTotalGenerationsUsed() < max;
+};
+
+// Check if a specific model has individual + shared cap available
+userSchema.methods.isModelAvailable = function (modelKey) {
+  if (this.role === 'super-admin') return true;
+  if (!this.hasGenerationsLeft()) return false;
+  const config = this.getTierConfig();
+  if (!config.modelChain.includes(modelKey)) return false;
+  const limit = config.monthlyLimits?.[modelKey];
+  if (limit === Infinity) return true;
+  const isTrial = config.trialModels?.includes(modelKey);
+  if (isTrial) return !this.isTrialExhausted(modelKey, limit);
+  return this.getModelUsageCount(modelKey) < limit;
+};
+
+// Get the unified fallback chain filtered to models this tier has access to
+userSchema.methods.getUnifiedFallbackChain = function () {
+  // Unified order: Gemini 3.1 Pro → Sonnet 4.6 → Gemini 2.5 Flash → Haiku 4.5 → Groq
+  const UNIFIED_ORDER = ['gemini-3.1-pro', 'sonnet-4.6', 'gemini-2.5-flash', 'haiku-4.5', 'groq'];
+  const config = this.getTierConfig();
+  return UNIFIED_ORDER.filter(m => config.modelChain.includes(m));
 };
 
 module.exports = mongoose.model('User', userSchema);
