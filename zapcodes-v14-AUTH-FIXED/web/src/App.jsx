@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import { Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { useAuth } from './context/AuthContext';
 import Navbar from './components/Navbar';
@@ -31,10 +31,54 @@ function ProtectedRoute({ children }) {
   return children;
 }
 
+// Inject CSS to move HelpAI ? button to bottom-LEFT on mobile
+// so it never blocks the Navbar hamburger (which is top-right)
+if (typeof document !== 'undefined' && !document.getElementById('zc-helpai-mobile-fix')) {
+  const style = document.createElement('style');
+  style.id = 'zc-helpai-mobile-fix';
+  style.textContent = `
+    @media (max-width: 900px) {
+      #help-ai-root, .help-ai-container,
+      div[style*="position: fixed"][style*="right: 2"][style*="bottom"],
+      div[style*="position:fixed"][style*="right:2"][style*="bottom"],
+      div[style*="position: fixed"][style*="right: 1"][style*="bottom"],
+      div[style*="position:fixed"][style*="right:1"][style*="bottom"] {
+        right: auto !important;
+        left: 12px !important;
+        z-index: 50 !important;
+      }
+    }
+  `;
+  document.head.appendChild(style);
+}
+
 export default function App() {
   useVisitorTracking();
   const location = useLocation();
   const isAdminPage = location.pathname === '/admin';
+
+  // Extra safety: force-move HelpAI button on mobile via JS
+  useEffect(() => {
+    if (window.innerWidth > 900) return;
+    const moveHelpAI = () => {
+      // Find any fixed-position element in bottom-right that looks like HelpAI
+      document.querySelectorAll('div[style]').forEach(el => {
+        const s = el.style;
+        if (s.position === 'fixed' && s.bottom && s.right && !s.left) {
+          const r = parseInt(s.right);
+          const b = parseInt(s.bottom);
+          if (r < 40 && b < 40 && el.querySelector('button')) {
+            el.style.right = 'auto';
+            el.style.left = '12px';
+            el.style.zIndex = '50';
+          }
+        }
+      });
+    };
+    const timer = setTimeout(moveHelpAI, 1000);
+    const timer2 = setTimeout(moveHelpAI, 3000);
+    return () => { clearTimeout(timer); clearTimeout(timer2); };
+  }, [location.pathname]);
 
   return (
     <>
