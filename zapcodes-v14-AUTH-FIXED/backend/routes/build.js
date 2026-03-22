@@ -108,27 +108,26 @@ const MODEL_DISPLAY = { 'gemini-3.1-pro': 'Gemini 3.1 Pro', 'gemini-2.5-flash': 
 const NORMALIZE_MODEL_KEY = { 'gemini-pro': 'gemini-3.1-pro', 'gemini-flash': 'gemini-2.5-flash', 'haiku': 'haiku-4.5', 'sonnet': 'sonnet-4.6', 'groq': 'groq', 'gemini-3.1-pro': 'gemini-3.1-pro', 'gemini-2.5-flash': 'gemini-2.5-flash', 'haiku-4.5': 'haiku-4.5', 'sonnet-4.6': 'sonnet-4.6' };
 function normalizeModelKey(key) { return NORMALIZE_MODEL_KEY[key] || key; }
 
-const TIER_FALLBACK_CHAINS = {
-  free:    { new_website: ['gemini-2.5-flash'], edit: ['gemini-2.5-flash', 'groq'], fix: ['gemini-2.5-flash', 'groq'] },
-  bronze:  { new_website: ['gemini-3.1-pro', 'gemini-2.5-flash'], edit: ['gemini-3.1-pro', 'gemini-2.5-flash', 'groq'], fix: ['gemini-3.1-pro', 'gemini-2.5-flash', 'groq'] },
-  silver:  { new_website: ['gemini-3.1-pro', 'gemini-2.5-flash', 'haiku-4.5'], edit: ['gemini-3.1-pro', 'gemini-2.5-flash', 'haiku-4.5', 'groq'], fix: ['gemini-3.1-pro', 'gemini-2.5-flash', 'haiku-4.5', 'groq'] },
-  gold:    { new_website: ['gemini-3.1-pro', 'sonnet-4.6', 'gemini-2.5-flash', 'haiku-4.5'], edit: ['gemini-3.1-pro', 'sonnet-4.6', 'gemini-2.5-flash', 'haiku-4.5', 'groq'], fix: ['gemini-3.1-pro', 'sonnet-4.6', 'gemini-2.5-flash', 'haiku-4.5', 'groq'] },
-  diamond: { new_website: ['gemini-3.1-pro', 'sonnet-4.6', 'gemini-2.5-flash', 'haiku-4.5'], edit: ['gemini-3.1-pro', 'sonnet-4.6', 'gemini-2.5-flash', 'haiku-4.5', 'groq'], fix: ['gemini-3.1-pro', 'sonnet-4.6', 'gemini-2.5-flash', 'haiku-4.5', 'groq'] },
-};
-function getTierFallbackChain(tier, operationType) {
-  const t = (tier || 'free').toLowerCase();
-  const op = operationType || 'new_website';
-  return (TIER_FALLBACK_CHAINS[t] || TIER_FALLBACK_CHAINS.free)[op] || ['groq'];
+// ══════════════════════════════════════════════════════════════════
+// UNIFIED FALLBACK CHAIN — same order for ALL operations & tiers
+// Each tier only has access to models in its modelChain (from User.js)
+// Groq still blocked for new_website on paid tiers
+// ══════════════════════════════════════════════════════════════════
+const UNIFIED_FALLBACK_ORDER = ['gemini-3.1-pro', 'sonnet-4.6', 'gemini-2.5-flash', 'haiku-4.5', 'groq'];
+
+function getUnifiedFallbackChain(user, operationType) {
+  if (user.role === 'super-admin') return UNIFIED_FALLBACK_ORDER;
+  const config = user.getTierConfig();
+  const chain = UNIFIED_FALLBACK_ORDER.filter(m => config.modelChain.includes(m));
+  // Block Groq for new_website on paid tiers
+  const isPaid = ['bronze', 'silver', 'gold', 'diamond'].includes(user.subscription_tier || 'free');
+  if (operationType === 'new_website' && isPaid) return chain.filter(m => m !== 'groq');
+  return chain;
 }
 function isGroqFallback(tier, model, operationType) { return model === 'groq' && operationType !== 'new_website'; }
-function isLastFallback(tier, model, operationType) { const chain = getTierFallbackChain(tier, operationType); return chain[chain.length - 1] === model; }
+function isLastFallback(user, model, operationType) { const chain = getUnifiedFallbackChain(user, operationType); return chain[chain.length - 1] === model; }
 
 const RESERVED = ['www', 'api', 'app', 'admin', 'mail', 'ftp', 'cdn', 'dev', 'staging', 'test', 'blog', 'docs', 'status', 'support', 'help', 'zapcodes', 'blendlink'];
-
-const BUILD_FALLBACK_PAID = ['sonnet-4.6', 'gemini-3.1-pro', 'haiku-4.5', 'gemini-2.5-flash'];
-const BUILD_FALLBACK_FREE = ['gemini-2.5-flash', 'groq'];
-const BUILD_FALLBACK_ADMIN = ['sonnet-4.6', 'gemini-3.1-pro', 'haiku-4.5', 'gemini-2.5-flash', 'groq'];
-function getBuildFallbackChain(user) { if (user.role === 'super-admin') return BUILD_FALLBACK_ADMIN; const t = user.subscription_tier || 'free'; return t === 'free' ? BUILD_FALLBACK_FREE : BUILD_FALLBACK_PAID; }
 
 const GEN_PROMPT = `You are ZapCodes AI. You build websites. You write complete, working code. You never write placeholder code. You never write "// rest of code here" or "..." or "// similar to above". You write every single line.
 
@@ -253,21 +252,31 @@ const CLONE_PROMPT = `Analyze the website and return JSON: {"title":"...","type"
 function getEffectiveModel(user, requestedModel, isBuildOperation = false, operationType = 'new_website') {
   if (user.role === 'super-admin') { if (requestedModel) return normalizeModelKey(requestedModel); return 'gemini-3.1-pro'; }
   const tier = user.subscription_tier || 'free';
-  const normalized = requestedModel ? normalizeModelKey(requestedModel) : null;
-  const chain = getTierFallbackChain(tier, operationType);
-  if (normalized && normalized !== 'auto' && chain.includes(normalized)) {
-    const config = user.getTierConfig();
-    const limit = config.monthlyLimits?.[normalized];
-    const isTrial = config.trialModels?.includes(normalized);
-    if (isTrial) { if (!user.isTrialExhausted(normalized, limit)) return normalized; }
-    else { const used = user.getModelUsageCount(normalized); if (limit === Infinity || used < limit) return normalized; }
-  }
   const config = user.getTierConfig();
+  const normalized = requestedModel ? normalizeModelKey(requestedModel) : null;
+
+  // Check shared generation cap first
+  const maxGens = config.maxGenerations || 10;
+  const totalUsed = user.getTotalGenerationsUsed();
+  if (maxGens !== Infinity && totalUsed >= maxGens) return null;
+
+  // Use unified fallback chain for this tier + operation
+  const chain = getUnifiedFallbackChain(user, operationType);
+
+  // If user explicitly picked a model, honor it if available
+  if (normalized && normalized !== 'auto' && chain.includes(normalized)) {
+    if (user.isModelAvailable(normalized)) return normalized;
+  }
+
+  // If user has a remembered model preference, try it
+  const remembered = user.lastSelectedBuildModel;
+  if (!normalized && remembered && chain.includes(remembered)) {
+    if (user.isModelAvailable(remembered)) return remembered;
+  }
+
+  // Otherwise pick the first available model from the unified chain
   for (const model of chain) {
-    const limit = config.monthlyLimits?.[model];
-    const isTrial = config.trialModels?.includes(model);
-    if (isTrial) { if (!user.isTrialExhausted(model, limit)) return model; }
-    else { const used = user.getModelUsageCount(model); if (limit === Infinity || used < limit) return model; }
+    if (user.isModelAvailable(model)) return model;
   }
   return null;
 }
@@ -318,14 +327,16 @@ router.get('/system-prompts', auth, (req, res) => res.json({ gen_prompt: GEN_PRO
 
 router.get('/available-models', auth, (req, res) => {
   const tier = req.user.subscription_tier; const config = req.user.getTierConfig(); const chain = config.modelChain || ['groq']; const isAdmin = req.user.role === 'super-admin'; const isPaidTier = ['bronze', 'silver', 'gold', 'diamond'].includes(tier);
+  const totalUsed = req.user.getTotalGenerationsUsed(); const maxGens = config.maxGenerations || 10;
   const models = chain.map(m => {
     const limit = config.monthlyLimits?.[m]; const isTrial = config.trialModels?.includes(m); let used = isTrial ? ((req.user.trials_used?.[m]) || 0) : req.user.getModelUsageCount(m);
     const groqBlocked = (m === 'groq' && isPaidTier);
-    return { id: m, name: getModelDisplayName(m), cost: BL_COSTS.generation[m] || 5000, monthlyLimit: limit === Infinity ? 'Unlimited' : limit, monthlyUsed: used, available: groqBlocked ? false : (isTrial ? !req.user.isTrialExhausted(m, limit) : (limit === Infinity || used < limit)), primary: chain.indexOf(m) === 0, type: isTrial ? 'one_time_trial' : 'monthly', blockedReason: groqBlocked ? 'Groq unavailable for builds on paid plans.' : undefined };
+    const sharedCapReached = maxGens !== Infinity && totalUsed >= maxGens;
+    return { id: m, name: getModelDisplayName(m), cost: BL_COSTS.generation[m] || 5000, monthlyLimit: limit === Infinity ? 'Unlimited' : limit, monthlyUsed: used, available: sharedCapReached ? false : (groqBlocked ? false : (isTrial ? !req.user.isTrialExhausted(m, limit) : (limit === Infinity || used < limit))), primary: chain.indexOf(m) === 0, type: isTrial ? 'one_time_trial' : 'monthly', blockedReason: sharedCapReached ? 'Monthly generation limit reached.' : groqBlocked ? 'Groq unavailable for builds on paid plans.' : undefined };
   });
   if (isAdmin) { for (const m of ['sonnet-4.6', 'gemini-3.1-pro', 'gemini-2.5-flash', 'haiku-4.5', 'groq']) { if (!chain.includes(m)) models.push({ id: m, name: getModelDisplayName(m) + ' (Admin)', cost: BL_COSTS.generation[m] || 5000, monthlyLimit: 'Unlimited', monthlyUsed: 0, available: true, primary: false, type: 'unlimited' }); } }
   const allModelsInfo = ['sonnet-4.6', 'gemini-3.1-pro', 'gemini-2.5-flash', 'haiku-4.5', 'groq'].map(m => ({ id: m, name: getModelDisplayName(m), cost: BL_COSTS.generation[m] || 5000, available: chain.includes(m) || isAdmin, tier_required: !chain.includes(m), blockedForBuild: m === 'groq' && isPaidTier }));
-  res.json({ models, allModels: allModelsInfo, plan: tier, subscription_tier: tier, monthlyUsage: req.user.getMonthlyUsage(), bl_coins: req.user.bl_coins || 0 });
+  res.json({ models, allModels: allModelsInfo, plan: tier, subscription_tier: tier, monthlyUsage: req.user.getMonthlyUsage(), bl_coins: req.user.bl_coins || 0, totalGenerationsUsed: totalUsed, maxGenerations: maxGens === Infinity ? 'Unlimited' : maxGens, lastSelectedBuildModel: req.user.lastSelectedBuildModel || null, lastSelectedMediaModel: req.user.lastSelectedMediaModel || null });
 });
 
 router.post('/generate-with-progress', auth, async (req, res) => {
@@ -340,8 +351,11 @@ router.post('/generate-with-progress', auth, async (req, res) => {
     activeSessions.set(sessionId, { abort: () => { aborted = true; } });
     res.on('close', () => { aborted = true; connectionAlive = false; if (keepaliveInterval) clearInterval(keepaliveInterval); activeSessions.delete(sessionId); });
     sendProgress('validating', 'Validating your request...');
-    const model = getEffectiveModel(user, requestedModel, true);
-    if (!model) { sendProgress('error', 'All AI model limits reached.'); safeSend(res, { type: 'error', error: 'Limits reached', upgrade: true }); return res.end(); }
+    const opType = existingFiles?.length > 0 ? 'edit' : 'new_website';
+    const model = getEffectiveModel(user, requestedModel, true, opType);
+    if (!model) { sendProgress('error', 'All AI model limits reached.'); safeSend(res, { type: 'error', error: 'Monthly generation limit reached', upgrade: true, totalUsed: user.getTotalGenerationsUsed(), maxGenerations: user.getMaxGenerations() }); return res.end(); }
+    // Save user's model preference for next time
+    if (requestedModel && normalizeModelKey(requestedModel) !== 'auto') { user.lastSelectedBuildModel = normalizeModelKey(requestedModel); }
     const config = user.getTierConfig();
     const inputText = prompt || description || '';
     if (config.maxChars !== Infinity && inputText.length > config.maxChars) { sendProgress('error', 'Message too long.'); safeSend(res, { type: 'error', error: 'Message too long' }); return res.end(); }
@@ -421,21 +435,70 @@ router.post('/generate-with-progress', auth, async (req, res) => {
     }
     if (!files?.length) {
       const opType = existingFiles?.length > 0 ? 'edit' : 'new_website';
-      const fallbackChain = getTierFallbackChain(user.subscription_tier || 'free', opType);
+      const fallbackChain = getUnifiedFallbackChain(user, opType);
       const currentIdx = fallbackChain.indexOf(normalizeModelKey(model));
-      const nextModel = fallbackChain[currentIdx + 1] || null;
-      const isGroqWarn = nextModel === 'groq';
-      const noMoreModels = !nextModel;
-      user.creditCoins(cost, 'generation', `Refund: ${modelLabel} failed`); user.decrementMonthlyUsage(model, 'generation'); await user.save();
-      if (keepaliveInterval) clearInterval(keepaliveInterval); clearInterval(progressTicker);
-      safeSend(res, { type: 'fallback_needed', currentModel: modelLabel, nextModel: nextModel ? getModelDisplayName(nextModel) : null, nextModelId: nextModel, nextCost: nextModel ? (BL_COSTS.generation[nextModel] || 5000) : 0, balance: user.bl_coins, isGroqWarn, noMoreModels, error: noMoreModels ? 'All AI models are currently unresponsive.' : null });
-      return res.end();
+
+      // Walk the fallback chain — try each remaining model
+      let fallbackSuccess = false;
+      for (let fi = currentIdx + 1; fi < fallbackChain.length; fi++) {
+        if (aborted || !connectionAlive) break;
+        const nextModel = fallbackChain[fi];
+        const nextCost = BL_COSTS.generation[nextModel] || 5000;
+        const isGroqWarn = nextModel === 'groq';
+
+        // Check if user can afford the next model (auto-deduct or auto-refund BL difference)
+        if (user.role !== 'super-admin') {
+          const blDiff = nextCost - cost; // positive = need to charge more, negative = refund
+          if (blDiff > 0 && user.bl_coins < blDiff) continue; // can't afford upgrade, skip
+        }
+
+        // Check if next model has generations available
+        if (!user.isModelAvailable(nextModel)) continue;
+
+        sendProgress('generating', `${modelLabel} failed — auto-switching to ${getModelDisplayName(nextModel)}...`);
+
+        // Try the fallback model
+        const fbResult = await callAISmart(systemPrompt, userPrompt, nextModel, undefined, visionImages, aiOpts);
+        const fbFiles = fbResult ? parseFilesFromResponse(fbResult) : [];
+
+        if (fbFiles?.length) {
+          files = fbFiles;
+          usedModel = nextModel;
+
+          // Handle BL difference: refund original cost, charge new cost
+          if (user.role !== 'super-admin') {
+            user.creditCoins(cost, 'generation', `Auto-refund: ${modelLabel} failed`);
+            user.spendCoins(nextCost, 'generation', `Auto-switch to ${getModelDisplayName(nextModel)}`, nextModel);
+          }
+          // Decrement original model, increment fallback model
+          // decrementMonthlyUsage reduces model count AND total, incrementMonthlyUsage adds both back
+          // Net effect: total stays same, original model -1, fallback model +1
+          user.decrementMonthlyUsage(model, 'generation');
+          user.incrementMonthlyUsage(nextModel, 'generation');
+          if (config.trialModels?.includes(nextModel)) user.incrementTrial(nextModel);
+          await user.save();
+
+          sendProgress('generating', `${getModelDisplayName(nextModel)} succeeded!${isGroqWarn ? ' ⚠️ Groq may produce simpler results.' : ''}`);
+          fallbackSuccess = true;
+          break;
+        }
+      }
+
+      if (!fallbackSuccess) {
+        // All models failed — full refund
+        user.creditCoins(cost, 'generation', `Refund: all models failed`);
+        user.decrementMonthlyUsage(model, 'generation');
+        await user.save();
+        if (keepaliveInterval) clearInterval(keepaliveInterval); clearInterval(progressTicker);
+        safeSend(res, { type: 'error', error: 'All AI models are currently unresponsive. Your BL coins have been refunded.', refunded: cost });
+        return res.end();
+      }
     }
     sendProgress('preview', 'Building live preview...');
     const preview = generatePreviewHTML(files);
     const actualLabel = getModelDisplayName(usedModel); const actualCost = BL_COSTS.generation[usedModel] || cost;
     sendProgress('done', `Done! ${files.length} file(s) using ${actualLabel}.`);
-    safeSend(res, { type: 'complete', files, preview, model: usedModel, blSpent: actualCost, balanceRemaining: user.bl_coins, monthlyUsage: user.getMonthlyUsage(), fileCount: files.length });
+    safeSend(res, { type: 'complete', files, preview, model: usedModel, blSpent: actualCost, balanceRemaining: user.bl_coins, monthlyUsage: user.getMonthlyUsage(), fileCount: files.length, totalGenerationsUsed: user.getTotalGenerationsUsed(), maxGenerations: user.getMaxGenerations() === Infinity ? 'Unlimited' : user.getMaxGenerations() });
     if (keepaliveInterval) clearInterval(keepaliveInterval); clearInterval(progressTicker);
     res.end(); activeSessions.delete(sessionId);
   } catch (err) {
@@ -456,13 +519,15 @@ router.post('/stop', auth, (req, res) => {
 router.post('/generate', auth, async (req, res) => {
   try {
     const user = req.user;
-    const { prompt, template, projectName, description, colorScheme, features, model: requestedModel, referenceImages } = req.body;
-    const model = getEffectiveModel(user, requestedModel, true);
-    if (!model) return res.status(403).json({ error: 'Limits reached', upgrade: true });
+    const { prompt, template, projectName, description, colorScheme, features, model: requestedModel, referenceImages, existingFiles } = req.body;
+    const opType = existingFiles?.length > 0 ? 'edit' : 'new_website';
+    const model = getEffectiveModel(user, requestedModel, true, opType);
+    if (!model) return res.status(403).json({ error: 'Monthly generation limit reached', upgrade: true, totalUsed: user.getTotalGenerationsUsed(), maxGenerations: user.getMaxGenerations() });
     const config = user.getTierConfig();
     if (config.maxChars !== Infinity && (prompt || description || '').length > config.maxChars) return res.status(400).json({ error: 'Message too long' });
     const cost = BL_COSTS.generation[model] || 5000;
     if (user.role !== 'super-admin' && user.bl_coins < cost) return res.status(402).json({ error: 'Insufficient BL coins', required: cost, balance: user.bl_coins });
+    if (requestedModel && normalizeModelKey(requestedModel) !== 'auto') { user.lastSelectedBuildModel = normalizeModelKey(requestedModel); }
     user.spendCoins(cost, 'generation', `Website generation (${getModelDisplayName(model)})`, model);
     user.incrementMonthlyUsage(model, 'generation');
     if (config.trialModels?.includes(model)) user.incrementTrial(model);
@@ -476,7 +541,7 @@ router.post('/generate', auth, async (req, res) => {
       files = result ? parseFilesFromResponse(result) : [];
     }
     if (!files?.length) { user.creditCoins(cost, 'generation', 'Refund: failed'); user.decrementMonthlyUsage(model, 'generation'); await user.save(); return res.status(500).json({ error: 'Failed. Coins refunded.' }); }
-    res.json({ files, preview: generatePreviewHTML(files), model, blSpent: cost, balanceRemaining: user.bl_coins, monthlyUsage: user.getMonthlyUsage(), fileCount: files.length });
+    res.json({ files, preview: generatePreviewHTML(files), model, blSpent: cost, balanceRemaining: user.bl_coins, monthlyUsage: user.getMonthlyUsage(), fileCount: files.length, totalGenerationsUsed: user.getTotalGenerationsUsed(), maxGenerations: user.getMaxGenerations() === Infinity ? 'Unlimited' : user.getMaxGenerations() });
   } catch (err) { res.status(500).json({ error: err.message || 'Failed' }); }
 });
 
@@ -1098,6 +1163,21 @@ router.get('/project-clones/:rootId', auth, (req, res) => {
     const clones = allProjects.filter(p => (p.cloneOf === rootId || p.projectId === rootId) && p.cloneVersion != null).sort((a, b) => (a.cloneVersion || 0) - (b.cloneVersion || 0)).map(p => ({ projectId: p.projectId, cloneVersion: p.cloneVersion, name: p.name, createdAt: p.createdAt, updatedAt: p.updatedAt, deployedAt: p.deployedAt, fileCount: (p.files || []).length, hasMemory: (p.projectMemory?.rawMessages?.length || 0) + (p.projectMemory?.summaries?.length || 0) > 0 }));
     res.json({ clones });
   } catch (err) { res.status(500).json({ error: 'Failed to get clones' }); }
+});
+
+// ══════════════════════════════════════════════════════════════════
+// SAVE MODEL PREFERENCE — remembers user's last selected AI model
+// ══════════════════════════════════════════════════════════════════
+router.put('/model-preference', auth, async (req, res) => {
+  try {
+    const { buildModel, mediaModel } = req.body;
+    const user = await User.findById(req.user._id);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    if (buildModel) user.lastSelectedBuildModel = normalizeModelKey(buildModel);
+    if (mediaModel) user.lastSelectedMediaModel = normalizeModelKey(mediaModel);
+    await user.save();
+    res.json({ lastSelectedBuildModel: user.lastSelectedBuildModel, lastSelectedMediaModel: user.lastSelectedMediaModel });
+  } catch (err) { res.status(500).json({ error: 'Failed to save preference' }); }
 });
 
 function stripFakeChatFromHTML(html) {
