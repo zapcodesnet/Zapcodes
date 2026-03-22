@@ -446,7 +446,7 @@ export default function HelpAI() {
   useEffect(() => { if (dragging) { const o = { passive: false }; window.addEventListener('mousemove', handleDragMove); window.addEventListener('mouseup', handleDragEnd); window.addEventListener('touchmove', handleDragMove, o); window.addEventListener('touchend', handleDragEnd); return () => { window.removeEventListener('mousemove', handleDragMove); window.removeEventListener('mouseup', handleDragEnd); window.removeEventListener('touchmove', handleDragMove); window.removeEventListener('touchend', handleDragEnd); }; } }, [dragging, handleDragMove, handleDragEnd]);
 
   if (!user) return null;
-  const defaultPos = isMobile ? { x: window.innerWidth - 58, y: 60 } : { x: window.innerWidth - 72, y: 8 };
+  const defaultPos = isMobile ? { x: window.innerWidth - 108, y: 60 } : { x: window.innerWidth - 72, y: 8 };
   const pos = iconPos || defaultPos;
   const isFullView = fullScreen || isMobile;
   const canUpload = config?.canUpload;
