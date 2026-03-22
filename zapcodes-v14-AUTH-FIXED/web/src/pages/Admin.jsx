@@ -207,51 +207,63 @@ export default function Admin() {
       <div style={{ minHeight: '100vh', background: '#06060b', color: '#e8e8f0' }}>
         {/* Fixed top bar with hamburger */}
         <div style={{
-          position: 'fixed', top: 0, left: 0, right: 0, height: 52, zIndex: 70,
+          position: 'fixed', top: 0, left: 0, right: 0, height: 52, zIndex: 200,
           background: '#0a0a14', borderBottom: '1px solid #1a1a2a',
           display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 16px',
         }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <span style={{ fontSize: '1.2rem' }}>⚡</span>
             <span style={{ fontWeight: 800, fontSize: '1rem', color: '#00e5a0' }}>Admin</span>
-            <span style={{ fontSize: '0.7rem', color: '#555', marginLeft: 4 }}>/ {section}</span>
           </div>
           <button onClick={() => setSidebarOpen(!sidebarOpen)} style={{
-            width: 40, height: 40, borderRadius: 10, border: '1px solid #2a2a3a',
-            background: sidebarOpen ? '#00e5a0' : '#11111b',
-            color: sidebarOpen ? '#06060b' : '#e8e8f0',
-            cursor: 'pointer', fontSize: 20, fontWeight: 700,
-            display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 80,
+            width: 44, height: 44, borderRadius: 10, border: '2px solid #00e5a0',
+            background: sidebarOpen ? '#00e5a0' : 'transparent',
+            color: sidebarOpen ? '#06060b' : '#00e5a0',
+            cursor: 'pointer', fontSize: 22, fontWeight: 700,
+            display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 210,
           }}>
             {sidebarOpen ? '✕' : '☰'}
           </button>
         </div>
 
-        {/* Sidebar overlay + slide-in panel */}
+        {/* FULL SCREEN navigation overlay — centered on screen */}
         {sidebarOpen && (
-          <>
-            <div onClick={() => setSidebarOpen(false)} style={{
-              position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
-              background: 'rgba(0,0,0,0.65)', zIndex: 75,
-            }} />
-            <aside style={{
-              position: 'fixed', top: 0, right: 0, bottom: 0, width: 260,
-              background: '#0a0a14', borderLeft: '1px solid #1a1a2a',
-              display: 'flex', flexDirection: 'column', padding: '16px',
-              zIndex: 80, overflowY: 'auto',
-              boxShadow: '-4px 0 24px rgba(0,0,0,0.5)',
-            }}>
-              {/* Close button at top of sidebar */}
-              <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 8 }}>
-                <button onClick={() => setSidebarOpen(false)} style={{
-                  width: 32, height: 32, borderRadius: 8, border: '1px solid #2a2a3a',
-                  background: '#11111b', color: '#888', cursor: 'pointer', fontSize: 14,
-                  display: 'flex', alignItems: 'center', justifyContent: 'center',
-                }}>✕</button>
-              </div>
-              {sidebarContent}
-            </aside>
-          </>
+          <div style={{
+            position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+            background: 'rgba(6,6,11,0.97)', zIndex: 205,
+            display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+            padding: '20px',
+          }} onClick={() => setSidebarOpen(false)}>
+            {/* Admin info */}
+            <div style={{ marginBottom: 20, textAlign: 'center' }}>
+              <div style={{ fontSize: '0.8rem', fontWeight: 600, color: '#00e5a0' }}>{adminUser.isSuperAdmin ? 'SUPER ADMIN' : 'ADMIN'}</div>
+              <div style={{ fontSize: '0.75rem', color: '#888', marginTop: 2 }}>{adminUser.user?.email}</div>
+            </div>
+
+            {/* Navigation buttons — large, centered, easy to tap */}
+            <nav style={{ display: 'flex', flexDirection: 'column', gap: 6, width: '100%', maxWidth: 300 }} onClick={e => e.stopPropagation()}>
+              {SECTIONS.map(sec => (
+                <button key={sec.id} onClick={() => { setSection(sec.id); setSidebarOpen(false); }} style={{
+                  display: 'flex', alignItems: 'center', gap: 12,
+                  padding: '14px 20px', borderRadius: 12, fontSize: '1rem', fontWeight: 600,
+                  width: '100%', textAlign: 'left', border: 'none', cursor: 'pointer',
+                  background: section === sec.id ? 'rgba(0,229,160,0.12)' : 'rgba(255,255,255,0.03)',
+                  color: section === sec.id ? '#00e5a0' : '#ccc',
+                  transition: '0.15s',
+                }}>
+                  <span style={{ fontSize: '1.2rem' }}>{sec.icon}</span> {sec.label}
+                </button>
+              ))}
+              <button onClick={() => { navigate('/'); setSidebarOpen(false); }} style={{
+                display: 'flex', alignItems: 'center', gap: 12,
+                padding: '14px 20px', borderRadius: 12, fontSize: '1rem', fontWeight: 600,
+                width: '100%', textAlign: 'left', border: 'none', cursor: 'pointer',
+                background: 'rgba(255,68,102,0.06)', color: '#ff4466', marginTop: 8,
+              }}>
+                ← Exit Admin
+              </button>
+            </nav>
+          </div>
         )}
 
         {/* Main content — below the top bar */}
