@@ -18,6 +18,7 @@ import HelpAI from './components/HelpAI';
 import MyProjects from './pages/MyProjects';
 import WidgetDashboard from './pages/WidgetDashboard';
 import RepairCode from './pages/RepairCode';
+import useVisitorTracking from './hooks/useVisitorTracking';
 
 function ProtectedRoute({ children }) {
   const { user, loading } = useAuth();
@@ -31,6 +32,8 @@ function ProtectedRoute({ children }) {
 }
 
 export default function App() {
+  useVisitorTracking();
+
   return (
     <>
       <Navbar />
