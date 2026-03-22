@@ -40,24 +40,31 @@ function getLastFallback(uid, from) {
 function clearLastFallback(uid, from) { fallbackTracker.delete(`${uid}-${from}`); }
 
 // ══════════════════════════════════════════════════════════════
-// CHAINS & CONFIG
+// CHAINS & CONFIG — Unified fallback order for ALL tiers
+// Gemini 3.1 Pro → Sonnet 4.6 → Gemini 2.5 Flash → Haiku 4.5 → Groq
+// Each tier only sees models in its modelChain (from User.js)
 // ══════════════════════════════════════════════════════════════
 const ADMIN_CHAIN = ['opus-4.6', 'sonnet-4.6', 'gemini-3.1-pro', 'haiku-4.5', 'gemini-2.5-flash', 'groq'];
+const UNIFIED_FALLBACK_ORDER = ['gemini-3.1-pro', 'sonnet-4.6', 'gemini-2.5-flash', 'haiku-4.5', 'groq'];
 
-const TIER_CHAINS = {
-  free:    ['groq', 'gemini-2.5-flash'],
-  bronze:  ['groq', 'gemini-2.5-flash'],
-  silver:  ['gemini-2.5-flash', 'gemini-3.1-pro', 'groq'],
-  gold:    ['gemini-2.5-flash', 'gemini-3.1-pro', 'groq'],
-  diamond: ['gemini-3.1-pro', 'sonnet-4.6', 'gemini-2.5-flash', 'groq'],
-};
+function getTierChain(user) {
+  if (user.role === 'super-admin' || user.is_admin) return ADMIN_CHAIN;
+  const config = user.getTierConfig ? user.getTierConfig() : {};
+  return UNIFIED_FALLBACK_ORDER.filter(m => (config.modelChain || ['groq']).includes(m));
+}
 
 const HELP_AI_CONFIG = {
-  free:    { primary: 'groq',            maxFileSize: 0,              canUpload: false, canEditPhotos: false, maxOut: 2048 },
-  bronze:  { primary: 'groq',            maxFileSize: 2 * 1024 * 1024,  canUpload: true,  canEditPhotos: true,  maxOut: 4096 },
-  silver:  { primary: 'gemini-2.5-flash', maxFileSize: 5 * 1024 * 1024,  canUpload: true,  canEditPhotos: true,  maxOut: 8192 },
-  gold:    { primary: 'gemini-2.5-flash', maxFileSize: 10 * 1024 * 1024, canUpload: true,  canEditPhotos: true,  maxOut: 16384 },
-  diamond: { primary: 'gemini-3.1-pro',  maxFileSize: 25 * 1024 * 1024, canUpload: true,  canEditPhotos: true,  maxOut: 16384 },
+  free:    { primary: 'groq',             maxFileSize: 0,                canUpload: false, canEditPhotos: false, maxOut: 2048 },
+  bronze:  { primary: 'gemini-2.5-flash', maxFileSize: 2 * 1024 * 1024,  canUpload: true,  canEditPhotos: true,  maxOut: 4096 },
+  silver:  { primary: 'gemini-3.1-pro',   maxFileSize: 5 * 1024 * 1024,  canUpload: true,  canEditPhotos: true,  maxOut: 8192 },
+  gold:    { primary: 'gemini-3.1-pro',   maxFileSize: 10 * 1024 * 1024, canUpload: true,  canEditPhotos: true,  maxOut: 16384 },
+  diamond: { primary: 'gemini-3.1-pro',   maxFileSize: 25 * 1024 * 1024, canUpload: true,  canEditPhotos: true,  maxOut: 16384 },
+};
+
+// BL Costs per Help AI generation (same as Build page)
+const HELP_BL_COSTS = {
+  'gemini-3.1-pro': 50000, 'sonnet-4.6': 60000, 'gemini-2.5-flash': 10000,
+  'haiku-4.5': 20000, 'groq': 5000, 'opus-4.6': 0, // admin free
 };
 
 const ADMIN_CONFIG = {
@@ -879,6 +886,52 @@ router.post('/chat', auth, async (req, res) => {
     }
 
     // ══════════════════════════════════════════════════════════
+    // CHARGE BL + SHARED DEDUCTION
+    // ══════════════════════════════════════════════════════════
+    const blCost = HELP_BL_COSTS[targetModel] || 0;
+    if (!isAdmin && blCost > 0) {
+      // Check shared generation cap
+      if (!user.hasGenerationsLeft()) {
+        return res.status(403).json({ error: 'Monthly generation limit reached. Upgrade your plan for more.', upgrade: true });
+      }
+      // Check BL balance — if not enough, try to auto-switch to cheaper model
+      if (user.bl_coins < blCost) {
+        const chain = getTierChain(user);
+        let found = false;
+        for (const m of chain) {
+          const mCost = HELP_BL_COSTS[m] || 0;
+          if (user.bl_coins >= mCost && user.isModelAvailable(m)) {
+            targetModel = m;
+            found = true;
+            break;
+          }
+        }
+        if (!found) return res.status(402).json({ error: 'Insufficient BL coins.', required: blCost, balance: user.bl_coins });
+      }
+      // Check model individual limit
+      if (!user.isModelAvailable(targetModel)) {
+        const chain = getTierChain(user);
+        let found = false;
+        for (const m of chain) {
+          if (user.isModelAvailable(m) && user.bl_coins >= (HELP_BL_COSTS[m] || 0)) {
+            targetModel = m;
+            found = true;
+            break;
+          }
+        }
+        if (!found) return res.status(403).json({ error: 'All AI model limits reached. Upgrade for more.', upgrade: true });
+      }
+    }
+    const finalCost = isAdmin ? 0 : (HELP_BL_COSTS[targetModel] || 0);
+    if (!isAdmin && finalCost > 0) {
+      user.spendCoins(finalCost, 'generation', `Help AI (${MODEL_DISPLAY[targetModel]})`, targetModel);
+      user.incrementMonthlyUsage(targetModel, 'generation');
+      const tierConfig = user.getTierConfig();
+      if (tierConfig.trialModels?.includes(targetModel)) user.incrementTrial(targetModel);
+      await user.save();
+    }
+
+    // ══════════════════════════════════════════════════════════
     // TRY TARGET MODEL
     // ══════════════════════════════════════════════════════════
     let response = await tryCallAI(systemPrompt, contextPrompt, uploadedImages, isImageUpload, targetModel, maxTokens);
@@ -915,12 +968,21 @@ router.post('/chat', auth, async (req, res) => {
         });
       }
 
-      const chain = isAdmin ? ADMIN_CHAIN : (TIER_CHAINS[tier] || TIER_CHAINS.free);
+      const chain = isAdmin ? ADMIN_CHAIN : getTierChain(user);
       const targetIdx = chain.indexOf(targetModel);
       console.log(`[HelpAI] ${MODEL_DISPLAY[targetModel]} failed ${failCount}x — walking chain: ${chain.map(c => MODEL_DISPLAY[c]).join(' → ')}`);
 
       for (let i = targetIdx + 1; i < chain.length; i++) {
         const fallbackModel = chain[i];
+        const fbCost = HELP_BL_COSTS[fallbackModel] || 0;
+
+        // Check BL + model availability for fallback
+        if (!isAdmin && fbCost > 0) {
+          const blDiff = fbCost - finalCost;
+          if (blDiff > 0 && user.bl_coins < blDiff) continue;
+          if (!user.isModelAvailable(fallbackModel)) continue;
+        }
+
         let fbCtx = buildContextPrompt(user, isAdmin, fallbackModel, userMessage);
         if (targetedKnowledge) fbCtx = targetedKnowledge + '\n' + fbCtx;
         if (isAdmin) {
@@ -935,6 +997,16 @@ router.post('/chat', auth, async (req, res) => {
         if (response) {
           usedModel = fallbackModel;
           setLastFallback(userId, targetModel, fallbackModel);
+          // Auto-refund/deduct BL difference
+          if (!isAdmin && finalCost > 0) {
+            user.creditCoins(finalCost, 'generation', `Auto-refund: ${MODEL_DISPLAY[targetModel]} failed`);
+            user.decrementMonthlyUsage(targetModel, 'generation');
+            if (fbCost > 0) {
+              user.spendCoins(fbCost, 'generation', `Auto-switch to ${MODEL_DISPLAY[fallbackModel]}`, fallbackModel);
+              user.incrementMonthlyUsage(fallbackModel, 'generation');
+            }
+            await user.save();
+          }
           console.log(`[HelpAI] Fallback OK: ${MODEL_DISPLAY[fallbackModel]}`);
           break;
         }
@@ -943,6 +1015,14 @@ router.post('/chat', auth, async (req, res) => {
       if (!response && targetIdx > 0) {
         for (let i = 0; i < targetIdx; i++) {
           const fallbackModel = chain[i];
+          const fbCost = HELP_BL_COSTS[fallbackModel] || 0;
+
+          if (!isAdmin && fbCost > 0) {
+            const blDiff = fbCost - finalCost;
+            if (blDiff > 0 && user.bl_coins < blDiff) continue;
+            if (!user.isModelAvailable(fallbackModel)) continue;
+          }
+
           let fbCtx = buildContextPrompt(user, isAdmin, fallbackModel, userMessage);
           if (targetedKnowledge) fbCtx = targetedKnowledge + '\n' + fbCtx;
           if (isAdmin) {
@@ -957,6 +1037,15 @@ router.post('/chat', auth, async (req, res) => {
           if (response) {
             usedModel = fallbackModel;
             setLastFallback(userId, targetModel, fallbackModel);
+            if (!isAdmin && finalCost > 0) {
+              user.creditCoins(finalCost, 'generation', `Auto-refund: ${MODEL_DISPLAY[targetModel]} failed`);
+              user.decrementMonthlyUsage(targetModel, 'generation');
+              if (fbCost > 0) {
+                user.spendCoins(fbCost, 'generation', `Auto-switch to ${MODEL_DISPLAY[fallbackModel]}`, fallbackModel);
+                user.incrementMonthlyUsage(fallbackModel, 'generation');
+              }
+              await user.save();
+            }
             console.log(`[HelpAI] Fallback (wrap) OK: ${MODEL_DISPLAY[fallbackModel]}`);
             break;
           }
@@ -964,7 +1053,13 @@ router.post('/chat', auth, async (req, res) => {
       }
 
       if (!response) {
-        return res.status(500).json({ error: 'All AI models are currently unavailable. Please try again in a few minutes.' });
+        // Full refund if all models failed
+        if (!isAdmin && finalCost > 0) {
+          user.creditCoins(finalCost, 'generation', 'Refund: all models failed');
+          user.decrementMonthlyUsage(targetModel, 'generation');
+          await user.save();
+        }
+        return res.status(500).json({ error: 'All AI models are currently unavailable. Your BL coins have been refunded.' });
       }
     }
 
