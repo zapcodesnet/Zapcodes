@@ -34,9 +34,6 @@ function ProtectedRoute({ children }) {
 export default function App() {
   useVisitorTracking();
   const location = useLocation();
-
-  // Admin page has its own sidebar, mobile nav, and help system.
-  // Hide global Navbar and HelpAI so they don't cover admin controls.
   const isAdminPage = location.pathname === '/admin';
 
   return (
