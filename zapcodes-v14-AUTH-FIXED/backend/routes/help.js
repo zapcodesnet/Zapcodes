@@ -40,24 +40,32 @@ function getLastFallback(uid, from) {
 function clearLastFallback(uid, from) { fallbackTracker.delete(`${uid}-${from}`); }
 
 // ══════════════════════════════════════════════════════════════
-// CHAINS & CONFIG — Unified fallback order for ALL tiers
-// Gemini 3.1 Pro → Sonnet 4.6 → Gemini 2.5 Flash → Haiku 4.5 → Groq
-// Each tier only sees models in its modelChain (from User.js)
+// CHAINS & CONFIG — Help AI uses LOW-COST-FIRST fallback
+// Help AI is mostly Q&A — default to cheapest models per tier
+// Build page uses separate unified chain (Pro-first)
 // ══════════════════════════════════════════════════════════════
 const ADMIN_CHAIN = ['opus-4.6', 'sonnet-4.6', 'gemini-3.1-pro', 'haiku-4.5', 'gemini-2.5-flash', 'groq'];
-const UNIFIED_FALLBACK_ORDER = ['gemini-3.1-pro', 'sonnet-4.6', 'gemini-2.5-flash', 'haiku-4.5', 'groq'];
+
+// Help AI chains — optimized for low BL cost (cheap models first)
+const HELP_TIER_CHAINS = {
+  free:    ['groq'],                                                          // Groq only
+  bronze:  ['groq', 'gemini-2.5-flash'],                                      // Groq → Flash
+  silver:  ['gemini-2.5-flash', 'gemini-3.1-pro', 'groq'],                    // Flash → Pro → Groq
+  gold:    ['gemini-2.5-flash', 'haiku-4.5', 'gemini-3.1-pro', 'sonnet-4.6', 'groq'], // Flash → Haiku → Pro → Sonnet → Groq
+  diamond: ['gemini-3.1-pro', 'sonnet-4.6', 'gemini-2.5-flash', 'haiku-4.5', 'groq'], // Pro → Sonnet → Flash → Haiku → Groq
+};
 
 function getTierChain(user) {
   if (user.role === 'super-admin' || user.is_admin) return ADMIN_CHAIN;
-  const config = user.getTierConfig ? user.getTierConfig() : {};
-  return UNIFIED_FALLBACK_ORDER.filter(m => (config.modelChain || ['groq']).includes(m));
+  const tier = user.subscription_tier || 'free';
+  return HELP_TIER_CHAINS[tier] || HELP_TIER_CHAINS.free;
 }
 
 const HELP_AI_CONFIG = {
   free:    { primary: 'groq',             maxFileSize: 0,                canUpload: false, canEditPhotos: false, maxOut: 2048 },
-  bronze:  { primary: 'gemini-2.5-flash', maxFileSize: 2 * 1024 * 1024,  canUpload: true,  canEditPhotos: true,  maxOut: 4096 },
-  silver:  { primary: 'gemini-3.1-pro',   maxFileSize: 5 * 1024 * 1024,  canUpload: true,  canEditPhotos: true,  maxOut: 8192 },
-  gold:    { primary: 'gemini-3.1-pro',   maxFileSize: 10 * 1024 * 1024, canUpload: true,  canEditPhotos: true,  maxOut: 16384 },
+  bronze:  { primary: 'groq',             maxFileSize: 2 * 1024 * 1024,  canUpload: true,  canEditPhotos: true,  maxOut: 4096 },
+  silver:  { primary: 'gemini-2.5-flash', maxFileSize: 5 * 1024 * 1024,  canUpload: true,  canEditPhotos: true,  maxOut: 8192 },
+  gold:    { primary: 'gemini-2.5-flash', maxFileSize: 10 * 1024 * 1024, canUpload: true,  canEditPhotos: true,  maxOut: 16384 },
   diamond: { primary: 'gemini-3.1-pro',   maxFileSize: 25 * 1024 * 1024, canUpload: true,  canEditPhotos: true,  maxOut: 16384 },
 };
 
