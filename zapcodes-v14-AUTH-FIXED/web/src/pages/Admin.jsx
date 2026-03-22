@@ -27,8 +27,20 @@ export default function Admin() {
   const [verifyMsg, setVerifyMsg] = useState('');
   const [verifyError, setVerifyError] = useState('');
   const [adminSession, setAdminSession] = useState(() => localStorage.getItem('admin_session') || '');
-  const [sidebarOpen, setSidebarOpen] = useState(() => typeof window !== 'undefined' && window.innerWidth > 768);
+  const [isMobile, setIsMobile] = useState(() => typeof window !== 'undefined' && window.innerWidth <= 768);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
   const navigate = useNavigate();
+
+  // Track screen resize
+  useEffect(() => {
+    const onResize = () => {
+      const mobile = window.innerWidth <= 768;
+      setIsMobile(mobile);
+      if (!mobile) setSidebarOpen(false); // reset on desktop
+    };
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
 
   useEffect(() => {
     const headers = adminSession ? { 'x-admin-session': adminSession } : {};
@@ -155,52 +167,109 @@ export default function Admin() {
   if (loading) return <div style={s.loadingPage}><div className="spinner" style={{ width: 40, height: 40 }} /></div>;
   if (!adminUser) return null;
 
-  return (
-    <div style={s.layout}>
-      {/* ═══ Mobile hamburger bar ═══ */}
-      <div style={s.mobileBar} data-admin-mobile-bar>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <span style={{ fontSize: '1.1rem' }}>⚡</span>
-          <span style={{ fontWeight: 800, fontSize: '0.95rem', color: '#00e5a0' }}>Admin</span>
-        </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          <span style={{ fontSize: '0.7rem', color: '#888' }}>{section}</span>
-          <button onClick={() => setSidebarOpen(!sidebarOpen)} style={s.hamburgerBtn} data-admin-hamburger>
+  // Shared sidebar content — rendered in both mobile and desktop
+  const sidebarContent = (
+    <>
+      <div style={s.sidebarLogo}>⚡ <span style={{ fontWeight: 800 }}>Admin</span></div>
+      <div style={s.sidebarUser}>
+        <div style={{ fontSize: '0.8rem', fontWeight: 600, color: '#00e5a0' }}>{adminUser.isSuperAdmin ? 'SUPER ADMIN' : 'ADMIN'}</div>
+        <div style={{ fontSize: '0.75rem', color: '#888' }}>{adminUser.user?.email}</div>
+      </div>
+      <nav style={{ flex: 1, marginTop: 16, overflowY: 'auto' }}>
+        {SECTIONS.map(sec => (
+          <button key={sec.id} onClick={() => { setSection(sec.id); if (isMobile) setSidebarOpen(false); }} style={{ ...s.navItem, ...(section === sec.id ? s.navItemActive : {}) }}>
+            <span>{sec.icon}</span> {sec.label}
+          </button>
+        ))}
+      </nav>
+      <button onClick={() => navigate('/')} style={{ ...s.navItem, color: '#ff4466', marginTop: 'auto' }}>← Exit Admin</button>
+    </>
+  );
+
+  const mainContent = (
+    <>
+      {section === 'dashboard' && <DashboardSection api={adminApi} />}
+      {section === 'users' && <UsersSection adminUser={adminUser} api={adminApi} />}
+      {section === 'security' && <SecuritySection api={adminApi} />}
+      {section === 'analytics' && <AnalyticsSection api={adminApi} />}
+      {section === 'finances' && <FinancesSection api={adminApi} />}
+      {section === 'promos' && <PromosSection api={adminApi} />}
+      {section === 'referrals' && <ReferralsSection api={adminApi} />}
+      {section === 'ai' && <AISection adminUser={adminUser} api={adminApi} />}
+      {section === 'logs' && <LogsSection api={adminApi} />}
+      {section === 'settings' && <SettingsSection adminUser={adminUser} api={adminApi} />}
+    </>
+  );
+
+  // ═══ MOBILE LAYOUT ═══
+  if (isMobile) {
+    return (
+      <div style={{ minHeight: '100vh', background: '#06060b', color: '#e8e8f0' }}>
+        {/* Fixed top bar with hamburger */}
+        <div style={{
+          position: 'fixed', top: 0, left: 0, right: 0, height: 52, zIndex: 70,
+          background: '#0a0a14', borderBottom: '1px solid #1a1a2a',
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 16px',
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span style={{ fontSize: '1.2rem' }}>⚡</span>
+            <span style={{ fontWeight: 800, fontSize: '1rem', color: '#00e5a0' }}>Admin</span>
+            <span style={{ fontSize: '0.7rem', color: '#555', marginLeft: 4 }}>/ {section}</span>
+          </div>
+          <button onClick={() => setSidebarOpen(!sidebarOpen)} style={{
+            width: 40, height: 40, borderRadius: 10, border: '1px solid #2a2a3a',
+            background: sidebarOpen ? '#00e5a0' : '#11111b',
+            color: sidebarOpen ? '#06060b' : '#e8e8f0',
+            cursor: 'pointer', fontSize: 20, fontWeight: 700,
+            display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 80,
+          }}>
             {sidebarOpen ? '✕' : '☰'}
           </button>
         </div>
+
+        {/* Sidebar overlay + slide-in panel */}
+        {sidebarOpen && (
+          <>
+            <div onClick={() => setSidebarOpen(false)} style={{
+              position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+              background: 'rgba(0,0,0,0.65)', zIndex: 75,
+            }} />
+            <aside style={{
+              position: 'fixed', top: 0, right: 0, bottom: 0, width: 260,
+              background: '#0a0a14', borderLeft: '1px solid #1a1a2a',
+              display: 'flex', flexDirection: 'column', padding: '16px',
+              zIndex: 80, overflowY: 'auto',
+              boxShadow: '-4px 0 24px rgba(0,0,0,0.5)',
+            }}>
+              {/* Close button at top of sidebar */}
+              <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 8 }}>
+                <button onClick={() => setSidebarOpen(false)} style={{
+                  width: 32, height: 32, borderRadius: 8, border: '1px solid #2a2a3a',
+                  background: '#11111b', color: '#888', cursor: 'pointer', fontSize: 14,
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                }}>✕</button>
+              </div>
+              {sidebarContent}
+            </aside>
+          </>
+        )}
+
+        {/* Main content — below the top bar */}
+        <main style={{ paddingTop: 60, padding: '60px 14px 24px 14px' }}>
+          {mainContent}
+        </main>
       </div>
+    );
+  }
 
-      {/* ═══ Sidebar overlay (mobile) + fixed sidebar (desktop) ═══ */}
-      {sidebarOpen && <div style={s.sidebarOverlay} data-admin-overlay onClick={() => setSidebarOpen(false)} />}
-      <aside style={{ ...s.sidebar, ...(sidebarOpen ? {} : {}), }} data-admin-sidebar className={sidebarOpen ? 'admin-sidebar-open' : 'admin-sidebar-closed'}>
-        <div style={s.sidebarLogo}>⚡ <span style={{ fontWeight: 800 }}>Admin</span></div>
-        <div style={s.sidebarUser}>
-          <div style={{ fontSize: '0.8rem', fontWeight: 600, color: '#00e5a0' }}>{adminUser.isSuperAdmin ? 'SUPER ADMIN' : 'ADMIN'}</div>
-          <div style={{ fontSize: '0.75rem', color: '#888' }}>{adminUser.user?.email}</div>
-        </div>
-        <nav style={{ flex: 1, marginTop: 16, overflowY: 'auto' }}>
-          {SECTIONS.map(sec => (
-            <button key={sec.id} onClick={() => { setSection(sec.id); setSidebarOpen(false); }} style={{ ...s.navItem, ...(section === sec.id ? s.navItemActive : {}) }}>
-              <span>{sec.icon}</span> {sec.label}
-            </button>
-          ))}
-        </nav>
-        <button onClick={() => navigate('/')} style={{ ...s.navItem, color: '#ff4466', marginTop: 'auto' }}>← Exit Admin</button>
+  // ═══ DESKTOP LAYOUT ═══
+  return (
+    <div style={s.layout}>
+      <aside style={s.sidebar}>
+        {sidebarContent}
       </aside>
-
-      {/* ═══ Main content ═══ */}
-      <main style={s.main} data-admin-main>
-        {section === 'dashboard' && <DashboardSection api={adminApi} />}
-        {section === 'users' && <UsersSection adminUser={adminUser} api={adminApi} />}
-        {section === 'security' && <SecuritySection api={adminApi} />}
-        {section === 'analytics' && <AnalyticsSection api={adminApi} />}
-        {section === 'finances' && <FinancesSection api={adminApi} />}
-        {section === 'promos' && <PromosSection api={adminApi} />}
-        {section === 'referrals' && <ReferralsSection api={adminApi} />}
-        {section === 'ai' && <AISection adminUser={adminUser} api={adminApi} />}
-        {section === 'logs' && <LogsSection api={adminApi} />}
-        {section === 'settings' && <SettingsSection adminUser={adminUser} api={adminApi} />}
+      <main style={s.main}>
+        {mainContent}
       </main>
     </div>
   );
@@ -1291,24 +1360,7 @@ const mi = { width: '100%', background: '#0a0a14', border: '1px solid #2a2a3a', 
 // ═══════════════════════════════════════════════════════════
 const s = {
   layout: { display: 'flex', minHeight: '100vh', background: '#06060b', color: '#e8e8f0' },
-  mobileBar: {
-    display: 'none', /* shown on mobile via CSS */
-    position: 'fixed', top: 0, left: 0, right: 0, height: 48, zIndex: 60,
-    background: '#0a0a14', borderBottom: '1px solid #1a1a2a',
-    padding: '0 16px', alignItems: 'center', justifyContent: 'space-between',
-  },
-  hamburgerBtn: {
-    width: 36, height: 36, borderRadius: 8, border: '1px solid #2a2a3a',
-    background: '#11111b', color: '#e8e8f0', cursor: 'pointer',
-    fontSize: 18, display: 'flex', alignItems: 'center', justifyContent: 'center',
-    zIndex: 70,
-  },
-  sidebarOverlay: {
-    display: 'none', /* shown on mobile via CSS */
-    position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
-    background: 'rgba(0,0,0,0.6)', zIndex: 55,
-  },
-  sidebar: { width: 220, background: '#0a0a14', borderRight: '1px solid #1a1a2a', display: 'flex', flexDirection: 'column', padding: 16, position: 'fixed', top: 0, bottom: 0, overflowY: 'auto', zIndex: 60 },
+  sidebar: { width: 220, background: '#0a0a14', borderRight: '1px solid #1a1a2a', display: 'flex', flexDirection: 'column', padding: 16, position: 'fixed', top: 0, bottom: 0, overflowY: 'auto', zIndex: 50 },
   sidebarLogo: { fontSize: '1.2rem', padding: '8px 12px', color: '#00e5a0' },
   sidebarUser: { padding: '8px 12px', borderBottom: '1px solid #1a1a2a', marginBottom: 8 },
   navItem: { display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px', borderRadius: 8, fontSize: '0.85rem', color: '#888', cursor: 'pointer', width: '100%', textAlign: 'left', background: 'none', border: 'none', transition: '0.15s' },
@@ -1350,55 +1402,3 @@ const s = {
   verifyResendBtn: { background: 'none', border: 'none', color: '#666', fontSize: '0.82rem', cursor: 'pointer', marginTop: 14, textDecoration: 'underline', padding: '4px 8px' },
   verifyErrorText: { color: '#ff4466', fontSize: '0.82rem', marginTop: 14, padding: '8px 14px', background: 'rgba(255,68,102,0.06)', border: '1px solid rgba(255,68,102,0.15)', borderRadius: 8, width: '100%', boxSizing: 'border-box' },
 };
-
-// ═══ Responsive CSS for Admin page ═══
-if (typeof document !== 'undefined') {
-  const existing = document.getElementById('zc-admin-responsive');
-  if (!existing) {
-    const style = document.createElement('style');
-    style.id = 'zc-admin-responsive';
-    style.textContent = `
-      /* Desktop: show sidebar, hide mobile bar */
-      @media (min-width: 769px) {
-        [data-admin-mobile-bar] { display: none !important; }
-        [data-admin-overlay] { display: none !important; }
-        [data-admin-sidebar] { display: flex !important; left: 0 !important; }
-        [data-admin-main] { margin-left: 220px !important; }
-      }
-
-      /* Mobile: hide sidebar by default, show mobile bar */
-      @media (max-width: 768px) {
-        [data-admin-mobile-bar] { display: flex !important; }
-        [data-admin-sidebar] {
-          position: fixed !important; top: 0 !important; bottom: 0 !important;
-          left: -260px !important; width: 240px !important;
-          transition: left 0.25s ease !important; z-index: 65 !important;
-          box-shadow: 4px 0 24px rgba(0,0,0,0.5) !important;
-        }
-        [data-admin-sidebar].admin-sidebar-open {
-          left: 0 !important;
-        }
-        [data-admin-sidebar].admin-sidebar-closed {
-          left: -260px !important;
-        }
-        [data-admin-overlay] { display: block !important; }
-        .admin-sidebar-closed ~ [data-admin-overlay] { display: none !important; }
-        [data-admin-main] {
-          margin-left: 0 !important;
-          padding: 64px 16px 24px 16px !important;
-        }
-
-        /* Move HelpAI question mark button so it doesn't block hamburger */
-        .help-ai-trigger, [class*="helpAI"], [class*="help-float"],
-        div[style*="position: fixed"][style*="bottom:"][style*="right:"] > button:first-child,
-        div[style*="position:fixed"][style*="bottom"][style*="right"] {
-          right: auto !important;
-          left: 16px !important;
-          bottom: 16px !important;
-          z-index: 40 !important;
-        }
-      }
-    `;
-    document.head.appendChild(style);
-  }
-}
