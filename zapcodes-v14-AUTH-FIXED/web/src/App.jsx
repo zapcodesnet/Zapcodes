@@ -1,5 +1,5 @@
 import React from 'react';
-import { Routes, Route, Navigate } from 'react-router-dom';
+import { Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { useAuth } from './context/AuthContext';
 import Navbar from './components/Navbar';
 import Landing from './pages/Landing';
@@ -33,10 +33,15 @@ function ProtectedRoute({ children }) {
 
 export default function App() {
   useVisitorTracking();
+  const location = useLocation();
+
+  // Admin page has its own sidebar, mobile nav, and help system.
+  // Hide global Navbar and HelpAI so they don't cover admin controls.
+  const isAdminPage = location.pathname === '/admin';
 
   return (
     <>
-      <Navbar />
+      {!isAdminPage && <Navbar />}
       <Routes>
         <Route path="/"              element={<Landing />} />
         <Route path="/login"         element={<Login />} />
@@ -55,7 +60,7 @@ export default function App() {
         <Route path="/repo/:repoId"  element={<ProtectedRoute><RepoDetail /></ProtectedRoute>} />
         <Route path="*"              element={<Navigate to="/" />} />
       </Routes>
-      <HelpAI />
+      {!isAdminPage && <HelpAI />}
     </>
   );
 }
