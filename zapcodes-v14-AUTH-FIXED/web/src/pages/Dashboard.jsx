@@ -111,13 +111,26 @@ export default function Dashboard() {
 
   const fetchData = useCallback(async () => {
     try {
-      const [balRes, txRes, siteRes, projRes] = await Promise.all([
+      const [balRes, txRes, siteRes, projRes, modelsRes] = await Promise.all([
         api.get('/api/coins/balance'), api.get('/api/coins/transactions'),
         api.get('/api/build/sites'), api.get('/api/build/projects'),
+        api.get('/api/build/available-models').catch(() => ({ data: {} })),
       ]);
       setCoinData(balRes.data); setCountdown(balRes.data.nextClaimIn || 0);
       setTransactions(txRes.data.transactions || []); setSites(siteRes.data.sites || []);
       setProjects(projRes.data.projects || []);
+      // Build usage data from available-models endpoint
+      if (modelsRes.data?.models) {
+        const md = modelsRes.data;
+        setUsageData(prev => ({
+          ...prev,
+          tier: md.subscription_tier || md.plan,
+          bl_coins: md.bl_coins,
+          models: (md.models || []).map(m => ({ label: m.name, used: m.monthlyUsed || 0, limit: m.monthlyLimit, remaining: m.monthlyLimit === 'Unlimited' ? 'Unlimited' : Math.max(0, (m.monthlyLimit || 0) - (m.monthlyUsed || 0)), bl_cost_gen: m.cost, type: m.type })),
+          total_generations_used: md.totalGenerationsUsed || 0,
+          max_generations: md.maxGenerations === 'Unlimited' ? Infinity : (md.maxGenerations || 10),
+        }));
+      }
     } catch (err) { console.error('Dashboard fetch error:', err); }
     finally { setLoading(false); }
   }, []);
@@ -197,6 +210,8 @@ export default function Dashboard() {
   const models = usageData?.models || [];
   const fixesUsed = usageData?.fixes?.used || 0, fixesLimit = usageData?.fixes?.limit || 0;
   const pushesUsed = usageData?.github_pushes?.used || 0, pushesLimit = usageData?.github_pushes?.limit || 0;
+  const totalGensUsed = usageData?.total_generations_used ?? 0;
+  const maxGenerations = usageData?.max_generations ?? 10;
   const resetsOn = usageData?.resets_on || '';
   const maxChars = usageData?.max_characters || tc.maxChars || 2000;
   const maxSites = usageData?.max_deployed_sites || tc.maxSites || 1;
@@ -283,6 +298,22 @@ export default function Dashboard() {
         <div style={s.card}>
           <div style={s.cardTitle}>📊 Monthly AI Usage</div>
           {resetsOn && <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 12 }}>Resets on {resetsOn}</div>}
+
+          {/* Total Monthly Generations (shared deduction) */}
+          <div style={{ marginBottom: 18, padding: '12px 14px', background: 'rgba(99,102,241,0.06)', border: '1px solid rgba(99,102,241,0.15)', borderRadius: 12 }}>
+            <div style={s.usageRow}>
+              <span style={{ fontWeight: 700, fontSize: 13 }}>⚡ Total Generations</span>
+              <span style={{ fontWeight: 800, fontSize: 14, color: totalGensUsed >= maxGenerations && maxGenerations !== 'Unlimited' ? '#ef4444' : '#6366f1' }}>
+                {totalGensUsed.toLocaleString()} / {maxGenerations === 'Unlimited' || !isFinite(maxGenerations) ? '∞' : maxGenerations.toLocaleString()}
+              </span>
+            </div>
+            <div style={s.progressBar}>
+              <div style={s.progressFill(maxGenerations === 'Unlimited' || !isFinite(maxGenerations) ? 0 : (totalGensUsed / (maxGenerations || 1)) * 100, totalGensUsed >= maxGenerations && isFinite(maxGenerations) ? '#ef4444' : '#6366f1')} />
+            </div>
+            <div style={{ fontSize: 10, color: 'var(--text-muted)', marginTop: 3 }}>
+              Shared deduction — each generation on any model counts toward this total
+            </div>
+          </div>
 
           {models.length > 0 ? models.map((m, i) => {
             const pct = m.limit === 'unlimited' ? 0 : (m.used / (m.limit || 1)) * 100;
